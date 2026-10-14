@@ -57,3 +57,6 @@ Seven supplied music tracks rotate with three-second crossfades and dialogue duc
 
 Open with Unity 6000.5.0f1. Git LFS is required: run git lfs pull after cloning. Play Assets/FalloutPort/Scenes/Vault120.unity. The Windows build contains this vault slice; the surface city remains future work.
 
+
+Windows build verified 2026-10-14: zero build errors. Local executable: C:/Users/camde/Documents/FalloutNYC-Windows/Fallout NYC.exe. Keep the entire Windows build folder together; the executable requires its Data folder and DLLs.
+
