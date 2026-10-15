@@ -27,7 +27,7 @@ save('90_adapters',r'''
 G.native.initialize=function(json){const data=JSON.parse(json);G.landmarks={getAnchor:(site,name)=>data.anchors[site]?.[name]};G.map={_: {anchors:data.anchors},getAnchors:id=>data.anchors[id]||{},getAnchor:(site,name)=>data.anchors[site]?.[name]};
  for(const c of data.colliders)G.world.addCollider(c.center[0],c.center[2],c.size[0],c.size[2],c.center[1]-c.size[1]/2,c.center[1]+c.size[1]/2,c.yaw,{tag:c.tag,surface:c.surface});
  for(const d of data.doors)G.world.addDoor({id:d.id,pos:new THREE.Vector3(d.pos.x,d.pos.y,d.pos.z),label:d.name,target:d.target,locked:d.locked,keyId:d.keyId});
- G.items.spawnPickup=(id,count,pos,options)=>{const key='native_pickup_'+(++G.native.serial);const handle={key,id,itemId:id,pos,object3d:new THREE.Object3D(),remove:()=>G.native.send('remove',{id:key})};G.native.props[key]={kind:'pickup',handle};G.native.send('pickup',{id:key,itemId:id,count,pos});return handle;};
+ G.items.spawnPickup=(id,count,pos,options)=>{const base='native_pickup_'+id+'_'+[pos.x,pos.y,pos.z].map(v=>Number(v||0).toFixed(3)).join('_');G.native.pickupIds=G.native.pickupIds||{};const key=base+'_'+(G.native.pickupIds[base]=(G.native.pickupIds[base]||0)+1);const handle={key,id,itemId:id,pos,object3d:new THREE.Object3D(),remove:()=>G.native.send('remove',{id:key})};G.native.props[key]={kind:'pickup',handle};G.native.send('pickup',{id:key,itemId:id,count,pos});return handle;};
  for(const mod of G.modules.slice().sort((a,b)=>a.order-b.order))if(mod.init)mod.init(G);G.emit('initDone');
  return JSON.stringify({quests:G.quests.list().length,dialogues:Object.keys(G.native.dialogues).length,terminals:Object.keys(G.native.terminals).length,items:G.items.all().length,errors:G.errors});
 };

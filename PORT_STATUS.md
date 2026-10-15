@@ -9,7 +9,7 @@ This is a playable migration checkpoint, not a completed or production-ready ful
 - Original actor population/AI, native human views using the approved 50-character roster, and 29 imported original creature prefabs with five animation clips each.
 - Player damage, enemy projectiles/tracers, corpse looting, native NPC weapon sockets and arm fitting. Human deaths currently use a simple prone pose, not full ragdolls.
 - Original quest, dialogue, faction and companion source modules loaded, with native dialogue/journal, skill checks, trading, terminal hacking and door interactions. Loading a module does not establish end-to-end quest parity.
-- XP and native skill-point spending; lockpicking doors and containers; persistent vendor inventory/caps, terminal unlocks, quest progress, enemy/corpse state, player inventory and claimed loot.
+- Original epilogue slides presented in Unity, with a return to exploration; XP and native skill-point spending; lockpicking doors and containers; persistent vendor inventory/caps, terminal unlocks, quest progress, enemy/corpse state, player inventory and claimed loot.
 - Simulation runs on a worker so city rendering is not blocked on each AI update. Cold story initialization is still slow.
 - Existing controller support, 75% rendering, soundtrack, 44 weapons, owned inventory and local save slots retained.
 
@@ -22,10 +22,11 @@ This is a playable migration checkpoint, not a completed or production-ready ful
 - Actual merchant purchase changes caps/stock; terminal wrong guess uses an attempt, correct guess unlocks and persists.
 - Dialogue, trading, terminal, creature and NPC pistol/rifle screenshots inspected. All NPC weapon poses have not been reviewed.
 - Outside death menu and new-game reset checked; city EventSystem remains active.
+- Skill spending raises the selected skill and consumes one point. Container unlock callback and save marker checked. Nine source ending slides and return-to-play state checked offline; not a full finale playthrough.
 - Detailed checkpoint evidence is copied into Tools/Porting/Validation.
 
 ## Still required for the full port
-1. Complete main/side-quest playthroughs, companion behavior, quest set pieces, ending UI, and original full Vault MQ01 rather than the condensed introduction.
+1. Complete main/side-quest playthroughs, companion behavior, quest set pieces, endgame consequences, and original full Vault MQ01 rather than the condensed introduction.
 2. Full SPECIAL/character creation and perk selection; native armor, condition, limb damage, aid/chem effects, crafting, VATS and complete RPG/player-stat integration.
 3. Day/night/weather, radio, holotapes/minigames, original environmental interactions and full audio event coverage.
 4. Replace temporary quest terminal/pickup proxy visuals; verify all interior navigation, portals, locks and ownership/stealing rules.

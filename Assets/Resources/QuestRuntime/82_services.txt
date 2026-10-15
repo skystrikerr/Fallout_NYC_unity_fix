@@ -39,3 +39,8 @@ G.terminals.close=()=>{G.native.terminalSession=null;G.native.close();};
 G.terminals.unlock=id=>{(G.native.terminalStatus[id]||(G.native.terminalStatus[id]={})).unlocked=true;};
 const originalFlush=G.native.flush;
 G.native.flush=function(){for(const d of G.world.doors){if(d._nativeLock!==d._locked){d._nativeLock=d._locked;G.native.send('doorLock',{id:d.def.id,locked:d._locked});}}return originalFlush();};
+
+// Present source epilogues in Unity instead of the browser DOM fallback.
+G.hud={};
+G.on('ending',(slides,id)=>{G.setState('cutscene');G.native.send('ending',{id,slides});});
+G.native.finishEnding=()=>{G.setState('play');G.native.send('dialogueEnd',{});};

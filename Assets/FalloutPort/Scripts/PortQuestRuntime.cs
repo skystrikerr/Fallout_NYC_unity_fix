@@ -39,7 +39,7 @@ PortGame game;PortOpenWorld world;GameObject root;PortCharacterCatalog catalog;f
  public void RaiseSkill(string id){CompleteTick();if(!initialized)return;PrepareHost();Process(engine.Evaluate("G.rpg.addSkillPoints("+JsonConvert.SerializeObject(id)+",1);G.native.flush()").ToString());}
  public int Skill(string id){CompleteTick();return initialized?(int)engine.Evaluate("G.rpg.skill("+JsonConvert.SerializeObject(id)+")").AsNumber():0;}
  public void UseDoor(string id){CompleteTick();PrepareHost();Process(engine.Evaluate("G.native.useDoor("+JsonConvert.SerializeObject(id)+");G.native.flush()").ToString());}
- public void Service(string action,string argument="null"){if(!initialized)return;CompleteTick();PrepareHost();string code=action=="unlock"?"G.native.unlock()":action=="terminal"?"G.native.terminalChoose("+argument+")":action=="trade"?"G.native.trade("+JsonConvert.SerializeObject(argument)+")":action=="tradeMode"?"G.native.tradeView(G.native.tradeSession.id,"+argument+",G.native.tradeSession.resume)":action=="tradeEnd"?"G.native.enter(G.native.tradeSession.resume)":"G.native.terminalSession=null;G.native.close()";Process(engine.Evaluate(code+";G.native.flush()").ToString());}
+ public void Service(string action,string argument="null"){if(!initialized)return;CompleteTick();PrepareHost();string code=action=="endingEnd"?"G.native.finishEnding()":action=="unlock"?"G.native.unlock()":action=="terminal"?"G.native.terminalChoose("+argument+")":action=="trade"?"G.native.trade("+JsonConvert.SerializeObject(argument)+")":action=="tradeMode"?"G.native.tradeView(G.native.tradeSession.id,"+argument+",G.native.tradeSession.resume)":action=="tradeEnd"?"G.native.enter(G.native.tradeSession.resume)":"G.native.terminalSession=null;G.native.close()";Process(engine.Evaluate(code+";G.native.flush()").ToString());}
  public void Choose(int index){CompleteTick();PrepareHost();Process(engine.Evaluate("G.native.choose("+index+");G.native.flush()").ToString());}
  public string objective="Travel to Grand Central Market.",questTitle="All Aboard";public JObject journalData;
  public void UpdateJournal(){journalData=JObject.Parse(Journal());var tracked=journalData["quests"].FirstOrDefault(t=>(bool?)t["tracked"]==true);if(tracked!=null){objective=(string)tracked["stageText"];questTitle=(string)tracked["name"];}}
@@ -55,6 +55,7 @@ PortGame game;PortOpenWorld world;GameObject root;PortCharacterCatalog catalog;f
    else if(type=="dialogue"){game.menu.StoryDialogue(this,d);Focus((string)d["actorId"]);}
    else if(type=="doorLock"){var door=Array.Find(world.manifest.doors,x=>x.id==id);if(door!=null)door.locked=(int)d["locked"];}
    else if(type=="lockpick"){var pick=GetComponent<PortLockpick>();if(!pick)pick=gameObject.AddComponent<PortLockpick>();pick.Open((int)d["level"],()=>Service("unlock"));}
+   else if(type=="ending")game.menu.Ending(this,(JArray)d["slides"],0);
    else if(type=="terminal"||type=="trade")game.menu.StoryService(this,type,d);
    else if(type=="dialogueEnd")game.menu.Resume();
    else if(type=="travel")world.Travel(new Vector3((float)d["x"],(float?)d["y"]??0,-(float)d["z"]),-((float?)d["yaw"]??0)*Mathf.Rad2Deg);
