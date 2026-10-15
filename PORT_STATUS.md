@@ -8,14 +8,14 @@ The target is the original complete game, not only Vault 120. This file separate
 - Keyboard/controller input, title/pause menus, local saves, soundtrack, 75% world rendering.
 - Health/AP/stimpaks, supply caches, reactive range targets, optional range challenge.
 - Original 44 weapon models/materials/stats, native prefabs, individual hand sockets and fitted first-person meshes.
-- Armory test menu offers all 44. Normal vault quest now uses imported 10mm pistol.
+- Four visible world pickups and eight searchable cases provide all 44 weapons in the current vault map. Normal vault quest grants the imported 10mm pistol. The free Armory menu has been removed.
 - Automatic/semi-auto firing, pellet count, per-weapon magazines/reload timing, original mechanical shot offsets, basic plasma/explosive projectiles, timed bouncing grenades, proximity mines, basic melee reach/swing.
-- Equipped weapon ID persists in saves.
+- Owned weapons, individual magazines, shared ammo-type reserves, selected weapon and claimed loot persist in saves.
 
 ## Still incomplete within weapons
 - Full hand-driven reload animations, bolts/cylinders/spin-up and empty-lock behaviors are not fully reproduced.
 - Scope overlays, VATS, weapon condition, limb damage, armor mitigation, perks, full original sounds and weapon balance need the RPG/combat port.
-- Armory supplies practice ammunition. It is not the real inventory, pickup, merchant or loot progression.
+- Vault weapon pickups and inventory are implemented. Original city loot tables, merchant placements, apparel/aid inventory and broader RPG progression still require porting.
 - Visuals are first-pass native imports. Source models retain their original stylized geometry; this is not a replacement realistic asset pack.
 
 ## Remaining full-game port
@@ -36,3 +36,6 @@ The source inventory JSON records every original src JavaScript file and hash so
 - 18 controller/survival/save/death/range regression checks passed.
 - 20 vault quest/door/collision/audio checks passed.
 - Detailed run output is in Unity Logs/WeaponValidation.txt and Assets/FalloutPort/*Validation.txt.
+
+## World loot update
+72 pickup/inventory/persistence/UI checks passed. Collected loose weapons hide their world model; cases show taken entries and cannot duplicate loot. New games restore all loot. Existing saves migrate the selected weapon into ownership. All 12 loot placements passed static-overlap and normal interaction checks.

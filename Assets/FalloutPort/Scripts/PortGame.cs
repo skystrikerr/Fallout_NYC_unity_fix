@@ -4,7 +4,7 @@ using UnityEngine;
 namespace FalloutPort {
 public class PortGame : MonoBehaviour {
  public PortMenu menu;
- void Awake(){if(!GetComponent<PortLoadout>())gameObject.AddComponent<PortLoadout>();if(!GetComponent<PortSurvival>())gameObject.AddComponent<PortSurvival>();if(!GetComponent<PortCombat>())gameObject.AddComponent<PortCombat>();menu=GetComponent<PortMenu>();if(!menu)menu=gameObject.AddComponent<PortMenu>();}
+ void Awake(){if(!GetComponent<PortLoadout>())gameObject.AddComponent<PortLoadout>();if(!GetComponent<PortInventory>())gameObject.AddComponent<PortInventory>();if(!GetComponent<PortSurvival>())gameObject.AddComponent<PortSurvival>();if(!GetComponent<PortCombat>())gameObject.AddComponent<PortCombat>();menu=GetComponent<PortMenu>();if(!menu)menu=gameObject.AddComponent<PortMenu>();}
  public PortPlayer player;public PortDoor mainDoor;public GameObject[] roaches;public PortInteractable[] interactions;
  public int stage,kills,ammo=12,reserve=48;public bool hasPistol,holstered=true,paused,dialogueOpen,journal;
  public string speaker,line;public PortInteractable current;public float nextShot,reloadAt;public string notice="Welcome to Vault 120. Follow the corridor to the atrium.";
@@ -16,9 +16,10 @@ public class PortGame : MonoBehaviour {
  void Update(){if(reloadAt>0&&Time.time>=reloadAt){int n=Mathf.Min(GetComponent<PortLoadout>().Magazine-ammo,reserve);ammo+=n;reserve-=n;reloadAt=0;} }
  public void TogglePause(){if(menu){if(dialogueOpen){CloseDialogue();return;}if(menu.Visible)menu.Back();else menu.PauseMenu();return;}if(dialogueOpen){CloseDialogue();return;}paused=!paused;Time.timeScale=paused?0:1;Cursor.lockState=paused?CursorLockMode.None:CursorLockMode.Locked;Cursor.visible=paused;}
  void OnDisable(){Time.timeScale=1;}
- public void FindInteraction(){current=null;float nearest=3.1f;foreach(var item in interactions){if(!item)continue;Vector3 eye=item.transform.position+Vector3.up;Vector3 d=eye-player.view.transform.position;float dist=d.magnitude;if(dist>nearest||Vector3.Dot(d.normalized,player.view.transform.forward)<.6f)continue;if(Physics.Linecast(player.view.transform.position,eye,out RaycastHit hit)&&hit.collider.GetComponentInParent<PortInteractable>()!=item)continue;nearest=dist;current=item;}}
+ public void FindInteraction(){current=null;float nearest=3.1f;foreach(var item in interactions){if(!item||!item.gameObject.activeInHierarchy)continue;Vector3 eye=item.transform.position+Vector3.up;Vector3 d=eye-player.view.transform.position;float dist=d.magnitude;if(dist>nearest||Vector3.Dot(d.normalized,player.view.transform.forward)<.6f)continue;if(Physics.Linecast(player.view.transform.position,eye,out RaycastHit hit)&&hit.collider.GetComponentInParent<PortInteractable>()!=item)continue;nearest=dist;current=item;}}
  public void Interact(){if(current)Perform(current.id);}
  public void Perform(string id){
+  if(id.StartsWith("loot:")){var item=Array.Find(interactions,x=>x&&x.id==id);if(item)item.GetComponent<PortWorldLoot>().Open();return;}
   if(id.StartsWith("cache_")){PortSurvival.Instance.Loot(int.Parse(id.Substring(6)));return;}if(id=="range"){PortSurvival.Instance.BeginChallenge();return;}
   conversation=id;conversationLine=0;
   if(id=="overseer") {speaker="Overseer Harriet Vance";line=stage==0?"There's the birthday tenant. Nineteen years in Vault 120 — the Superintendent has logged every single one of them, you know. Including the year you tried to flush Tommy Ruggiero's tooth.":stage==4?"I heard. Of course I heard — the Superintendent broadcast it on every speaker in the vault. Listen to me. Zeke is alive. Two weeks ago something on the surface pinged our relay — and it was Zeke who pinged back.":"Enjoy your birthday. That's an order, and I so rarely get to give them.";}
@@ -37,7 +38,7 @@ public class PortGame : MonoBehaviour {
   if(conversation=="overseer"&&stage==0&&conversationLine==0){line="Vault tradition: on their nineteenth birthday every tenant receives their very own Pip-Boy 3000. There. Now the Superintendent can measure your productivity to the second. Happy birthday.\n\nChief Doyle has your other present. He's by the punch bowl.";conversationLine++;return;}
   if(conversation=="overseer"&&stage==4&&conversationLine==0){line="This is the override for the door terminal. Memorize it. Find Zeke. If his last signal was right, he was heading for Grand Central.\n\nSay goodbye to Lucy. Then go.";conversationLine++;return;}
   if(conversation=="overseer"){if(stage==0)GrantStage(0,1);else if(stage==4)GrantStage(4,5);}
-  if(conversation=="doyle"&&GrantStage(1,2)){hasPistol=true;holstered=false;foreach(var r in roaches)r.SetActive(true);notice="10mm pistol acquired. H / B: holster • Mouse / triggers: aim and fire • R / Y: reload";}
+  if(conversation=="doyle"&&GrantStage(1,2)){GetComponent<PortInventory>().Acquire("pistol_10mm",60,true);hasPistol=true;holstered=false;foreach(var r in roaches)r.SetActive(true);notice="10mm pistol acquired. H / B: holster • Mouse / triggers: aim and fire • R / Y: reload";}
   CloseDialogue();
  }
  public void CloseDialogue(){dialogueOpen=false;Time.timeScale=1;Cursor.lockState=CursorLockMode.Locked;Cursor.visible=false;}

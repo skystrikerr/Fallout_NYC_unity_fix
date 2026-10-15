@@ -75,10 +75,15 @@ This remains a playable vault prototype, not a production-ready full game. City 
 
 ## Complete original weapon roster
 
-Open **Armory** from the title or pause menu. Browse the 11 pages and select any of the 44 weapons to equip it at the vault range with practice ammunition. The normal vault quest uses the imported 10mm pistol. Each weapon has its own model, original stats and hand sockets, fitted hand meshes, and one/two-handed support as appropriate. The roster includes ballistic, energy, heavy, improvised, unique, melee and thrown weapons.
+Find weapons in the vault world: four visible pickups and eight searchable storage cases cover all 44 weapons. Search the quarters, security rooms, physical armory, cafeteria, reactor and Overseer's office. Security supplies unlock after Doyle's gift; sealed reserves unlock after authorizing the vault exit. Each weapon is collected once per playthrough. There is no free Armory menu.
 
-Native firing supports automatic/semi-automatic weapons, pellet counts, magazines, reload timing, tracers, moving gun parts, basic projectiles, grenades, mines and melee. Equipped weapon and ammunition persist in saves. Full reload hand choreography, original RPG combat and regular loot/inventory progression remain incomplete.
+Press E / controller X to collect a loose weapon or search a case. Equip owned weapons through **Pause > Weapons** or cycle them with the mouse wheel / D-pad left-right. Individual magazines and shared reserves by ammunition type persist when switching weapons. Inventory and collected loot IDs persist in saves. Existing saves retain their equipped weapon; a new game starts without an arsenal.
+
+Native firing supports automatic/semi-automatic weapons, pellet counts, magazines, reload timing, tracers, moving gun parts, basic projectiles, grenades, mines and melee. Equipped weapon and ammunition persist in saves. Full reload hand choreography, original RPG combat, city loot placement, apparel, barter and the broader RPG inventory remain incomplete.
 
 44 equip/ammo checks, 18 expansion regression checks and 20 vault route checks passed. All 44 hip views were captured for visual review; wrist, swap-overlap and melee sleeve problems were corrected.
 
 See **PORT_STATUS.md** for full-game scope and remaining work. Tools/Porting/source-port-inventory.json inventories the original JavaScript modules. This milestone does not yet add the surface city or later quests.
+
+## World-loot validation
+72 pickup/inventory/save/UI checks passed, plus the 20 vault-route and 18 gameplay regression checks. Loot cases were checked for geometry overlaps, and the security-to-armory route and office stairs were traversed with the actual player capsule.
