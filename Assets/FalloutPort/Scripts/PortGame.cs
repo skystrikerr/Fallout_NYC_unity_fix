@@ -4,7 +4,7 @@ using UnityEngine;
 namespace FalloutPort {
 public class PortGame : MonoBehaviour {
  public PortMenu menu;
- void Awake(){menu=GetComponent<PortMenu>();if(!menu)menu=gameObject.AddComponent<PortMenu>();}
+ void Awake(){if(!GetComponent<PortSurvival>())gameObject.AddComponent<PortSurvival>();if(!GetComponent<PortCombat>())gameObject.AddComponent<PortCombat>();menu=GetComponent<PortMenu>();if(!menu)menu=gameObject.AddComponent<PortMenu>();}
  public PortPlayer player;public PortDoor mainDoor;public GameObject[] roaches;public PortInteractable[] interactions;
  public int stage,kills,ammo=12,reserve=48;public bool hasPistol,holstered=true,paused,dialogueOpen,journal;
  public string speaker,line;public PortInteractable current;public float nextShot,reloadAt;public string notice="Welcome to Vault 120. Follow the corridor to the atrium.";
@@ -19,6 +19,7 @@ public class PortGame : MonoBehaviour {
  public void FindInteraction(){current=null;float nearest=3.1f;foreach(var item in interactions){if(!item)continue;Vector3 eye=item.transform.position+Vector3.up;Vector3 d=eye-player.view.transform.position;float dist=d.magnitude;if(dist>nearest||Vector3.Dot(d.normalized,player.view.transform.forward)<.6f)continue;if(Physics.Linecast(player.view.transform.position,eye,out RaycastHit hit)&&hit.collider.GetComponentInParent<PortInteractable>()!=item)continue;nearest=dist;current=item;}}
  public void Interact(){if(current)Perform(current.id);}
  public void Perform(string id){
+  if(id.StartsWith("cache_")){PortSurvival.Instance.Loot(int.Parse(id.Substring(6)));return;}if(id=="range"){PortSurvival.Instance.BeginChallenge();return;}
   conversation=id;conversationLine=0;
   if(id=="overseer") {speaker="Overseer Harriet Vance";line=stage==0?"There's the birthday tenant. Nineteen years in Vault 120 — the Superintendent has logged every single one of them, you know. Including the year you tried to flush Tommy Ruggiero's tooth.":stage==4?"I heard. Of course I heard — the Superintendent broadcast it on every speaker in the vault. Listen to me. Zeke is alive. Two weeks ago something on the surface pinged our relay — and it was Zeke who pinged back.":"Enjoy your birthday. That's an order, and I so rarely get to give them.";}
   else if(id=="doyle"){speaker="Chief Doyle";line=stage==1?"Well, if it isn't the birthday tenant. Vault Regulation 12-9: every tenant of age is enrolled in the Auxiliary Pest Control Service. That means you get a gun. That means I have to give you a gun. [He hands you a worn 10mm pistol.]":"Roaches in the reactor drains again. Keep your weapon pointed away from the residents.";}
@@ -41,8 +42,9 @@ public class PortGame : MonoBehaviour {
  }
  public void CloseDialogue(){dialogueOpen=false;Time.timeScale=1;Cursor.lockState=CursorLockMode.Locked;Cursor.visible=false;}
  public void RoachKilled(){if(stage!=2)return;kills=Mathf.Min(kills+1,3);if(kills==3){GrantStage(2,3);notice="Pest control complete. Search Zeke's locker in your room.";}}
- public void Fire(){if(!hasPistol||holstered||dialogueOpen||paused||reloadAt>0||Time.time<nextShot)return;nextShot=Time.time+.23f;if(ammo==0){Sound("ui");return;}ammo--;Sound("shot");if(player.weapon)player.weapon.localPosition-=Vector3.forward*.08f;if(Physics.Raycast(player.view.transform.position,player.view.transform.forward,out RaycastHit hit,100)){var roach=hit.collider.GetComponentInParent<PortRoach>();if(roach)roach.Hit();}}
- public void Reload(){if(!hasPistol||ammo==12||reserve==0||reloadAt>0)return;reloadAt=Time.time+1.1f;Sound("reload");}
+ public void Fire(){if(!hasPistol||holstered||dialogueOpen||paused||reloadAt>0||Time.time<nextShot)return;nextShot=Time.time+.23f;if(ammo==0){Sound("ui");return;}ammo--;Sound("shot");if(player.weapon)player.weapon.localPosition-=Vector3.forward*.08f;GetComponent<PortCombat>().Shot();}
+
+ public void Reload(){if(paused||dialogueOpen||holstered||!hasPistol||ammo==12||reserve==0||reloadAt>0)return;reloadAt=Time.time+1.1f;Sound("reload");}
  public void Sound(string id){if(!audioSource)return;if(!clips.ContainsKey(id))clips[id]=MakeClip(id,id=="shot"?.24f:id=="door"?1.5f:.18f);audioSource.PlayOneShot(clips[id],id=="step"?.28f:1);}
  AudioClip MakeClip(string id,float duration){int rate=22050,n=(int)(rate*duration);float[] data=new float[n];var rand=new System.Random(19);for(int i=0;i<n;i++){float t=(float)i/rate,e=Mathf.Exp(-t*(id=="shot"?24:18));float noise=(float)rand.NextDouble()*2-1;data[i]=id=="hum"?.3f*Mathf.Sin(t*2*Mathf.PI*60)+noise*.025f:id=="shot"?(noise*.8f+Mathf.Sin(t*380)*.2f)*e:id=="step"?noise*e*.5f:id=="door"?noise*.3f*Mathf.Sin(Mathf.PI*t/duration):Mathf.Sin(t*2*Mathf.PI*(id=="quest"?660:440))*e*.4f;}var clip=AudioClip.Create("Vault_"+id,n,1,rate,false);clip.SetData(data,0);return clip;}
  void OnGUI(){

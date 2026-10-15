@@ -60,3 +60,15 @@ Open with Unity 6000.5.0f1. Git LFS is required: run git lfs pull after cloning.
 
 Windows build verified 2026-10-14: zero build errors. Local executable: C:/Users/camde/Documents/FalloutNYC-Windows/Fallout NYC.exe. Keep the entire Windows build folder together; the executable requires its Data folder and DLLs.
 
+
+## Vault gameplay expansion — October 15, 2026
+- Fixed controller holster/menu routing and gamepad movement when the cursor is unlocked.
+- Pistol-specific first-person grip, sleeve, recoil, tracer, muzzle flash and impact marks.
+- Enemy attack damage, physical death reactions, health, stimpaks (Q / D-pad Up), sprint AP and recovery menu.
+- Three one-time supply caches, caps and an optional timed security-range challenge with rewards.
+- Residents wander near their posts, greet nearby players and react to gunfire. Essential quest residents remain protected.
+- Survival state and collected rewards persist in saves. The other original Three.js weapons are not imported yet; they require their own grip fits.
+- Verified the vault quest route, live shots at all three range targets, resident movement, controller input regression, and save/load of the new systems. Arm grip reviewed at hip and aim views.
+
+This remains a playable vault prototype, not a production-ready full game. City content, full inventory/equipment, advanced enemy AI and bespoke reload animations remain future work.
+
