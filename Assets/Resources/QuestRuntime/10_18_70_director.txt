@@ -1,0 +1,158 @@
+/* src/quests/70_director.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 70: DIRECTOR
+ * Cross-cutting glue: contextual tutorial hints for the first hour,
+ * radio news reacting to the player's travels, quest-chain repair after
+ * loading older saves, world lore notes, and debug helpers.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+
+  // ------------------------------------------------------------------
+  // Contextual tutorial hints (each shown once per playthrough)
+  // ------------------------------------------------------------------
+  G.events.on('playerDamaged', () => {
+    if (G.player.hp < G.player.maxHp * 0.55) L.hint('stimpak', 'You\'re hurt. Use a Stimpak: Pip-Boy [Tab] → ITEMS → AID, or assign it to a favourite hotkey [1-8].');
+  });
+  G.events.on('radsChanged', (r) => {
+    if (r > 40) L.hint('rads', 'You are absorbing radiation (the red RADS bar). RadAway removes it; Rad-X increases resistance. Avoid water and glowing things.');
+  });
+  G.events.on('combatStart', () => {
+    L.hint('vats', 'Press [V] for V.A.T.S. — time slows and you can target specific body parts using Action Points.');
+  });
+  G.events.on('playerDetected', () => { L.hint('sneak', 'Press [C] to sneak. The [HIDDEN] / [CAUTION] / [DANGER] indicator shows whether enemies have spotted you.'); });
+  G.events.on('levelUp', () => { L.hint('levelup', 'Level up! Assign skill points and choose a perk when you\'re out of combat.'); });
+  G.events.on('locationDiscovered', (loc) => {
+    if (!loc) return;
+    if (loc.hostile) L.hint('hostile_loc', 'Hostile territory. Your compass shows red ticks for enemies that have noticed you.', 1.5);
+    if (loc.type === 'settlement') L.hint('merchants', 'Settlements have merchants. Talk to them and choose "trade" to barter with bottle caps.', 2);
+    // Vinnie keeps tabs on you.
+    const news = {
+      times_square: 'Spotted in Times Square: a vault dweller, blue as a robin\'s egg, gawking at the neon like a tourist. Welcome to the Crossroads of the World, pal. Tip your ghouls.',
+      empire_state: 'Word from 34th Street: somebody in a vault suit is poking around the Empire State Building. Kid, whoever you are — the big green guys up there don\'t do autographs.',
+      brooklyn_bridge: 'Traffic advisory: we\'ve got a vault dweller on the Brooklyn Bridge. Tony, if you\'re listening — be nice.',
+      liberty: 'Somebody just made it to Liberty Island. Ossie says he didn\'t take them. Ossie says a lot of things.',
+      wall_street: 'Heads up, Financial District: a vault kid is walking into the Exchange. Betty, the market\'s about to get volatile.',
+    }[loc.id];
+    if (news && L.once('news_loc_' + loc.id)) L.news(news);
+  });
+
+  // ------------------------------------------------------------------
+  // Reactive barks: named NPCs comment on what the player has done.
+  // Each rule: [npc id regex, condition, line]. First match wins.
+  // ------------------------------------------------------------------
+  const F = (k) => L.flag(k);
+  /** 0 Very Good … 4 Very Evil — the same scale as the Pip-Boy's karma title. */
+  function karmaTier() { return L.karmaTier(); }
+  const REACT = [
+    [/.*/, () => karmaTier() >= 4, 'Stay away from me. I\'ve heard what you did.'],
+    [/^(gc_|fl_|rc_|bp_)/, () => karmaTier() === 0, 'It\'s you! My cousin says you saved her whole caravan. Or her whole cousin. Something like that.'],
+    [/^v120_/, () => F('left_vault') && G.player.pos.x >= G.LAYOUT.INTERIOR_X_MIN, 'You came BACK? Nobody comes back!'],
+    [/^(gc_|rc_|neon_|fl_|bp_|ws_charlie)/, () => F('ending_choice') === 'purify', 'Have you SEEN the sky? It\'s blue! Like in the old magazines!'],
+    [/^(gc_|rc_)/, () => F('ending_choice') === 'selective', 'They say you did it. The Cleaning. ...Please just go.'],
+    [/^gc_guard/, () => F('atom_isotope_planted'), 'Don\'t drink the water. Just... don\'t.'],
+    [/^gc_guard/, () => F('dolores_recruited'), 'Dolores has all of 42nd covered. Creepy. Effective. Creepy.'],
+    [/^gc_delphine/, () => F('bridge_legit'), 'Tony the raider sent me a receipt. A RECEIPT. Framed it.'],
+    [/^gc_/, () => Q.isComplete('mq03'), 'Hey, it\'s the kid who got Vinnie loud again!'],
+    [/^neon_/, () => F('neon_outcome') === 'crowe' || F('neon_outcome') === 'repair', 'Citizen! Aren\'t the lights gorgeous tonight?'],
+    [/^neon_/, () => F('wendell_wed'), 'You hear Wendell finally asked? Two hundred years! Took him long enough.'],
+    [/^neon_/, () => F('neon_outcome') === 'sold' || F('neon_outcome') === 'atom', 'You sold our lights. Keep walking, smoothskin.'],
+    [/^bos_/, () => F('mq_faction') === 'bos', 'Ad Victoriam, initiate.'],
+    [/^bos_/, () => F('mq_faction') === 'enclave', 'Enclave collaborator. Keep your hands where I can see them.'],
+    [/^atom_/, () => F('atom_isotope_planted') || F('atom_placebo_planted'), 'Blessed be the one who brought the Glow to Grand Central!'],
+    [/^fl_/, () => F('caravan_honest'), 'Hattie says you\'re the most honest person in Manhattan. Low bar, but still.'],
+    [/^bp_ossie/, () => Q.isComplete('sq_shellshock'), 'No crabs on my boat in a week. You\'re a legend, kid.'],
+    [/^esb_kong/, () => F('kong_friend'), 'SMALL FRIEND! FAY SAYS HELLO!'],
+  ];
+  const lastBark = {};
+  let barkT = 0;
+  L.hook('update', function (dt, realDt) {
+    barkT -= realDt; if (barkT > 0) return; barkT = 1.5;
+    if (G.state !== 'play' || G.isStub('actors') || !G.actors.nearest) return;
+    // Never talk over a scripted moment (camera scripts, the surprise-party speeches).
+    if (L.cineActive() || L.hasPending('surprise')) return;
+    const P = G.player.pos;
+    let a = null;
+    try { a = G.actors.nearest(P, 6, (x) => !x.dead && x.questNpc && !(x.hostile && x.hostile()) && !x.inCombat); } catch (e) { a = null; }
+    if (!a || (lastBark[a.id] && G.time.real - lastBark[a.id] < 60)) return;
+    for (const r of REACT) {
+      if (!r[0].test(a.id)) continue;
+      let ok = false; try { ok = r[1](); } catch (e) { ok = false; }
+      if (ok) { lastBark[a.id] = G.time.real; L.say(a.id, r[2]); break; }
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // Chain repair (saves made mid-transition, or skipped steps)
+  // ------------------------------------------------------------------
+  function repairChain() {
+    // A scripted hand-off (e.g. MQ01 → MQ02 after the daylight cinematic) is pending:
+    // let it happen on its own schedule instead of racing it.
+    if (L.hasPending('chain')) return;
+    if (Q.isComplete('mq01') && !Q.isStarted('mq02')) Q.start('mq02');
+    if (Q.isComplete('mq02') && !Q.isStarted('mq03')) Q.start('mq03');
+    if (Q.isComplete('mq03') && !Q.isStarted('mq04')) Q.start('mq04');
+    if (Q.isComplete('mq04') && !Q.isStarted('mq05')) Q.start('mq05');
+    if (Q.isComplete('mq05') && !Q.isStarted('mq06')) Q.start('mq06', { stage: L.flag('mq_faction') === 'enclave' ? 'vertibird' : 'ferry' });
+    if (!Q.isStarted('mq01') && L.flag('left_vault')) Q.start('mq01');
+  }
+  L.hook('loaded', repairChain);
+  let repairT = 0;
+  L.hook('update', function (dt, realDt) { repairT -= realDt; if (repairT > 0) return; repairT = 5; repairChain(); });
+
+  // ------------------------------------------------------------------
+  // World lore notes (flavour pickups at landmarks)
+  // ------------------------------------------------------------------
+  const LORE = [
+    { id: 'q_lore_playbill', name: 'Playbill: "Atomic Annie!"', title: 'THE BROADHURST THEATRE PRESENTS',
+      text: '"ATOMIC ANNIE!" — The Musical Sensation of 2077!\n\nAct I: "My Heart Goes Critical"\nAct II: "Duck, Cover, and Dance"\nFinale: "Tomorrow (Is Probably Fine)"\n\nMatinee: Saturday, October 23rd. Doors 11:00 A.M.\n\n[Somebody has written "sold out" across it, and then, later, in a different hand, "all of them."]',
+      site: 'times_square', anchors: ['note1', 'loot1', 'stage'], off: { x: -18, z: -30 } },
+    { id: 'q_lore_macys_flyer', name: 'Flyer: Macy\'s Black Friday', title: 'MACY\'S HERALD SQUARE — BLACK FRIDAY DOORBUSTERS',
+      text: 'DOORS OPEN 4 A.M. FRIDAY, NOVEMBER 26, 2077!\n\n- Mister Handy Home Edition — 40% OFF!\n- Pip-Boy 2000 (last year\'s model) — 60% OFF!\n- Radiation King televisions — 3 for the price of 2!\n- Fallout shelter supplies — CALL FOR AVAILABILITY\n\nLimit 12 per customer. Management is not responsible for trampling.',
+      site: 'macys', anchors: ['note1', 'entrance'], off: { x: 4, z: 24 } },
+    { id: 'q_lore_rockefeller_plaque', name: 'Rubbing: Prometheus Plaque', title: 'ROCKEFELLER CENTER — PROMETHEUS',
+      text: '"Prometheus, teacher in every art, brought the fire that hath proved to mortals a means to mighty ends."\n\n[Beneath it, a Brotherhood scribe has chalked: "And look where THAT got us."]',
+      site: 'rockefeller', anchors: ['note1', 'prometheus', 'rink'], off: { x: 0, z: 20 } },
+    { id: 'q_lore_subway_map', name: 'MTA Emergency Notice', title: 'METROPOLITAN TRANSIT AUTHORITY — NOTICE',
+      text: 'In the event of a nuclear attack, subway stations are designated PUBLIC FALLOUT SHELTERS.\n\nPlease proceed calmly to the platform. Please do not push. Please do not block the doors. Please remember that the doors will not open again.\n\n(This notice has been approved by Vault-Tec, which has asked us to mention that vaults are nicer.)',
+      site: 'times_square', anchors: ['subway', 'note2'], off: { x: -22, z: 36 } },
+    { id: 'q_lore_liberty_postcard', name: 'Postcard from Liberty Island', title: 'GREETINGS FROM LIBERTY ISLAND!',
+      text: 'Dear Mom,\n\nClimbed all 354 steps to the crown! Mark wanted to go up to the torch but the Park Ranger said it\'s closed for "a Poseidon Energy thing." There were men in black suits everywhere. Very hush-hush.\n\nSee you Saturday!\nLove, Donna\n\n[Postmarked October 22, 2077. Never mailed.]',
+      site: 'statue_of_liberty', anchors: ['note1', 'dock', 'gift_shop'], off: { x: 18, z: -30 } },
+    { id: 'q_lore_park_ranger', name: 'Park Ranger\'s Log', title: 'CENTRAL PARK CONSERVANCY — RANGER LOG',
+      text: 'Oct 20: Vault-Tec crews working at the rock outcrop near Belvedere again. They say it\'s a "utility tunnel." Utility tunnels don\'t have gears twelve feet tall.\n\nOct 21: Asked the foreman what "120" means. He said "rent-stabilized." I don\'t know what that means either.\n\nOct 22: They gave me a pamphlet. "Reserve Your Unit Today!" There is a waiting list.',
+      site: 'belvedere', anchors: ['note1', 'loot1'], off: { x: 12, z: 12 } },
+  ];
+  L.hook('init', function () {
+    for (const n of LORE) L.defineItem({ id: n.id, type: 'note', name: n.name, title: n.title, text: n.text, weight: 0, value: 0, desc: 'A note. Read it in your Pip-Boy (DATA → Notes).' });
+  });
+  L.hook('spawn', function () {
+    for (const n of LORE) {
+      if (L.has(n.id)) continue;
+      const s = G.LAYOUT.getSite(n.site); if (!s) continue;
+      const c = { x: (s.x0 + s.x1) / 2 + n.off.x, z: (s.z0 + s.z1) / 2 + n.off.z };
+      const p = L.anchor(n.site, n.anchors, c, { maxR: 12 });
+      if (p) L.pickup('lore_' + n.id, n.id, 1, p);
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // Debug helpers (dev console):  G.quests.debug.status(), .skip('mq03'), .tp('gc_moe')
+  // ------------------------------------------------------------------
+  Object.assign(G.quests.debug, {
+    status() { return Q.list().map((q) => q.id + ' [' + q.status + '] ' + (q.stage || '') + ' — ' + q.stageText); },
+    flags() { return L.allFlags(); },
+    skip(id) {
+      const order = ['mq01', 'mq02', 'mq03', 'mq04', 'mq05', 'mq06'];
+      for (const q of order) { if (q === id) { if (!Q.isStarted(q)) Q.start(q); break; } if (!Q.isComplete(q)) Q.complete(q); }
+      return Q.list().map((q) => q.id + ':' + q.status);
+    },
+    tp(npcId) { const a = L.npc(npcId); if (!a) return 'no such npc'; G.player.teleport(a.pos.x + 2, a.pos.y, a.pos.z + 2, 0); return [a.pos.x, a.pos.z]; },
+    npcs() { return Object.keys(L.npcs).map((k) => { const a = L.npcs[k]; return k + ' @ ' + (a && a.pos ? a.pos.x.toFixed(0) + ',' + a.pos.z.toFixed(0) : '?') + (a && a.dead ? ' (dead)' : ''); }); },
+    markers() { return Q.activeMarkers(true); },
+  });
+})();
+

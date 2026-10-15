@@ -3,7 +3,11 @@
 Open Unity **My project (6)** and play:
 `Assets/FalloutPort/Scenes/Vault120.unity`
 
-This is a native Unity scene, not the browser game embedded in Unity.
+This is native Unity rendering with the trusted original quest/combat scripts running through Jint. It is an incomplete full-game migration checkpoint; see PORT_STATUS.md for tested features and remaining work.
+
+The latest world build is `C:/Users/camde/Documents/FalloutNYC-World-Preview/Fallout NYC.exe`. The older FalloutNYC-Windows folder remains the vault-only build.
+
+The current checkpoint adds the streamed city and interiors, original city loot, native creatures and NPC combat, original surface dialogue/quests, trading, terminal hacking, lockpicking and skill spending. Cold world-story initialization can take one to two minutes.
 
 ## Included
 

@@ -1,0 +1,997 @@
+/* src/combat/40_population.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — COMBAT: population
+ * Owned by: combat.
+ *
+ * - Hostile LOCATIONS (G.LAYOUT.LOCATIONS with hostile && spawns) become
+ *   "groups" that spawn lazily when the player comes within ~260 m, using
+ *   landmark anchors (spawn1..n / boss) when available, else validated
+ *   random points around the location (not inside buildings, not in water).
+ *   Counts & stats scale with the location level.  Interior locations
+ *   (e.g. the 42nd St subway) spawn when the player first walks in.
+ * - Cleared groups respawn after 3 game-days while the player is far away.
+ * - Friendly settlements get a few generic guards / residents
+ *   (named NPCs are the quests module's job).
+ * - Roaming street encounters by district: radroach swarms, mole rats,
+ *   feral packs, raider patrols, super mutant patrols, Mister Gutsy,
+ *   Brotherhood patrols, a wandering caravan trader, wild dogs, mirelurks
+ *   near the water.  Despawned when far away.
+ * - Save/load of relations, cleared groups and stable-id actor states.
+ * - Difficulty shaping: swarm-only clusters, per-type caps (eyebots ≤ 2),
+ *   level clamps for the late-game Enclave sites (UN Plaza, Liberty Island)
+ *   with re-levelling while the player is away; the UN garrison is a guarded
+ *   post that WARNS trespassers before opening fire until MQ04 is resolved;
+ *   the North Woods deathclaws sleep in a den behind a warning set-piece.
+ * - World reactions: karma hit squads (Gallowglass mercs on a Liberty Island
+ *   contract for heroes, Lantern Marshals with a warrant for villains), a
+ *   grateful stranger with a gift, and faction patrols after MQ04.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const THREE = window.THREE;
+  const C = G.__cmb;
+
+  C.groups = new Map();          // id → group
+  C.groupSave = {};              // loaded group states (applied at populate)
+  const SPAWN_R = 260, DESPAWN_ROAM_R = 280;
+  const RESPAWN_DAYS = 3;
+  const gameDay = () => (G.time.day || 1) + (G.time.hour || 0) / 24;
+
+  // ------------------------------------------------------------------
+  // Spawn point validation
+  // ------------------------------------------------------------------
+  /** Is (x,z) a free standing spot at ground level y? */
+  C.freeSpot = function (x, z, r, yRef, allowWater) {
+    if (!G.LAYOUT.isLand(x, z) && !allowWater) return null;
+    const th = G.world.terrainHeight(x, z);
+    if (th < G.world.waterLevel - 0.2 && !allowWater) return null;
+    const y = G.world.groundHeight(x, z, (yRef === undefined ? 0 : yRef) + 1.0, r * 0.5);
+    const cs = G.world.query(x - r - 0.5, z - r - 0.5, x + r + 0.5, z + r + 0.5);
+    for (const c of cs) {
+      if (c.maxY <= y + 0.6 || c.minY >= y + 1.8) continue;
+      if (G.world.pointInCollider(c, x, z, r)) return null;
+    }
+    return y;
+  };
+  function nearWater(x, z, dist) {
+    for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2; if (G.world.terrainHeight(x + Math.sin(a) * dist, z + Math.cos(a) * dist) < G.world.waterLevel) return true; }
+    return false;
+  }
+  function anchor(siteId, name) {
+    if (G.isStub('landmarks') || typeof G.landmarks.getAnchor !== 'function') return null;
+    try { const v = G.landmarks.getAnchor(siteId, name); return v && typeof v.x === 'number' ? v : null; } catch (e) { return null; }
+  }
+  /** Location id → landmark site id (for anchors) when they differ. */
+  const LOC_SITE = { wall_street: 'nyse', liberty: 'statue_of_liberty' };
+  C.siteFor = (loc) => LOC_SITE[loc.id] || loc.id;
+  const now = () => G.time.elapsed;
+  /** Quest state, read defensively at call time. */
+  function qDone(id) { try { return !G.isStub('quests') && typeof G.quests.isComplete === 'function' && !!G.quests.isComplete(id); } catch (e) { return false; } }
+  function qFlag(name) { try { return !G.isStub('quests') && typeof G.quests.flag === 'function' ? G.quests.flag(name) : undefined; } catch (e) { return undefined; } }
+
+  // ------------------------------------------------------------------
+  // Level shaping for sites that were one-shotting under-levelled players
+  // ------------------------------------------------------------------
+  /** Target member level for a location right now (null = use loc.level ± 1 as before). */
+  function scaledLevel(loc) {
+    const pl = C.playerLevel(), L = loc.level || 1;
+    if (loc.id === 'un_hq') return wardenRulesActive('un_hq') ? C.clamp(Math.max(6, pl + 2), 1, L) : Math.min(L, pl + 4);
+    if (loc.id === 'liberty') return Math.max(1, Math.min(L, pl + 4));
+    if (loc.id === 'north_woods' && !denOpen()) return Math.min(L, Math.max(4, pl + 6));
+    if (loc.id === 'reservoir') return Math.max(1, Math.min(L, pl + 3));   // mirelurks 150 m from the vault door
+    return null;
+  }
+  /** Re-level a living actor in place (keeps its HP fraction, limb condition and rank name). */
+  C.relevelActor = function (a, lvl) {
+    lvl = Math.max(1, Math.round(lvl));
+    if (a.dead || a.level === lvl) return;
+    const frac = a.maxHp > 0 ? a.hp / a.maxHp : 1;
+    const old = a.maxHp;
+    let hp = Math.round(a.td.hp + (a.td.hpLvl || 5) * (lvl - 1));
+    if (a.isBoss) hp = Math.round(hp * 1.7);
+    a.level = lvl; a.maxHp = hp; a.hp = Math.max(1, Math.round(hp * frac));
+    for (const k in a.limbs) { const l = a.limbs[k]; const r = hp / Math.max(1, old); l.max *= r; l.hp *= r; }
+    if (!a.def.name && !a.isBoss) { const n = C.rankName(a.type, lvl, a.def); if (n) a.name = n; }
+  };
+
+  // ------------------------------------------------------------------
+  // Trespass wardens: the UN Plaza garrison is a guarded post before
+  // "The Company You Keep" (MQ04) is resolved. They watch you ([CAUTION]),
+  // warn, give a last warning, and open fire after ~5 s on the plaza — or at
+  // once if you shoot. They don't chase a retreating trespasser across town.
+  // ------------------------------------------------------------------
+  C.WARDEN_ZONES = { un_hq: { r: 40, warnR: 68, grace: 5, leash: 22 } };
+  C.wardens = new Map();
+  function wardenState(id) {
+    let w = C.wardens.get(id);
+    if (w) return w;
+    const Z = C.WARDEN_ZONES[id], loc = G.LAYOUT.LOCATIONS.find((l) => l.id === id);
+    if (!Z || !loc) return null;
+    w = { id, x: loc.x, z: loc.z, r: Z.r, warnR: Z.warnR, grace: Z.grace, leash: Z.leash, t: 0, stage: 0, lastWarnT: -99, provokedUntil: 0, seenT: -99 };
+    C.wardens.set(id, w);
+    return w;
+  }
+  function wardenRulesActive(id) {
+    if (id !== 'un_hq') return false;
+    if (qDone('mq04')) return false;                  // resolved: the Enclave is simply hostile (or your ally)
+    if (qFlag('enclave_hostile')) return false;       // refused Hale / shot up the plaza: no more warnings
+    return true;
+  }
+  C.wardenRulesActive = wardenRulesActive;
+  /** Is this garrison member holding fire (warning phase)? */
+  C.wardenHold = function (a) {
+    if (!a.warden || a.wasFriendly || a.hostOverride === true || a.frenzied) return false;
+    const w = wardenState(a.warden); if (!w) return false;
+    if (w.provokedUntil > now()) return false;
+    return wardenRulesActive(w.id);
+  };
+  function wardenMembers(w) { const g = C.groups.get(w.id); return g ? g.actors.filter((a) => !a.dead && !a.removed) : []; }
+  function wardenSpeaker(w) {
+    const P = G.player; let best = null, bd = 1e9;
+    for (const a of wardenMembers(w)) { if (a.isRobot || !a.hostile()) continue; const d = a.distToPlayer() - (a.seesPlayer ? 20 : 0); if (d < bd) { bd = d; best = a; } }
+    return best;
+  }
+  function wardenWarn(w, kind) {
+    w.lastWarnT = now();
+    const s = wardenSpeaker(w);
+    if (s) { s.say(C.pick(C.TRESPASS_BARKS[kind]), kind === 'warn' ? 4.5 : 3.5); s.faceTowards(G.player.pos.x, G.player.pos.z); }
+    const eb = wardenMembers(w).find((a) => a.type === 'eyebot' && a.distToPlayer() < 60);
+    if (eb) { C.sfx('eyebot_chatter', { pos: eb.pos, volume: 0.9 }); if (!s || kind === 'warn') eb.say(C.pick(C.TRESPASS_BARKS.eyebot), 4); }
+    if (kind === 'last') C.sfx('caution', { volume: 0.6 });
+  }
+  /** Perception hook (holding members): they watch the player instead of engaging. */
+  C.wardenSaw = function (a, sees) {
+    const w = wardenState(a.warden); if (!w) return;
+    const P = G.player;
+    const dz = Math.hypot(P.pos.x - w.x, P.pos.z - w.z);
+    if (sees) {
+      w.seenT = now();
+      if (dz < w.warnR) { a.cautionAt = (a.cautionAt || new THREE.Vector3()).copy(P.pos); a.cautionUntil = now() + 1.2; a.awareness = Math.max(a.awareness, 0.45); }
+    }
+  };
+  /** Hearing hook: gunfire near the post ends the warnings; footsteps just turn heads. */
+  C.wardenNoise = function (a, kind) {
+    const w = wardenState(a.warden); if (!w) return;
+    const P = G.player;
+    const dz = Math.hypot(P.pos.x - w.x, P.pos.z - w.z);
+    if ((kind === 'gun' || kind === 'explosion') && dz < w.warnR + 20) { C.provokeWarden(a.warden, 'gunfire'); return; }
+    if (dz < w.warnR) { a.cautionAt = (a.cautionAt || new THREE.Vector3()).copy(P.pos); a.cautionUntil = now() + 1.5; a.awareness = Math.max(a.awareness, 0.35); }
+  };
+  C.provokeWarden = function (id, why) {
+    const w = wardenState(id); if (!w || !wardenRulesActive(id)) return;
+    const was = w.provokedUntil > now();
+    w.provokedUntil = now() + 90; w.t = 0; w.stage = 3;
+    if (was) return;
+    let barked = why === 'attacked';
+    for (const a of wardenMembers(w)) {
+      if (!a.hostile()) continue;
+      a.cautionUntil = 0; a.awareness = 1;
+      if (!barked && !a.isRobot) { barked = true; a.say(C.pick(C.TRESPASS_BARKS.open), 3); }
+      C.enterCombat(a, 'player', 0.15 + Math.random() * 0.45);
+    }
+  };
+  function updateWardens(dt) {
+    if (!C.wardens.size && !C.groups.has('un_hq')) return;
+    const P = G.player, t = now();
+    for (const id in C.WARDEN_ZONES) {
+      const g = C.groups.get(id);
+      if (!g || g.state !== 'active') continue;
+      const w = wardenState(id); if (!w) continue;
+      const alive = wardenMembers(w);
+      if (!alive.length || !wardenRulesActive(id)) continue;
+      const d = Math.hypot(P.pos.x - w.x, P.pos.z - w.z);
+      if (w.provokedUntil > t) {
+        const fighting = alive.filter((a) => a.state === 'combat' && a.target === 'player');
+        // Leash: a guarded post doesn't chase a retreating trespasser across Midtown
+        for (const a of fighting) {
+          const hd = a.home ? Math.hypot(a.pos.x - a.home.x, a.pos.z - a.home.z) : 0;
+          if (d > w.warnR + 35 && hd > w.leash) { C.leaveCombat(a, 'idle'); a.awareness = 0.3; a.wanderGoal = null; }
+        }
+        if (fighting.length && d < w.warnR + 60) w.provokedUntil = Math.max(w.provokedUntil, t + 20);
+        else if (!fighting.length && d > w.warnR + 60) { w.provokedUntil = 0; w.stage = 0; w.t = 0; }
+        continue;
+      }
+      if (!P.alive || G.LAYOUT.isInterior(P.pos.x)) { w.t = 0; continue; }
+      const watched = t - w.seenT < 1.5 || d < w.r;
+      if (d < w.warnR && watched && w.stage === 0) { w.stage = 1; wardenWarn(w, 'warn'); }
+      if (d < w.r) {
+        w.t += dt;
+        if (w.stage < 2 && w.t > w.grace * 0.45) { w.stage = 2; wardenWarn(w, 'last'); }
+        if (w.t >= w.grace) C.provokeWarden(id, 'trespass');
+      } else {
+        w.t = Math.max(0, w.t - dt * 0.5);
+        if (d > w.warnR + 8 && w.stage > 0) {
+          if (t - w.lastWarnT < 40) { const s = wardenSpeaker(w); if (s && s.distToPlayer() < 90) s.say(C.pick(C.TRESPASS_BARKS.leave), 3); }
+          w.stage = 0;
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // The North Woods den: deathclaws sleep (wake at ~13 m or on gunfire);
+  // only one is home until the player is level 8+ or has finished MQ03.
+  // A warning set-piece (bones + a hand-painted DANGER sign) marks the ridge.
+  // ------------------------------------------------------------------
+  const DEN_ID = 'north_woods';
+  function denOpen() { return C.playerLevel() >= 8 || qDone('mq03'); }
+  function makeDormant(a, wakeR) {
+    a.denWake = wakeR || 13;
+    a.setState('dormant'); a.anim('dead');
+  }
+  C.setPieces = [];
+  function signTexture() {
+    const cv = document.createElement('canvas'); cv.width = 256; cv.height = 160;
+    const x = cv.getContext('2d');
+    x.fillStyle = '#6b5236'; x.fillRect(0, 0, 256, 160);
+    for (let i = 0; i < 14; i++) { x.fillStyle = 'rgba(40,26,14,' + (0.15 + Math.random() * 0.2) + ')'; x.fillRect(0, i * 12 + Math.random() * 4, 256, 2); }
+    x.save(); x.translate(128, 62); x.rotate(-0.04);
+    x.fillStyle = '#b21b12'; x.font = 'bold 58px Impact, "Arial Black", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText('DANGER', 0, 0);
+    x.font = 'bold 22px "Courier New", monospace'; x.fillStyle = '#e8dcc0';
+    x.fillText('DEATHCLAWS', 0, 44); x.font = 'bold 17px "Courier New", monospace'; x.fillText('TURN BACK', 0, 68);
+    x.restore();
+    // drips & grime
+    x.fillStyle = 'rgba(150,20,10,0.8)'; for (let i = 0; i < 9; i++) { const dx = 40 + Math.random() * 176; x.fillRect(dx, 80 - Math.random() * 30, 2, 8 + Math.random() * 22); }
+    x.fillStyle = 'rgba(20,14,8,0.35)'; for (let i = 0; i < 60; i++) x.fillRect(Math.random() * 256, Math.random() * 160, 2 + Math.random() * 5, 2 + Math.random() * 5);
+    const tex = new THREE.CanvasTexture(cv); if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace; else tex.encoding = THREE.sRGBEncoding;
+    return tex;
+  }
+  function buildSign(x, y, z, yaw) {
+    const grp = new THREE.Group();
+    const wood = new THREE.MeshStandardMaterial({ color: 0x4a3622, roughness: 0.95 });
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.13, 2.3, 0.13), wood); post.position.y = 1.15; post.rotation.z = 0.05; grp.add(post);
+    const board = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.06, 0.05), [wood, wood, wood, wood, new THREE.MeshStandardMaterial({ map: signTexture(), roughness: 0.9 }), wood]);
+    board.position.set(0, 1.8, 0.08); board.rotation.z = -0.07; grp.add(board);
+    // a claw-raked corner: three dark gouges
+    const gouge = new THREE.MeshBasicMaterial({ color: 0x140c06 });
+    for (let i = 0; i < 3; i++) { const g = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.5, 0.012), gouge); g.position.set(0.48 + i * 0.1, 1.72, 0.112); g.rotation.z = 0.5; grp.add(g); }
+    grp.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    grp.position.set(x, y, z); grp.rotation.y = yaw;
+    G.scene.add(grp);
+    const col = G.world.addCollider(x, z, 0.25, 0.25, y, y + 2, yaw, { tag: 'prop' });
+    return { object3d: grp, remove() { if (grp.parent) grp.parent.remove(grp); G.world.removeCollider(col); grp.traverse((o) => { if (o.geometry) o.geometry.dispose(); }); } };
+  }
+  function spawnDenWarning() {
+    const loc = G.LAYOUT.LOCATIONS.find((l) => l.id === DEN_ID);
+    if (!loc) return;
+    // on the side facing the vault / the park, just outside the woods
+    const VE = G.LAYOUT.vaultExit || { x: -65, z: -708 };
+    const vx = VE.x, vz = VE.z;
+    const base = Math.atan2(vx - loc.x, vz - loc.z);
+    let spot = null;
+    for (let k = 0; k < 40 && !spot; k++) {
+      const ang = base + (k % 2 ? 1 : -1) * Math.floor((k + 1) / 2) * 0.12;
+      const rr = loc.r + 8 + (k > 20 ? 8 : 0);
+      const x = loc.x + Math.sin(ang) * rr, z = loc.z + Math.cos(ang) * rr;
+      const y = C.freeSpot(x, z, 1.2, 0, false);
+      if (y !== null && y > G.world.waterLevel + 0.3) spot = { x, y, z, ang };
+    }
+    if (!spot) return;
+    const faceOut = spot.ang;  // the sign reads toward whoever approaches from the vault side
+    try { C.setPieces.push(buildSign(spot.x, spot.y, spot.z, faceOut)); } catch (e) { G.reportError('combat:denSign', e); }
+    if (!G.isStub('props') && typeof G.props.spawn === 'function') {
+      const poses = ['reaching', 'curled', 'lying'];
+      for (let i = 0; i < 3; i++) {
+        const a = spot.ang + Math.PI + (i - 1) * 0.35, r = 3 + i * 1.6;
+        const x = spot.x + Math.sin(a) * r, z = spot.z + Math.cos(a) * r;
+        const y = C.freeSpot(x, z, 0.6, spot.y, false); if (y === null) continue;
+        try { const h = G.props.spawn('skeleton', { x, y, z, yaw: Math.random() * 6.28, pose: poses[i], persistent: false }); if (h) C.setPieces.push(h); } catch (e) { /* ignore */ }
+      }
+    }
+  }
+  function clearSetPieces() { for (const h of C.setPieces) { try { if (h && h.remove) h.remove(); } catch (e) { /* ignore */ } } C.setPieces = []; }
+  /** Pick a spawn point for member i of a location group. */
+  function locationSpawnPoint(loc, i, type, used) {
+    const td = C.typeDef(type);
+    const site = C.siteFor(loc);
+    const names = td.boss ? ['boss', 'spawn' + (i + 1)] : ['spawn' + (i + 1)];
+    for (const n of names) {
+      if (used.has(n)) continue;
+      const a = anchor(site, n);
+      if (a) { used.add(n); return { x: a.x + (Math.random() - 0.5) * 0.6, y: a.y || 0, z: a.z + (Math.random() - 0.5) * 0.6 }; }
+    }
+    const r = td.radius || 0.4;
+    // Elevated sites (the Brooklyn Bridge deck): sample the deck itself
+    const S = G.LAYOUT.getSite(site);
+    if (S && S.deckY) {
+      for (let k = 0; k < 30; k++) {
+        const x = S.x0 + Math.random() * (S.x1 - S.x0), z = S.z0 + Math.random() * (S.z1 - S.z0);
+        const y = C.freeSpot(x, z, r, S.deckY, true);
+        if (y !== null && y > S.deckY - 2) return { x, y, z };
+      }
+    }
+    for (let k = 0; k < 40; k++) {
+      const ang = Math.random() * Math.PI * 2;
+      const rr = loc.r * (0.2 + Math.random() * 0.75) + (k > 20 ? 10 : 0);
+      const x = loc.x + Math.sin(ang) * rr, z = loc.z + Math.cos(ang) * rr;
+      if (td.amphibious && k < 25 && !nearWater(x, z, 18)) continue;
+      const y = C.freeSpot(x, z, r, 0, false);
+      if (y === null) continue;
+      if (Math.abs(y) > 2.5 && k < 30) continue; // stay near street level unless desperate
+      return { x, y, z };
+    }
+    return { x: loc.x, y: 0, z: loc.z };
+  }
+
+  // ------------------------------------------------------------------
+  // Groups
+  // ------------------------------------------------------------------
+  function makeGroup(id, kind, data) {
+    const g = { id, kind, data, actors: [], state: 'pending', clearedDay: null, restore: null };
+    const sv = C.groupSave[id];
+    if (sv && sv.cleared) {
+      g.clearedDay = sv.cleared;
+      g.state = gameDay() - sv.cleared >= RESPAWN_DAYS ? 'pending' : 'cleared';
+      // corpses of a cleared (not yet respawned) group come back as searchable bodies
+      if (g.state === 'cleared' && Array.isArray(sv.m) && sv.m.length) g.restore = sv.m;
+    } else if (sv && Array.isArray(sv.m) && sv.m.length) {
+      // partly fought group: the same members, the dead stay dead
+      g.restore = sv.m;
+    }
+    if (sv && sv.def) g.deferred = sv.def;
+    C.groups.set(id, g);
+    return g;
+  }
+  C.populate = function () {
+    C.groups.clear();
+    for (const loc of G.LAYOUT.LOCATIONS) {
+      if (loc.hostile && loc.spawns && loc.spawns.length) makeGroup(loc.id, 'location', loc);
+      else if (!loc.hostile && C.SETTLEMENT_POP[loc.id]) makeGroup('settle_' + loc.id, 'settlement', loc);
+    }
+    C.roam.nextT = G.time.elapsed + 25;
+    clearSetPieces();
+    try { spawnDenWarning(); } catch (e) { G.reportError('combat:denWarning', e); }
+    // Roaming encounters that were around when the game was saved
+    const rs = C.roamSave || []; C.roamSave = [];
+    C.roam.n = Math.max(C.roam.n, C.roamSaveN || 0);
+    for (const r of rs) {
+      const g = { id: r.id, kind: 'roam', actors: [], state: 'active', spawnT: G.time.elapsed };
+      for (const m of r.m || []) { try { const a = C.memberRestore(m, g.id); if (a) g.actors.push(a); } catch (e) { G.reportError('combat:restoreRoam', e); } }
+      if (g.actors.length) C.roam.groups.push(g);
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // Member snapshots (save/load of partly fought groups, corpses, roamers)
+  // ------------------------------------------------------------------
+  const r2 = (v) => Math.round(v * 100) / 100;
+  /** Compact, JSON-safe description of a population actor (enough to re-create it). */
+  C.memberSnap = function (a) {
+    const d = a.def || {};
+    const o = { t: a.type, l: a.level, f: a.faction, n: a.name, x: r2(a.pos.x), y: r2(a.pos.y - (a.hover || 0)), z: r2(a.pos.z), yaw: r2(a.yaw),
+      hp: Math.round(a.hp), mhp: a.maxHp, w: a.weaponId || 'none', ai: a.aiMode || d.ai || 'wander' };
+    if (a.char && a.char._cmbSeed !== undefined) o.s = a.char._cmbSeed;
+    if (a.char && a.char._cmbOutfit) o.o = a.char._cmbOutfit;
+    if (d.gender) o.g = d.gender;
+    if (d.ghoul) o.gh = 1;
+    if (a.voice !== a.td.voice) o.v = a.voice;
+    if (a.dr !== (a.td.dr || 0)) o.dr = a.dr;
+    if (a.accuracy !== (a.td.accuracy || 1)) o.acc = a.accuracy;
+    if (a.xp !== (a.td.xp || 10)) o.xp = a.xp;
+    if (a.isBoss) o.boss = 1;
+    if (a.holdPos) o.hold = 1;
+    if (a.sight !== (a.td.sight || 50)) o.sight = a.sight;
+    if (a.home) o.home = { x: r2(a.home.x), z: r2(a.home.z), r: a.home.r };
+    if (a.patrol) o.pat = a.patrol.map((p) => ({ x: r2(p.x), z: r2(p.z) }));
+    if (a.merchant) o.merch = a.merchant;
+    if (a.hostOverride !== undefined) o.host = a.hostOverride;
+    if (a.noRespawn) o.nr = 1;
+    if (a.roaming) o.roam = 1;
+    if (a.dead) o.dead = 1;
+    if (a.warden) o.wd = a.warden;
+    if (a.state === 'dormant' && !a.dead) o.dorm = 1;
+    if (a.denWake) o.den = a.denWake;
+    if (d.hat) { o.hat = d.hat; if (d.hatColor) o.hatc = d.hatColor; }
+    if (d.evil) o.evil = 1;
+    if (Array.isArray(a.inventory)) o.inv = a.inventory.filter((e) => Array.isArray(e) && typeof e[0] === 'string').map((e) => [e[0], e[1]]);
+    return o;
+  };
+  /** Re-create an actor from C.memberSnap output. */
+  C.memberRestore = function (m, groupId) {
+    const a = G.actors.spawn({ type: m.t, level: m.l, faction: m.f, name: m.n, voice: m.v, seed: m.s, outfit: m.o, gender: m.g, ghoul: !!m.gh,
+      pos: { x: m.x, y: m.y, z: m.z }, yaw: m.yaw || 0, ai: m.ai, holdPos: !!m.hold, weapon: m.w || 'none', home: m.home, patrol: m.pat,
+      merchant: m.merch, hp: m.mhp, noLoot: true, noRespawn: !!m.nr, _group: groupId, _roaming: !!m.roam, _dormantOk: !m.wd,
+      hat: m.hat, hatColor: m.hatc, evil: !!m.evil });
+    if (!a) return null;
+    if (m.wd) a.warden = m.wd;
+    if (m.den) a.denWake = m.den;
+    if (m.dorm && !m.dead) makeDormant(a, m.den);
+    else if (!m.dorm && a.state === 'dormant' && !m.dead) { a.setState('idle'); a.anim('idle'); }
+    a.maxHp = m.mhp || a.maxHp;
+    if (typeof m.dr === 'number') a.dr = m.dr;
+    if (typeof m.acc === 'number') a.accuracy = m.acc;
+    if (typeof m.xp === 'number') a.xp = m.xp;
+    if (typeof m.sight === 'number') a.sight = m.sight;
+    if (m.boss) a.isBoss = true;
+    if (m.host !== undefined) a.hostOverride = m.host === null ? undefined : m.host;
+    if (Array.isArray(m.inv)) a.inventory = m.inv.map((e) => [e[0], e[1]]);
+    if (m.dead) { a.hp = 0; C.killActor(a, { silent: true, restore: true }); }
+    else a.hp = C.clamp(typeof m.hp === 'number' ? m.hp : a.maxHp, 1, a.maxHp);
+    return a;
+  };
+  function restoreGroup(g) {
+    const list = g.restore; g.restore = null;
+    for (const m of list) { try { const a = C.memberRestore(m, g.id); if (a) g.actors.push(a); } catch (e) { G.reportError('combat:restore ' + g.id, e); } }
+    if (g.state === 'pending') g.state = 'active';
+    // everyone was already dead when saved: cleared quietly (locationCleared was emitted back then)
+    if (g.state === 'active' && g.kind === 'location' && g.actors.length && g.actors.every((a) => a.dead)) { g.state = 'cleared'; g.clearedDay = g.clearedDay || gameDay(); }
+  }
+
+  // characters' round-1 creatures in fixed homes (FO3-style): giant ants in the 42nd Street tunnels,
+  // radscorpions in the Navy Yard. (Central Park yao guai / scorpions come from C.ENCOUNTERS.)
+  const EXTRA_SPAWNS = { subway: ['giant_ant'], dumbo: ['radscorpion'] };
+  (function addCreatureHomes() {
+    try {
+      for (const id in EXTRA_SPAWNS) {
+        const loc = G.LAYOUT.getLocation(id);
+        if (!loc || !Array.isArray(loc.spawns) || loc._cmbExtra) continue;
+        loc._cmbExtra = true;
+        for (const t of EXTRA_SPAWNS[id]) if (C.TYPES[t]) loc.spawns.push(t);
+      }
+    } catch (e) { /* layout optional */ }
+  })();
+
+  function spawnLocationGroup(g) {
+    const loc = g.data;
+    const interior = loc.interior ? G.LAYOUT.INTERIORS[loc.interior] : null;
+    const used = new Set();
+    // Composition: listed spawns, plus extras for high-level spots; only true swarm creatures
+    // (radroach, mole rat, bloatfly) come in clusters; capped types (eyebots) never exceed their cap.
+    const list = loc.spawns.slice();
+    const extra = Math.floor((loc.level || 1) / 5);
+    const capOk = (t) => { const cap = C.typeDef(t).maxPerGroup; return !cap || list.filter((x) => x === t).length < cap; };
+    for (let i = 0; i < extra; i++) {
+      let t = C.pick(loc.spawns);
+      // a capped type (eyebots) that is already at its cap gives its slot to a regular member
+      if (!capOk(t)) t = loc.spawns.find((x) => capOk(x) && !C.typeDef(x).boss) || null;
+      if (t && !C.typeDef(t).boss) list.push(t);
+    }
+    const den = loc.id === DEN_ID;
+    g.deferred = 0;
+    if (den && !denOpen()) { g.deferred = Math.max(0, list.length - 1); list.length = Math.min(list.length, 1); }
+    const warden = C.WARDEN_ZONES[loc.id] && wardenRulesActive(loc.id) ? loc.id : null;
+    const lvlBase = scaledLevel(loc);
+    const typeCount = {};
+    let idx = 0;
+    for (const type of list) {
+      const td = C.typeDef(type);
+      const cluster = td.swarm ? C.randInt(2, 3) : 1;
+      const base = interior ? (mapAnchorSpawn(loc, idx, used) || poiAnchorSpawn(loc, idx, used) || interiorSpawnPoint(loc, interior)) : locationSpawnPoint(loc, idx, type, used);
+      if (!base) continue;
+      for (let c = 0; c < cluster; c++) {
+        if (td.maxPerGroup && (typeCount[type] || 0) >= td.maxPerGroup) break;
+        typeCount[type] = (typeCount[type] || 0) + 1;
+        const L = lvlBase !== null ? lvlBase : (loc.level || 1);
+        const lvl = Math.max(1, L + C.randInt(-1, 1));
+        const pos = c === 0 ? base : (interior ? jitterFree(base, 1.6, 0.35) : { x: base.x + (Math.random() - 0.5) * 3, y: base.y, z: base.z + (Math.random() - 0.5) * 3 });
+        const a = G.actors.spawn({ type, level: td.boss ? (lvlBase !== null ? Math.max(lvlBase, 1) : loc.level) : lvl, pos, yaw: c === 0 && typeof base.yaw === 'number' ? base.yaw : Math.random() * Math.PI * 2,
+          ai: warden ? 'guard' : 'wander',
+          faction: td.faction === 'creatures' || td.faction === 'robots' || type === 'eyebot' ? td.faction : (loc.faction || td.faction),
+          home: warden ? { x: pos.x, z: pos.z, r: 12 } : { x: interior ? pos.x : loc.x, z: interior ? pos.z : loc.z, r: interior ? 12 : Math.max(10, loc.r * 0.7) },
+          _group: g.id, _dormantOk: true });
+        if (a) {
+          if (warden) a.warden = warden;
+          if (den && type === 'deathclaw') makeDormant(a, 13);
+          g.actors.push(a);
+        }
+      }
+      idx++;
+    }
+    g.relevelT = now() + 10;
+    // Raider gangs with some standing get a boss: tougher, better armed, better loot
+    const gang = g.actors.filter((a) => a.type === 'raider');
+    if (gang.length >= 3 && (loc.level || 1) >= 5) {
+      const b = gang[0];
+      const ba = interior ? poiAnchor(loc, 'boss') : (anchor(C.siteFor(loc), 'boss') || anchor(C.siteFor(loc), 'toll_boss'));
+      if (ba) { b.pos.set(ba.x, G.world.groundHeight(ba.x, ba.z, (ba.y || 0) + 0.6, 0.3), ba.z); b.home = { x: ba.x, z: ba.z, r: 4 }; b.aiMode = 'guard'; }
+      b.name = 'Raider Boss'; b.maxHp = Math.round(b.maxHp * 1.7); b.hp = b.maxHp; b.dr += 10; b.accuracy = 1.25; b.xp = Math.round(b.xp * 2.5);
+      b.voice = 'raider'; b.isBoss = true;
+      const wid = C.pickWeapon('raider', (loc.level || 5) + 4); if (wid) { b.equipWeapon(wid); b.inventory.push([wid, 1]); }
+      try { if (!G.isStub('items') && G.items.rollLoot) { const r = G.items.rollLoot('raider_boss', b.level); if (Array.isArray(r)) for (const e of r) b.inventory.push([e[0], e[1]]); } } catch (e) { /* ignore */ }
+    }
+    // Rooftop / ledge snipers where the landmark provides a nest (Chrysler's gargoyle platform)
+    const sa = !interior && anchor(C.siteFor(loc), 'sniper');
+    if (sa && (loc.faction === 'raiders' || loc.faction === 'enclave' || loc.faction === 'super_mutants')) {
+      const stype = loc.faction === 'raiders' ? 'raider' : loc.spawns[0];
+      const wid = loc.faction === 'enclave' ? null : (C.FALLBACK_WEAPONS.sniper_rifle || (!G.isStub("weapons") && G.weapons.getDef("sniper_rifle")) ? "sniper_rifle" : null);
+      const s = G.actors.spawn({ type: stype, level: (lvlBase !== null ? lvlBase : (loc.level || 5)) + 1, pos: { x: sa.x, y: sa.y || 0, z: sa.z }, yaw: typeof sa.yaw === 'number' ? sa.yaw : 0,
+        ai: 'guard', holdPos: true, weapon: wid || undefined, faction: loc.faction, name: loc.faction === 'raiders' ? 'Raider Marksman' : undefined,
+        home: { x: sa.x, z: sa.z, r: 0.8 }, _group: g.id });
+      if (s) { s.sight = Math.max(s.sight || 0, 150); s.accuracy = Math.max(s.accuracy || 1, 1.5); g.actors.push(s); if (wid && s.inventory && !s.inventory.some((e) => e[0] === wid)) s.inventory.push([wid, 1]); if (warden) s.warden = warden; }
+    }
+    g.state = 'active';
+  }
+  /** Interior spawn from the map's named anchors (the subway: spawn1..spawn6). */
+  function mapAnchorSpawn(loc, idx, used) {
+    if (G.isStub('map') || typeof G.map.getAnchor !== 'function') return null;
+    const area = loc.interior;
+    for (let k = 0; k < 6; k++) {
+      const n = 'spawn' + (((idx + k) % 6) + 1);
+      if (used.has(n)) continue;
+      let v = null; try { v = G.map.getAnchor(area, n); } catch (e) { v = null; }
+      if (v && typeof v.x === 'number') { used.add(n); return { x: v.x, y: v.y || 0, z: v.z }; }
+    }
+    return null;
+  }
+  /**
+   * POI interiors (CONTRACT: every POI / landmark_interiors cell publishes spawn1..spawn6 and often `boss`
+   * through the shared `G.pois.getAnchor(idOrInteriorKey, name)`). Looked up by interior key, then by location
+   * id. Once every authored spot is taken, extra members share a random one (validated jitter), never the void.
+   */
+  function poiAnchor(loc, name) {
+    if (!G.pois || G.pois.__stub || typeof G.pois.getAnchor !== 'function') return null;
+    for (const key of [loc.interior, loc.id, C.siteFor(loc)]) {
+      if (!key) continue;
+      let v = null; try { v = G.pois.getAnchor(key, name); } catch (e) { v = null; }
+      if (v && isFinite(v.x) && isFinite(v.z)) {
+        const y0 = isFinite(v.y) ? v.y : 0;
+        const y = G.world.groundHeight(v.x, v.z, y0 + 0.6, 0.3);
+        return { x: v.x, y: isFinite(y) && Math.abs(y - y0) < 1.5 ? y : y0, z: v.z, yaw: v.yaw };
+      }
+    }
+    return null;
+  }
+  function poiAnchorSpawn(loc, idx, used) {
+    const found = [];
+    for (let k = 1; k <= 12; k++) {
+      const n = 'spawn' + k;
+      const v = poiAnchor(loc, n);
+      if (!v) { if (k > 6) break; continue; }
+      found.push([n, v]);
+    }
+    if (!found.length) return null;
+    for (let k = 0; k < found.length; k++) {
+      const e = found[(idx + k) % found.length];
+      if (!used.has('poi:' + e[0])) { used.add('poi:' + e[0]); return e[1]; }
+    }
+    return jitterFree(C.pick(found)[1], 2.2, 0.4);
+  }
+  /** A free standing spot within r of p on the same floor (falls back to p itself). */
+  function jitterFree(p, r, rad) {
+    for (let k = 0; k < 8; k++) {
+      const x = p.x + (Math.random() - 0.5) * 2 * r, z = p.z + (Math.random() - 0.5) * 2 * r;
+      const y = C.freeSpot(x, z, rad, p.y, true);
+      if (y === null || Math.abs(y - p.y) > 0.8) continue;
+      if (!G.world.lineOfSight(new THREE.Vector3(p.x, p.y + 1, p.z), new THREE.Vector3(x, y + 1, z))) continue;
+      return { x, y, z };
+    }
+    return { x: p.x, y: p.y, z: p.z };
+  }
+  C.poiAnchor = poiAnchor;
+  /** Interior spawn: relative to where the player arrived (door target) with LOS down the corridor. */
+  function interiorSpawnPoint(loc, interior) {
+    const P = G.player;
+    const o = interior.origin;
+    const base = Math.hypot(P.pos.x - o.x, P.pos.z - o.z) < 170 ? P.pos : o;
+    for (let k = 0; k < 50; k++) {
+      const ang = Math.random() * Math.PI * 2, rr = 14 + Math.random() * 32;
+      const x = base.x + Math.sin(ang) * rr, z = base.z + Math.cos(ang) * rr;
+      if (Math.abs(x - o.x) > 148 || Math.abs(z - o.z) > 148) continue;
+      const y = C.freeSpot(x, z, 0.4, base.y, true);
+      if (y === null || Math.abs(y - base.y) > 3) continue;
+      if (!G.world.lineOfSight(new THREE.Vector3(base.x, base.y + 1.2, base.z), new THREE.Vector3(x, y + 1.2, z)) && k < 40) continue;
+      // Must have a real floor or ceiling nearby (inside the built cell, not the void)
+      const cs = G.world.query(x - 6, z - 6, x + 6, z + 6);
+      if (!cs.length && k < 45) continue;
+      return { x, y, z };
+    }
+    return null;
+  }
+  function spawnSettlementGroup(g) {
+    const loc = g.data;
+    let spec = C.SETTLEMENT_POP[loc.id] || [];
+    // The Neon is populated in full by the quests module (47_neon_people): generics only as a fallback
+    if (C.SETTLEMENT_QUEST_OWNED[loc.id] && !G.isStub('quests')) spec = [];
+    const used = new Set();
+    let n = 0;
+    for (const s of spec) {
+      for (let i = 0; i < s.count; i++) {
+        n++;
+        let p = null;
+        for (const nm of [(s.ai === 'guard' ? 'guard' : 'npc') + (i + 1), 'settler' + n]) { if (used.has(nm)) continue; const a = anchor(loc.id, nm); if (a) { used.add(nm); p = { x: a.x, y: a.y || 0, z: a.z }; break; } }
+        if (!p) {
+          for (let k = 0; k < 30 && !p; k++) {
+            const ang = Math.random() * Math.PI * 2, rr = loc.r * (0.2 + Math.random() * 0.6);
+            const x = loc.x + Math.sin(ang) * rr, z = loc.z + Math.cos(ang) * rr;
+            const y = C.freeSpot(x, z, 0.4, 0, false);
+            if (y !== null && Math.abs(y) < 2.5) p = { x, y, z };
+          }
+        }
+        if (!p) continue;
+        const wid = s.pool ? C.pickWeapon(s.pool, loc.level || 2) : 'none';
+        const a = G.actors.spawn({ type: s.type, outfit: s.outfit, ghoul: s.ghoul, faction: s.faction || loc.faction || 'settlers', name: s.name, voice: s.voice,
+          level: Math.max(2, (loc.level || 1) + 2), pos: p, yaw: Math.random() * Math.PI * 2, ai: s.ai, weapon: wid || 'none', noRespawn: true,
+          home: { x: p.x, z: p.z, r: s.ai === 'guard' ? 1.5 : Math.max(8, loc.r * 0.5) }, _group: g.id, gender: Math.random() < 0.5 ? 'm' : 'f' });
+        if (a) g.actors.push(a);
+      }
+    }
+    g.state = 'active';
+  }
+
+  // ------------------------------------------------------------------
+  // Roaming encounters
+  // ------------------------------------------------------------------
+  C.roam = { nextT: 30, groups: [], n: 0 };
+  function roamSpawnPoint(needWater) {
+    const P = G.player;
+    for (let k = 0; k < 30; k++) {
+      const ang = Math.random() * Math.PI * 2, rr = 75 + Math.random() * 45;
+      const x = P.pos.x + Math.sin(ang) * rr, z = P.pos.z + Math.cos(ang) * rr;
+      if (!G.LAYOUT.isLand(x, z) || G.LAYOUT.isInterior(x)) continue;
+      const loc = G.LAYOUT.locationAt(x, z);
+      if (loc && !loc.hostile) continue; // never inside a friendly settlement
+      if (C.inSafeZone && C.inSafeZone(x, z, 45)) continue; // …nor at the gates of a guarded town (45_safezone)
+      if (needWater && !nearWater(x, z, 20)) continue;
+      if (!needWater && k < 20 && !G.LAYOUT.isRoad(x, z) && !G.LAYOUT.inPark(x, z)) continue;
+      const y = C.freeSpot(x, z, 0.5, 0, false);
+      if (y === null || Math.abs(y) > 1.5) continue;
+      // Prefer spots the player can't currently see
+      if (k < 22 && G.world.lineOfSight(P.eye, new THREE.Vector3(x, y + 1.2, z))) {
+        const fx = P.forward.x, fz = P.forward.z; const dx = x - P.pos.x, dz = z - P.pos.z;
+        if ((dx * fx + dz * fz) / rr > 0.3) continue;
+      }
+      return { x, y, z };
+    }
+    return null;
+  }
+  const CARAVAN_STOCK = [['stimpak', 4], ['radaway', 2], ['rad_x', 2], ['purified_water', 5], ['nuka_cola', 4], ['ammo_10mm', 80], ['ammo_308', 20], ['ammo_12ga', 24],
+    ['ammo_556', 60], ['ammo_energy_cell', 40], ['frag_grenade', 3], ['leather_armor', 1], ['pistol_10mm', 1], ['hunting_rifle', 1], ['bobby_pin', 6], ['cram', 3], ['pork_n_beans', 3]];
+  function spawnRoamGroup() {
+    const P = G.player;
+    // Guarded towns (The Neon): no roaming encounters while the player is inside or at the gates
+    if (C.inSafeZone && C.inSafeZone(P.pos.x, P.pos.z, 70)) return;
+    const district = G.LAYOUT.districtAt(P.pos.x, P.pos.z);
+    const table = C.ENCOUNTERS[district];
+    if (!table) return;
+    const pl = C.playerLevel();
+    const choices = table.filter((e) => !e[1].minLevel || pl >= e[1].minLevel).map((e) => [e[1], e[0]]);
+    if (!choices.length) return;
+    const spec = C.weighted(choices);
+    const water = !!(spec.types && spec.types.some((t) => C.typeDef(t[0]).amphibious));
+    const p = roamSpawnPoint(water);
+    if (!p) return;
+    const id = 'roam_' + (++C.roam.n);
+    const g = { id, kind: 'roam', actors: [], state: 'active', spawnT: G.time.elapsed };
+    const lvl = () => C.clamp(pl + C.randInt(-1, 2), 1, 30);
+    const jitter = () => ({ x: p.x + (Math.random() - 0.5) * 5, y: p.y, z: p.z + (Math.random() - 0.5) * 5 });
+    // Wander toward the player's neighbourhood
+    const home = { x: (p.x + P.pos.x) / 2, z: (p.z + P.pos.z) / 2, r: 30 };
+    const patrolPts = [{ x: p.x, z: p.z }, { x: P.pos.x + (Math.random() - 0.5) * 40, z: P.pos.z + (Math.random() - 0.5) * 40 }, { x: 2 * P.pos.x - p.x, z: 2 * P.pos.z - p.z }];
+    // roamers never plan a route through a guarded town (they still get shot if they chase you in)
+    if (C.clampOutOfSafe) { for (const q of patrolPts) C.clampOutOfSafe(q, 12); C.clampOutOfSafe(home, 12); }
+    if (spec.patrol === 'bos') {
+      const n = C.randInt(2, 3);
+      for (let i = 0; i < n; i++) {
+        const a = G.actors.spawn({ type: 'brotherhood_paladin', faction: 'brotherhood', name: i === 0 ? 'Brotherhood Paladin' : 'Brotherhood Knight', voice: 'brotherhood', level: Math.max(6, lvl()),
+          pos: jitter(), ai: 'patrol', patrol: patrolPts, weapon: C.pickWeapon('brotherhood_paladin', 8), _group: id, _roaming: true, noRespawn: true });
+        if (a) g.actors.push(a);
+      }
+    } else if (spec.caravan) {
+      const stock = CARAVAN_STOCK.filter((s) => G.isStub('items') || typeof G.items.get !== 'function' || G.items.get(s[0]));
+      const m = G.actors.spawn({ type: 'human', outfit: 'merchant', faction: 'settlers', name: 'Caravan Trader', voice: 'merchant', level: 5, pos: jitter(), ai: 'patrol', patrol: patrolPts,
+        weapon: 'pistol_10mm', merchant: { caps: 350 + C.randInt(0, 300), stock, restock: 3 }, _group: id, _roaming: true, noRespawn: true });
+      if (m) g.actors.push(m);
+      for (let i = 0; i < 2; i++) {
+        const a = G.actors.spawn({ type: 'human', outfit: 'combat_armor', faction: 'settlers', name: 'Caravan Guard', voice: 'guard', level: 6, pos: jitter(), ai: 'patrol', patrol: patrolPts,
+          weapon: C.pickWeapon('merchant_guard', 6), _group: id, _roaming: true, noRespawn: true });
+        if (a) g.actors.push(a);
+      }
+      if (Math.random() < 0.5) { const d = G.actors.spawn({ type: 'dog', faction: 'settlers', name: 'Caravan Dog', level: 4, pos: jitter(), ai: 'patrol', patrol: patrolPts, _group: id, _roaming: true, noRespawn: true }); if (d) g.actors.push(d); }
+    } else {
+      for (const [type, count] of spec.types) {
+        const td = C.typeDef(type);
+        const n = td.small ? C.randInt(Math.max(2, count - 2), count) : C.randInt(Math.max(1, count - 1), count);
+        for (let i = 0; i < n; i++) {
+          const a = G.actors.spawn({ type, level: lvl(), pos: jitter(), yaw: Math.random() * 6.28, ai: td.human ? 'patrol' : 'wander', patrol: patrolPts, home,
+            name: type === 'mister_handy' ? 'Mister Gutsy' : undefined, _group: id, _roaming: true, noRespawn: true });
+          if (a) g.actors.push(a);
+        }
+      }
+    }
+    if (g.actors.length) C.roam.groups.push(g);
+  }
+  // ------------------------------------------------------------------
+  // World reactions: karma hit squads, a grateful stranger, faction patrols
+  // (rate-limited to about one per two game-days)
+  // ------------------------------------------------------------------
+  C.roam.lastSpecialDay = -99;
+  function ensureNote(id) {
+    if (G.isStub('items') || typeof G.items.get !== 'function') return false;
+    try {
+      if (G.items.get(id)) return true;
+      const n = C.NOTES[id]; if (!n || typeof G.items.define !== 'function') return false;
+      G.items.define({ id, name: n.name, type: 'note', title: n.title, text: n.text, weight: 0, value: n.value || 0, desc: n.title });
+      return !!G.items.get(id);
+    } catch (e) { return false; }
+  }
+  /** Define the hit-squad notes up front (a saved game may carry them). */
+  C.defineNotes = function () { for (const id in C.NOTES) ensureNote(id); };
+  function karma() { try { return !G.isStub('rpg') && typeof G.rpg.karma === 'number' ? G.rpg.karma : 0; } catch (e) { return 0; } }
+  /** Which faction the player sided with in MQ04 ('bos' | 'enclave' | null). */
+  function sidedWith() { const f = qFlag('mq_faction'); return f === 'bos' || f === 'enclave' ? f : null; }
+  function specialChoices() {
+    const pl = C.playerLevel(), k = karma(), out = [];
+    if (pl >= 4 && k >= 750) { out.push(['merc', 3]); out.push(['gift', 1.2]); }
+    else if (pl >= 3 && k >= 250) out.push(['gift', 0.6]);
+    if (pl >= 4 && k <= -750) out.push(['marshal', 3]);
+    if (sidedWith() && qDone('mq04')) out.push(['faction', 2.5]);
+    return out;
+  }
+  function spawnSquad(kind, p, id, g, patrolPts) {
+    const S = C.KARMA_SQUADS[kind], P = G.player, pl = C.playerLevel();
+    const n = C.randInt(S.count[0], S.count[1]);
+    const hasNote = ensureNote(S.note);
+    for (let i = 0; i < n; i++) {
+      const lead = i === 0;
+      const lvl = Math.max(4, pl + S.levelBonus + (lead ? 1 : C.randInt(-1, 0)));
+      const pos = { x: p.x + (Math.random() - 0.5) * 5, y: p.y, z: p.z + (Math.random() - 0.5) * 5 };
+      const inv = lead ? [['caps', C.randInt(40, 120)], ['stimpak', 1]].concat(hasNote ? [[S.note, 1]] : []) : [['caps', C.randInt(5, 30)]];
+      const a = G.actors.spawn({ type: 'human', outfit: S.outfit, hat: S.hat, hatColor: S.hat ? 0x3a2a1a : undefined, faction: S.faction, voice: S.voice,
+        name: lead ? S.leader : S.member, level: lvl, pos, yaw: Math.atan2(-(P.pos.x - p.x), -(P.pos.z - p.z)), ai: 'patrol', patrol: patrolPts,
+        weapon: C.pickWeapon(S.pool, lvl + (lead ? 2 : 0)), inventory: inv, evil: !!S.evil, xp: lead ? 45 : 30, hp: Math.round(60 + lvl * 9),
+        _group: id, _roaming: true, noRespawn: true, gender: Math.random() < 0.7 ? 'm' : 'f' });
+      if (a) { a.accuracy = lead ? 1.2 : 1.05; a.dr = 18; g.actors.push(a); }
+    }
+    g.hunt = true;
+  }
+  function spawnGiftGiver(p, id, g, patrolPts) {
+    const gift = C.pick(C.GIFTS).filter((e) => e[0] === 'caps' || G.isStub('items') || typeof G.items.get !== 'function' || G.items.get(e[0]));
+    const a = G.actors.spawn({ type: 'human', outfit: C.pick(['settler', 'wastelander', 'merchant']), faction: 'settlers', name: 'Grateful Stranger', voice: 'gift',
+      level: 3, pos: p, ai: 'patrol', patrol: patrolPts, weapon: 'none', hostile: false, _group: id, _roaming: true, noRespawn: true, gender: Math.random() < 0.5 ? 'm' : 'f' });
+    if (!a) return;
+    a.giftItems = gift.length ? gift : [['caps', 60]];
+    a.onTalk = (who) => deliverGift(who);
+    g.actors.push(a); g.hunt = true; g.gift = true;
+  }
+  function deliverGift(a) {
+    if (!a || a.dead || a.giftDone) { if (a && !a.dead) a.say('Take care of yourself out there, friend.', 3); return; }
+    a.giftDone = true;
+    a.faceTowards(G.player.pos.x, G.player.pos.z);
+    a.say(C.bark('gift', 'greet'), 5);
+    const names = [];
+    for (const [id, n] of a.giftItems) {
+      try {
+        if (id === 'caps' && !G.isStub('inventory') && G.inventory.addCaps) G.inventory.addCaps(n);
+        else if (!G.isStub('inventory')) G.inventory.add(id, n);
+        let nm = id; try { const d = G.items.get(id); if (d && d.name) nm = d.name; } catch (e) { /* ignore */ }
+        names.push((n > 1 ? n + ' ' : '') + (id === 'caps' ? 'Bottle Caps' : nm));
+      } catch (e) { /* ignore */ }
+    }
+    if (names.length) G.notify('Received: ' + names.join(', '));
+    C.sfx('pickup');
+    // wander off afterwards
+    a.patrol = [{ x: a.pos.x + (Math.random() - 0.5) * 120, z: a.pos.z + (Math.random() - 0.5) * 120 }]; a.patrolIdx = 0;
+  }
+  function spawnFactionPatrol(p, id, g, patrolPts) {
+    const side = sidedWith(), P = G.player, pl = C.playerLevel();
+    const allyType = side === 'bos' ? 'brotherhood_paladin' : 'enclave_soldier';
+    const n = C.randInt(2, 3);
+    for (let i = 0; i < n; i++) {
+      const lvl = Math.max(6, pl + C.randInt(-1, 1));
+      const a = G.actors.spawn({ type: allyType, faction: side === 'bos' ? 'brotherhood' : 'enclave', voice: side === 'bos' ? 'brotherhood' : 'enclave',
+        name: side === 'bos' ? (i === 0 ? 'Brotherhood Paladin' : 'Brotherhood Knight') : (i === 0 ? 'Enclave Sergeant' : 'Enclave Soldier'),
+        level: lvl, pos: { x: p.x + (Math.random() - 0.5) * 5, y: p.y, z: p.z + (Math.random() - 0.5) * 5 }, ai: 'patrol', patrol: patrolPts,
+        hostile: false, _group: id, _roaming: true, noRespawn: true });
+      if (a) { a.alliedPatrol = side; g.actors.push(a); }
+    }
+    // …and more often than not, the other side shows up too
+    if (Math.random() < 0.6) {
+      const foeType = side === 'bos' ? 'enclave_soldier' : 'brotherhood_paladin';
+      const ang = Math.random() * 6.283;
+      const fx = p.x + Math.sin(ang) * 35, fz = p.z + Math.cos(ang) * 35;
+      const fy = C.freeSpot(fx, fz, 0.5, 0, false);
+      if (fy !== null && Math.abs(fy) < 1.5) {
+        const m = C.randInt(1, 2);
+        for (let i = 0; i < m; i++) {
+          const a = G.actors.spawn({ type: foeType, level: Math.max(5, pl + C.randInt(-2, 0)), pos: { x: fx + (Math.random() - 0.5) * 4, y: fy, z: fz + (Math.random() - 0.5) * 4 },
+            ai: 'patrol', patrol: [{ x: p.x, z: p.z }, { x: P.pos.x, z: P.pos.z }], _group: id, _roaming: true, noRespawn: true });
+          if (a) g.actors.push(a);
+        }
+        if (foeType === 'enclave_soldier' && Math.random() < 0.5) {
+          const e = G.actors.spawn({ type: 'eyebot', level: Math.max(4, pl - 2), pos: { x: fx, y: fy, z: fz }, ai: 'patrol', patrol: [{ x: p.x, z: p.z }], _group: id, _roaming: true, noRespawn: true });
+          if (e) g.actors.push(e);
+        }
+      }
+    }
+    g.factionSide = side;
+  }
+  function trySpecialEncounter() {
+    const day = gameDay();
+    if (day - (C.roam.lastSpecialDay === undefined ? -99 : C.roam.lastSpecialDay) < 2) return false;
+    const ch = specialChoices();
+    if (!ch.length || Math.random() < 0.4) return false;
+    const kind = C.weighted(ch);
+    const p = roamSpawnPoint(false);
+    if (!p) return false;
+    const P = G.player;
+    const id = 'roam_' + (++C.roam.n);
+    const g = { id, kind: 'roam', actors: [], state: 'active', spawnT: G.time.elapsed, special: kind };
+    const pts = [{ x: P.pos.x + (Math.random() - 0.5) * 10, z: P.pos.z + (Math.random() - 0.5) * 10 }, { x: p.x, z: p.z }];
+    if (kind === 'merc' || kind === 'marshal') spawnSquad(kind, p, id, g, pts);
+    else if (kind === 'gift') spawnGiftGiver(p, id, g, pts);
+    else spawnFactionPatrol(p, id, g, [{ x: p.x, z: p.z }, { x: P.pos.x + (Math.random() - 0.5) * 40, z: P.pos.z + (Math.random() - 0.5) * 40 }, { x: 2 * P.pos.x - p.x, z: 2 * P.pos.z - p.z }]);
+    if (!g.actors.length) return false;
+    C.roam.groups.push(g);
+    C.roam.lastSpecialDay = day;
+    return true;
+  }
+  /** Debug / quests: force a world-reaction encounter now ('merc' | 'marshal' | 'gift' | 'faction'). Returns its actors. */
+  G.combat.spawnSpecialEncounter = function (kind) {
+    const p = roamSpawnPoint(false); if (!p) return [];
+    const P = G.player, id = 'roam_' + (++C.roam.n);
+    const g = { id, kind: 'roam', actors: [], state: 'active', spawnT: G.time.elapsed, special: kind };
+    const pts = [{ x: P.pos.x, z: P.pos.z }, { x: p.x, z: p.z }];
+    if (kind === 'merc' || kind === 'marshal') spawnSquad(kind, p, id, g, pts);
+    else if (kind === 'gift') spawnGiftGiver(p, id, g, pts);
+    else if (sidedWith()) spawnFactionPatrol(p, id, g, pts);
+    if (g.actors.length) { C.roam.groups.push(g); C.roam.lastSpecialDay = gameDay(); }
+    return g.actors.slice();
+  };
+  /** Hunters (hit squads, the gift-giver) keep homing in on the player until they meet. */
+  function updateHunters(g) {
+    if (!g.hunt) return;
+    const P = G.player, t = G.time.elapsed;
+    if (g._huntT && t < g._huntT) return;
+    g._huntT = t + 6;
+    for (const a of g.actors) {
+      if (a.dead || a.inCombat || a.state === 'flee' || (g.gift && a.giftDone)) continue;
+      if (g.gift) {
+        const d = a.distToPlayer();
+        if (d < 4 && a.seesPlayer !== false && P.alive && G.state === 'play') { deliverGift(a); continue; }
+        if (d < 30 && !a._hailed) { a._hailed = true; a.say(C.pick(['Hey! You there — wait up!', 'Excuse me! Hold on a second!', 'Hello! You! Please, wait!']), 3); }
+      }
+      a.patrol = [{ x: P.pos.x + (Math.random() - 0.5) * (g.gift ? 2 : 8), z: P.pos.z + (Math.random() - 0.5) * (g.gift ? 2 : 8) }];
+      a.patrolIdx = 0;
+    }
+    if (g.gift) g._huntT = t + 1;   // the stranger checks more often (hand-over distance)
+  }
+
+  function updateRoaming() {
+    const P = G.player;
+    // Despawn far-away roamers
+    for (let i = C.roam.groups.length - 1; i >= 0; i--) {
+      const g = C.roam.groups[i];
+      g.actors = g.actors.filter((a) => !a.removed);
+      const alive = g.actors.filter((a) => !a.dead);
+      const far = g.actors.every((a) => a.distToPlayer() > DESPAWN_ROAM_R || G.LAYOUT.isInterior(a.pos.x) !== G.LAYOUT.isInterior(P.pos.x));
+      const stale = !alive.length && G.time.elapsed - (g.deadT || (g.deadT = G.time.elapsed)) > 600;
+      if (!g.actors.length || far || stale) {
+        if (!g.actors.some((a) => a.following === 'player')) { for (const a of g.actors) G.actors.remove(a); C.roam.groups.splice(i, 1); }
+        continue;
+      }
+      try { updateHunters(g); } catch (e) { G.reportError('combat:hunters', e); }
+    }
+    if (G.LAYOUT.isInterior(P.pos.x) || !P.alive) return;
+    if (G.time.elapsed < C.roam.nextT) return;
+    C.roam.nextT = G.time.elapsed + 35 + Math.random() * 45;
+    const liveGroups = C.roam.groups.filter((g) => g.actors.some((a) => !a.dead)).length;
+    if (liveGroups >= 3) return;
+    // Fewer encounters while fighting
+    if (C.anyCombat) return;
+    if (trySpecialEncounter()) return;
+    spawnRoamGroup();
+  }
+
+  /** Active location upkeep: re-level scaled sites while the player is away; wake up the den. */
+  function upkeepGroup(g, loc, d) {
+    const t = now();
+    if (d < 110 || (g.relevelT && t < g.relevelT)) return;
+    g.relevelT = t + 8;
+    if (g.actors.some((a) => !a.dead && a.inCombat)) return;
+    const L = scaledLevel(loc);
+    if (L !== null) for (const a of g.actors) if (!a.dead && !a.removed && Math.abs(a.level - L) >= 2) C.relevelActor(a, L + (a.holdPos ? 1 : 0));
+    // North Woods: the rest of the pack comes home once the player can deal with it
+    if (loc.id === DEN_ID && g.deferred > 0 && denOpen() && d > 150) {
+      const home = g.actors.find((a) => !a.dead) || null;
+      const cx = home ? home.pos.x : loc.x, cz = home ? home.pos.z : loc.z;
+      for (let i = 0; i < g.deferred; i++) {
+        let p = null;
+        for (let k = 0; k < 20 && !p; k++) { const ang = Math.random() * 6.283, rr = 3 + Math.random() * 8; const x = cx + Math.sin(ang) * rr, z = cz + Math.cos(ang) * rr; const y = C.freeSpot(x, z, 0.7, home ? home.pos.y : 0, false); if (y !== null) p = { x, y, z }; }
+        if (!p) continue;
+        const a = G.actors.spawn({ type: 'deathclaw', level: Math.max(1, (loc.level || 12) + C.randInt(-1, 1)), pos: p, yaw: Math.random() * 6.28, ai: 'wander',
+          faction: 'creatures', home: { x: loc.x, z: loc.z, r: Math.max(10, loc.r * 0.7) }, _group: g.id });
+        if (a) { makeDormant(a, 13); g.actors.push(a); }
+      }
+      g.deferred = 0;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Group streaming / clearing / respawn (runs ~1×/s)
+  // ------------------------------------------------------------------
+  let popT = 0;
+  C.updatePopulation = function (dt) {
+    try { updateWardens(dt); } catch (e) { G.reportError('combat:wardens', e); }
+    popT -= dt; if (popT > 0) return; popT = 1.0;
+    const P = G.player;
+    const inInt = G.LAYOUT.isInterior(P.pos.x);
+    let spawnBest = null, spawnD = 1e9; // spawn at most one group per tick (nearest first) to avoid hitches
+    for (const g of C.groups.values()) {
+      const loc = g.data;
+      let lx = loc.x, lz = loc.z;
+      if (loc.interior) { const it = G.LAYOUT.INTERIORS[loc.interior]; if (it) { lx = it.origin.x; lz = it.origin.z; } }
+      const d = Math.hypot(P.pos.x - lx, P.pos.z - lz);
+      if (g.state === 'pending') {
+        const near = loc.interior ? (inInt && d < 160) : (!inInt && d < SPAWN_R);
+        if (near && d < spawnD) { spawnD = d; spawnBest = g; }
+      } else if (g.state === 'active' && g.kind === 'location') {
+        g.actors = g.actors.filter((a) => !a.removed);
+        if (g.actors.length && g.actors.every((a) => a.dead)) { g.state = 'cleared'; g.clearedDay = gameDay(); G.events.emit('locationCleared', loc); }
+        else upkeepGroup(g, loc, d);
+      } else if (g.state === 'cleared' && g.kind === 'location') {
+        if (gameDay() - g.clearedDay >= RESPAWN_DAYS && d > 300) {
+          for (const a of g.actors) G.actors.remove(a);
+          g.actors = []; g.state = 'pending'; g.clearedDay = null; g.restore = null; g.deferred = 0;
+        } else if (g.restore) {
+          const near = loc.interior ? (inInt && d < 160) : (!inInt && d < SPAWN_R);
+          if (near && d < spawnD) { spawnD = d; spawnBest = g; }
+        }
+      }
+    }
+    if (spawnBest) {
+      const g = spawnBest;
+      try {
+        if (g.restore) restoreGroup(g);
+        else if (g.kind === 'location') spawnLocationGroup(g);
+        else spawnSettlementGroup(g);
+      } catch (e) { G.reportError('combat:populate ' + g.id, e); if (g.state === 'pending') g.state = 'active'; }
+      popT = 0.25; // keep streaming the rest quickly
+    }
+    updateRoaming();
+  };
+  C.clearPopulation = function () {
+    C.groups.clear(); C.roam.groups = []; C.roam.n = 0; C.roam.lastSpecialDay = -99;
+    C.wardens.clear(); clearSetPieces();
+    if (C.navReset) C.navReset();
+  };
+
+  /** Public helpers for quests/UI. */
+  G.combat.isLocationCleared = (id) => { const g = C.groups.get(id); return !!g && g.state === 'cleared'; };
+  G.combat.locationActors = (id) => { const g = C.groups.get(id); return g ? g.actors.slice() : []; };
+  /** Force-spawn a roaming encounter now (debug / quests). */
+  G.combat.spawnEncounter = () => spawnRoamGroup();
+
+  // ------------------------------------------------------------------
+  // Save / load
+  // ------------------------------------------------------------------
+  G.save.register('combat', {
+    save() {
+      const groups = {};
+      const snaps = (g) => g.actors.filter((a) => !a.removed && !a.stableId && !a.disintegrated).map(C.memberSnap);
+      for (const g of C.groups.values()) {
+        const e = {};
+        if (g.state === 'cleared') e.cleared = g.clearedDay;
+        if (g.restore) e.m = g.restore;                    // not re-created yet since the last load
+        else if (g.state !== 'pending' && g.actors.length) {
+          // everyone (living and dead) so a partly fought group comes back exactly as it was
+          e.m = snaps(g);
+          // a fully disintegrated / removed group that was being fought still counts as touched
+          if (!e.m.length && g.state === 'active') e.m = undefined;
+        }
+        if (g.deferred && g.state !== 'cleared') e.def = g.deferred;
+        if (e.cleared !== undefined || (e.m && e.m.length)) groups[g.id] = e;
+      }
+      // Roaming encounters with someone still alive (or fresh corpses) near the player
+      const roam = [];
+      for (const g of C.roam.groups) {
+        if (!g.actors.some((a) => !a.removed && (!a.dead || G.time.elapsed - a.deathT < 300))) continue;
+        const m = snaps(g); if (m.length) roam.push({ id: g.id, m });
+      }
+      const named = {};
+      for (const a of C.list) if (a.stableId) named[a.id] = C.actorSaveState(a);
+      for (const [id, s] of C.pendingState) if (!named[id]) named[id] = s;
+      return { rel: C.relOverride, groups, named, roam, roamN: C.roam.n, special: C.roam.lastSpecialDay };
+    },
+    load(d) {
+      C.relOverride = d.rel || {};
+      C.groupSave = d.groups || {};
+      C.pendingState = new Map(Object.entries(d.named || {}));
+      C.roamSave = Array.isArray(d.roam) ? d.roam : [];
+      C.roamSaveN = d.roamN || 0;
+      C.roam.lastSpecialDay = typeof d.special === 'number' ? d.special : -99;
+    },
+  });
+})();
+

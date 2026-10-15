@@ -1,0 +1,213 @@
+/* src/rpg/14_items_misc.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — RPG MODULE — MISC, JUNK, KEYS, SKILL BOOKS,
+ * BOBBLEHEADS
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const M = (d) => G.items.define(Object.assign({ type: 'misc' }, d));
+  const J = (d) => G.items.define(Object.assign({ type: 'junk', tags: ['junk'] }, d));
+  const K = (d) => G.items.define(Object.assign({ type: 'key', weight: 0, value: 0, tags: ['key'], mesh: 'key', noLoot: true }, d));
+
+  // ---------------------------------------------------------------
+  // Currency & essentials
+  // ---------------------------------------------------------------
+  M({ id: 'caps', name: 'Bottle Caps', weight: 0, value: 1, tags: ['currency'], mesh: 'caps', noLoot: true,
+    desc: 'Crimped steel bottle caps, the currency of the Wasteland since the water merchants of the West decided they were worth something. Mint condition only.' });
+  M({ id: 'bobby_pin', name: 'Bobby Pin', weight: 0, value: 1, tags: ['tool'], mesh: 'bobby_pin',
+    desc: 'A flimsy hair pin. In skilled hands, the key to every door in New York.' });
+  M({ id: 'prewar_money', name: 'Pre-War Money', weight: 0, value: 10, tags: ['valuable'], mesh: 'money',
+    desc: 'A crisp stack of U.S. dollars, worth less than the caps on the ground. Makes decent kindling and decent toilet paper.' });
+  M({ id: 'gold_bar', name: 'Gold Bar', weight: 5, value: 500, tags: ['valuable', 'rare'], mesh: 'gold_bar', lootWeight: 0.05,
+    desc: 'A Federal Reserve gold bar from the vaults under Liberty Street. Heavy, gleaming, and still — somehow — worth killing for.' });
+  M({ id: 'sunset_star_cap', name: 'Sunset Sarsaparilla Star Cap', weight: 0, value: 0, tags: ['collectible'], mesh: 'caps', lootWeight: 0.3,
+    desc: 'A bottle cap with a blue star printed on the underside. Legend says fifty of them win a prize. The legend never says what.' });
+  M({ id: 'nuka_quantum_cap', name: 'Nuka-Cola Quantum Cap', weight: 0, value: 0, tags: ['collectible'], mesh: 'caps', noLoot: true,
+    desc: 'The glowing blue cap from a bottle of Quantum. Collectors in the Neon pay good caps for these. Good, regular caps.' });
+
+  // ---------------------------------------------------------------
+  // Electronic components & valuables (repair / quests / barter)
+  // ---------------------------------------------------------------
+  J({ id: 'fission_battery', name: 'Fission Battery', weight: 1, value: 30, tags: ['junk', 'electronic'], mesh: 'battery',
+    desc: 'A sealed micro-reactor the size of a coffee can. Powered half the appliances in pre-war America. Handle with confidence, or at least gloves.' });
+  J({ id: 'sensor_module', name: 'Sensor Module', weight: 0.5, value: 40, tags: ['junk', 'electronic'], mesh: 'sensor',
+    desc: 'A RobCo motion-sensing module salvaged from a robot, a turret or a very fancy doorbell.' });
+  J({ id: 'scrap_electronics', name: 'Scrap Electronics', weight: 1, value: 25, tags: ['junk', 'electronic'], mesh: 'electronics',
+    desc: 'A tangle of circuit boards, wire and solder that once did something clever.' });
+  J({ id: 'vacuum_tube', name: 'Vacuum Tube', weight: 0.2, value: 12, tags: ['junk', 'electronic'], mesh: 'tube',
+    desc: 'A glass thermionic valve. The atomic age runs on these, and so do most of its robots.' });
+  J({ id: 'conductor', name: 'Conductor', weight: 0.2, value: 8, tags: ['junk', 'electronic'], mesh: 'conductor',
+    desc: 'A copper conductor coil. Useful for fixing radios and, reportedly, laser weapons.' });
+  J({ id: 'microscope', name: 'Microscope', weight: 3, value: 25, tags: ['junk', 'science'], mesh: 'microscope',
+    desc: 'A brass lab microscope from Columbia University. Its lenses have seen the smallest things in the world; now they see the Wasteland.' });
+  J({ id: 'pilot_light', name: 'Pilot Light', weight: 0.5, value: 6, tags: ['junk'], mesh: 'pilot_light',
+    desc: 'A gas stove igniter assembly. Every self-respecting flamer enthusiast has three.' });
+  J({ id: 'surgical_tubing', name: 'Surgical Tubing', weight: 0.2, value: 5, tags: ['junk', 'medical'], mesh: 'junk_rubber',
+    desc: 'Rubber tubing from a pre-war hospital. Stretchy. Useful. Slightly sticky.' });
+  J({ id: 'scrap_metal', name: 'Scrap Metal', weight: 1, value: 2, tags: ['junk', 'metal'], mesh: 'scrap',
+    desc: 'Twisted pieces of steel, the building blocks of every shack, wall and weapon in the city.' });
+  J({ id: 'duct_tape', name: 'Duct Tape', weight: 0.2, value: 6, tags: ['junk', 'tool'], mesh: 'tape',
+    desc: 'Holds the Wasteland together. Literally, in some settlements.' });
+  J({ id: 'wonderglue', name: 'Wonderglue', weight: 0.2, value: 8, tags: ['junk', 'tool'], mesh: 'bottle_small',
+    desc: 'A pre-war super adhesive. The tube is permanently glued to the cap, which is its own kind of endorsement.' });
+  J({ id: 'abraxo_cleaner', name: 'Abraxo Cleaner', weight: 1, value: 6, tags: ['junk', 'chemical'], mesh: 'box_abraxo',
+    desc: 'Industrial-strength powdered cleanser. "Cleans anything!" — and it wasn\'t kidding.' });
+  J({ id: 'turpentine', name: 'Turpentine', weight: 1, value: 5, tags: ['junk', 'chemical'], mesh: 'can_paint',
+    desc: 'A can of paint thinner from a Greenwich Village art studio. Flammable, pungent, and good for cleaning up mistakes.' });
+  J({ id: 'lighter', name: 'Lighter', weight: 0.2, value: 4, tags: ['junk'], mesh: 'lighter',
+    desc: 'A chrome flip-top lighter engraved "To J. — from Coney, \'76." Still sparks.' });
+
+  // ---------------------------------------------------------------
+  // Household junk
+  // ---------------------------------------------------------------
+  J({ id: 'tin_can', name: 'Tin Can', weight: 0.5, value: 0, tags: ['junk', 'household'], mesh: 'can_empty',
+    desc: 'An empty tin can. The contents are long gone. So is the label.' });
+  J({ id: 'bent_tin_can', name: 'Bent Tin Can', weight: 0.5, value: 0, tags: ['junk', 'household'], mesh: 'can_empty',
+    desc: 'A crushed tin can. Somebody really didn\'t like whatever was in it.' });
+  J({ id: 'empty_nuka_bottle', name: 'Empty Nuka-Cola Bottle', weight: 1, value: 0, tags: ['junk', 'household'], mesh: 'bottle_empty',
+    desc: 'An empty rocket-shaped Nuka-Cola bottle. Water merchants pay for these in bulk.' });
+  J({ id: 'empty_whiskey_bottle', name: 'Empty Whiskey Bottle', weight: 1, value: 0, tags: ['junk', 'household'], mesh: 'bottle_empty',
+    desc: 'The saddest thing in the Wasteland is an empty bottle of whiskey. The second saddest is you, looking at it.' });
+  J({ id: 'milk_bottle', name: 'Milk Bottle', weight: 1, value: 1, tags: ['junk', 'household'], mesh: 'bottle_milk_empty',
+    desc: 'A glass milk bottle from the milkman who used to deliver on the Upper West Side. He never finished his route.' });
+  J({ id: 'coffee_mug', name: 'Coffee Mug', weight: 1, value: 1, tags: ['junk', 'household'], mesh: 'mug',
+    desc: 'A diner mug with a chipped rim and a faded "I ♥ NY" print. The heart has lasted better than the city.' });
+  J({ id: 'plate', name: 'Plate', weight: 1, value: 1, tags: ['junk', 'household'], mesh: 'plate',
+    desc: 'A melamine dinner plate, pastel green. Unbreakable, as advertised.' });
+  J({ id: 'cooking_pan', name: 'Cooking Pan', weight: 3, value: 3, tags: ['junk', 'household'], mesh: 'pan',
+    desc: 'A cast-iron skillet. Fries eggs, blocks bullets, settles arguments.' });
+  J({ id: 'fork', name: 'Fork', weight: 0.2, value: 1, tags: ['junk', 'household'], mesh: 'fork',
+    desc: 'A stainless steel dinner fork. One of the tines is bent from something you don\'t want to know about.' });
+  J({ id: 'clipboard', name: 'Clipboard', weight: 1, value: 2, tags: ['junk', 'office'], mesh: 'clipboard',
+    desc: 'A clipboard holding a survey form: "How satisfied are you with your Vault-Tec pre-registration?"' });
+  J({ id: 'pencil', name: 'Pencil', weight: 0, value: 1, tags: ['junk', 'office'], mesh: 'junk_wood',
+    desc: 'A yellow No. 2 pencil, freshly sharpened by someone who never got to take their exam.' });
+  J({ id: 'typewriter', name: 'Typewriter', weight: 8, value: 12, tags: ['junk', 'office'], mesh: 'typewriter',
+    desc: 'A heavy office typewriter from a Madison Avenue ad agency. Its last sheet reads "Drink Nuka-Cola, the taste of the fut".' });
+  J({ id: 'ashtray', name: 'Ashtray', weight: 1, value: 1, tags: ['junk', 'household'], mesh: 'ashtray',
+    desc: 'A glass ashtray stolen from a Times Square lounge. Still holds one very old cigarette butt.' });
+  J({ id: 'cigarettes', name: 'Cigarettes', weight: 0.1, value: 5, tags: ['junk', 'valuable'], mesh: 'cig_pack',
+    desc: 'A pack of pre-war cigarettes. Nobody smokes them — the paper is dust — but everyone trades them.' });
+  J({ id: 'cigarette_carton', name: 'Carton of Cigarettes', weight: 1, value: 25, tags: ['junk', 'valuable'], mesh: 'cig_carton',
+    desc: 'Ten packs of pre-war cigarettes, wrapped in cellophane. Better than cash on the Lower East Side.' });
+  J({ id: 'toy_car', name: 'Toy Car', weight: 0.5, value: 1, tags: ['junk', 'toy'], mesh: 'toy_car',
+    desc: 'A die-cast Corvega with working wheels. More reliable than the real thing.' });
+  J({ id: 'teddy_bear', name: 'Teddy Bear', weight: 1, value: 1, tags: ['junk', 'toy'], mesh: 'teddy',
+    desc: 'A threadbare teddy bear with one button eye. It has been waiting for someone to come home for a very long time.' });
+  J({ id: 'lunchbox', name: 'Lunchbox', weight: 1, value: 4, tags: ['junk', 'toy'], mesh: 'lunchbox',
+    desc: 'A tin lunchbox with Grognak the Barbarian on the lid, mid-axe-swing. Empty, except for a note that says "love, Mom."' });
+  J({ id: 'baseball', name: 'Baseball', weight: 0.2, value: 2, tags: ['junk', 'toy'], mesh: 'ball',
+    desc: 'A scuffed baseball signed by a Bronx slugger whose name has faded into a smudge.' });
+  J({ id: 'pool_ball', name: 'Pool Ball', weight: 0.2, value: 1, tags: ['junk', 'toy'], mesh: 'ball',
+    desc: 'A solid 8-ball from a Bowery billiards hall. Bad luck, reportedly.' });
+  J({ id: 'broken_camera', name: 'Tourist Camera', weight: 1, value: 8, tags: ['junk'], mesh: 'camera',
+    desc: 'A pre-war tourist camera with the film still inside. The last roll is thirty-six photos of the Empire State Building.' });
+  J({ id: 'souvenir_statue', name: 'Souvenir Liberty Statuette', weight: 0.5, value: 6, tags: ['junk', 'souvenir'], mesh: 'statuette',
+    desc: 'A little pot-metal Statue of Liberty from a gift shop. Her torch has broken off, which feels like commentary.' });
+  J({ id: 'snow_globe_nyc', name: 'Manhattan Snow Globe', weight: 1, value: 15, tags: ['junk', 'souvenir'], mesh: 'globe', lootWeight: 0.4,
+    desc: 'A glass snow globe with a tiny Manhattan skyline inside. Shake it and the flakes fall like ash. Too soon.' });
+  J({ id: 'subway_token', name: 'Subway Token', weight: 0, value: 3, tags: ['junk', 'souvenir'], mesh: 'token',
+    desc: 'A brass transit token with a Y cut out of the middle. Good for one ride on a train that will never come.' });
+  J({ id: 'stock_certificate', name: 'Stock Certificate', weight: 0, value: 2, tags: ['junk', 'office'], mesh: 'paper',
+    desc: '1,000 shares of Nuka-Cola Corporation, purchased October 20th, 2077. A tremendous investment for about three days.' });
+  J({ id: 'prewar_book', name: 'Pre-War Book', weight: 1, value: 5, tags: ['junk', 'book'], mesh: 'book',
+    desc: 'A water-stained novel of the "tough detective, dangerous dame" variety. The last chapter is missing. It\'s always the last chapter.' });
+  J({ id: 'ruined_book', name: 'Ruined Book', weight: 1, value: 1, tags: ['junk', 'book'], mesh: 'book',
+    desc: 'A book so swollen with water that it no longer opens. The Brotherhood scribes will still take it, grumbling.' });
+  J({ id: 'holotag_bos', name: 'Brotherhood Holotag', weight: 0, value: 5, tags: ['junk', 'brotherhood'], mesh: 'tag', lootWeight: 0.3,
+    desc: 'A Brotherhood of Steel identification tag. The Order would want it returned to Rockefeller Center.' });
+  J({ id: 'deathclaw_hand', name: 'Deathclaw Hand', weight: 2, value: 80, tags: ['junk', 'trophy'], mesh: 'meat', meatColor: 0x3a2a20, lootWeight: 0.1,
+    desc: 'A severed deathclaw hand with talons as long as kitchen knives. Traders in the Neon pay well; tinkerers pay better.' });
+  // Lawbringer / Contract Killer proof-of-kill (dropped on corpses by 60_containers.js)
+  M({ id: 'bounty_finger', name: 'Finger', weight: 0, value: 12, tags: ['bounty'], mesh: 'finger', noLoot: true,
+    desc: 'A severed finger, proof that one more villain won\'t trouble New York again. Traders who post bounties pay for these. Try not to think about it.' });
+  M({ id: 'bounty_ear', name: 'Ear', weight: 0, value: 12, tags: ['bounty'], mesh: 'ear', noLoot: true,
+    desc: 'A severed ear from someone who was, by most accounts, a decent person. Certain buyers downtown pay well and ask nothing.' });
+  J({ id: 'raider_tags', name: 'Raider Tags', weight: 0, value: 2, tags: ['junk', 'raider'], mesh: 'tag',
+    desc: 'Scratched dog tags looted from a dead soldier, then looted again from a dead raider. The circle of life.' });
+
+  // ---------------------------------------------------------------
+  // SKILL BOOKS — read to permanently raise a skill (+1, +2 with Comprehension)
+  // ---------------------------------------------------------------
+  const BOOKS = [
+    ['book_tumblers_today', 'Tumblers Today', 'lockpick', 'A locksmith trade magazine with a centerfold of a Yale deadbolt that is frankly erotic to the right reader.'],
+    ['book_guns_and_bullets', 'Guns and Bullets', 'guns', 'A pre-war firearms magazine. This issue: "Ten Rounds That Changed America" and a coupon for a free rifle scope.'],
+    ['book_nikola_tesla', 'Nikola Tesla and You', 'energy_weapons', 'A hardbound primer on directed-energy science with a foreword by a man who wore his own lightning rod.'],
+    ['book_duck_and_cover', 'Duck and Cover!', 'explosives', 'A civil-defense pamphlet teaching children to hide under their desks. Also, accidentally, how to build the things they\'re hiding from.'],
+    ['book_grognak', 'Grognak the Barbarian', 'melee_weapons', 'A pulp comic of axe-swinging heroics. Issue #14: "Grognak versus the Ice Witches of the North Pole."'],
+    ['book_pugilism', 'Pugilism Illustrated', 'unarmed', 'Boxing techniques illustrated by photos of a very determined man punching a very surprised man.'],
+    ['book_big_book_science', 'Big Book of Science', 'science', 'Eleven hundred pages of pre-war science, from atoms to zeppelins. Doubles as a doorstop and a weapon.'],
+    ['book_journal_medicine', 'Manhattan Journal of Internal Medicine', 'medicine', 'A peer-reviewed medical journal from Bellevue Hospital. Chapter 4 cures everything; chapter 5 retracts chapter 4.'],
+    ['book_deans_electronics', "Dean's Electronics", 'repair', 'A hands-on repair manual for household electronics, radios and the occasional robot butler.'],
+    ['book_lying_congressionally', 'Lying, Congressionally', 'speech', 'A guide to persuasion written by a senator. Every word is technically true.'],
+    ['book_chinese_spec_ops', 'Chinese Army: Spec. Ops. Training Manual', 'sneak', 'A captured enemy field manual. Half the diagrams are of a man hiding behind a smaller man.'],
+    ['book_junktown_jerky', 'Tales of a Junktown Jerky Vendor', 'barter', 'A salesman\'s memoir from the far-off West Coast. Chapter 1: "Everything Has a Price, Especially You."'],
+    ['book_wasteland_survival', 'Wasteland Survival Guide', 'survival', 'A practical guide to eating, drinking and not dying, written after the war by someone who managed all three.'],
+  ];
+  for (const b of BOOKS) {
+    M({ id: b[0], name: b[1], weight: 2, value: 100, tags: ['book', 'skill_book'], book: { skill: b[2] }, mesh: 'skillbook_' + b[2], lootWeight: 0.25, desc: b[3] + ' Reading it raises your ' + b[2].replace(/_/g, ' ') + ' skill.' });
+  }
+
+  // ---------------------------------------------------------------
+  // SKILL MAGAZINES (New Vegas style) — read for a temporary boost:
+  // +10 to one skill for 3 minutes (+20 with Comprehension). Consumed on
+  // reading. Pre-war New York titles, all original.
+  // ---------------------------------------------------------------
+  const MAGS = [
+    ['barter', 'Madison Avenue Salesman', 'Fifty ways to sell an icebox to an Eskimo, illustrated with photographs of men in hats shaking hands with other men in hats.'],
+    ['energy_weapons', 'Atomic Age Arsenal', 'Glossy spreads of prototype ray-guns from the RobCo and General Atomics trade shows, with cutaway diagrams nobody was supposed to print.'],
+    ['explosives', 'Demolition Digest', 'The trade journal of the New York Wrecking Contractors\' Association. This month: "Controlled Collapse and You."'],
+    ['guns', 'Sidearm & Rifle', 'A sportsman\'s monthly of cleaning kits, reloading tables and a very long letter about the Chinese assault rifle.'],
+    ['lockpick', "Locksmith's Quarterly", 'Pin-tumbler cross-sections, a review of the new Brooklyn deadbolt, and a classified section of suspiciously specific questions.'],
+    ['medicine', 'Bellevue Bedside', 'The house magazine of Bellevue Hospital\'s nursing staff: triage charts, dosage tables and a recipe for Jell-O salad.'],
+    ['melee_weapons', 'Sword & Sorcery Tales', 'A pulp anthology of swordsmen, sorceresses and the loincloths that love them. The fight choreography is surprisingly sound.'],
+    ['repair', "Handyman's Home Journal", 'Step-by-step photo guides to fixing radios, toasters and the family protectron. Tools not included; patience required.'],
+    ['science', 'Atomic Wonder Weekly', 'The science weekly that promised every family an atomic car. Circuit puzzles on the back page, answers upside down.'],
+    ['sneak', 'Private Eye Pulp', 'Hard-boiled detectives tailing dames through the rain on 42nd Street. Every other page is a lesson in not being seen.'],
+    ['speech', 'Mingling Made Easy', 'An etiquette magazine for the modern Manhattanite: cocktail small talk, compliments that land, and how to leave a party without anyone noticing.'],
+    ['survival', 'Catskills Outdoorsman', 'Camping, trapping and trout from the Catskills to the Adirondacks. Includes a fold-out chart of edible mushrooms (mostly).'],
+    ['unarmed', 'Golden Gloves Gazette', 'Ringside reports from Madison Square Garden and a centrefold of the proper way to throw a hook.'],
+  ];
+  for (const m of MAGS) {
+    const nice = m[0].split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    M({ id: 'magazine_' + m[0], name: m[1], weight: 0.1, value: 40, tags: ['magazine'], magazine: { skill: m[0], bonus: 10, duration: 180 },
+      mesh: 'magazine_' + m[0], lootWeight: 0.8,
+      desc: m[2] + ' Reading it gives +10 ' + nice + ' for 3 minutes (+20 with Comprehension).' });
+  }
+
+  // ---------------------------------------------------------------
+  // BOBBLEHEADS — Vault-Tec collectibles. Picking one up grants a
+  // permanent bonus (+1 SPECIAL or +10 skill). Placed by props/quests.
+  // ---------------------------------------------------------------
+  const SPEC = { strength: 'S', perception: 'P', endurance: 'E', charisma: 'C', intelligence: 'I', agility: 'A', luck: 'L' };
+  for (const k in SPEC) {
+    M({ id: 'bobblehead_' + k, name: 'Vault-Tec Bobblehead - ' + k.charAt(0).toUpperCase() + k.slice(1), weight: 0, value: 0, quest: true, noLoot: true,
+      tags: ['bobblehead', 'collectible'], bobblehead: { special: SPEC[k] }, mesh: 'bobblehead',
+      desc: 'A grinning Vault Boy bobblehead, one of the twenty in the promotional set. Holding it fills you with inexplicable confidence. +1 ' + k.charAt(0).toUpperCase() + k.slice(1) + '.' });
+  }
+  const SK = ['barter', 'energy_weapons', 'explosives', 'guns', 'lockpick', 'medicine', 'melee_weapons', 'repair', 'science', 'sneak', 'speech', 'survival', 'unarmed'];
+  for (const s of SK) {
+    const nice = s.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    M({ id: 'bobblehead_' + s, name: 'Vault-Tec Bobblehead - ' + nice, weight: 0, value: 0, quest: true, noLoot: true,
+      tags: ['bobblehead', 'collectible'], bobblehead: { skill: s }, mesh: 'bobblehead',
+      desc: 'A Vault Boy bobblehead nodding approvingly at your ' + nice.toLowerCase() + ' skills. +10 ' + nice + '.' });
+  }
+
+  // ---------------------------------------------------------------
+  // KEYS (quests / landmarks may define more with G.items.define)
+  // ---------------------------------------------------------------
+  K({ id: 'key_vault120_overseer', name: "Vault 120 Overseer's Key", desc: 'A brass key on a Vault-Tec lanyard. Opens the Overseer\'s office and his private terminal cabinet.' });
+  K({ id: 'key_vault120_armory', name: 'Vault 120 Armory Key', desc: 'A heavy security key stamped "ARMORY — AUTHORIZED PERSONNEL."' });
+  K({ id: 'key_vault120_clinic', name: 'Vault 120 Clinic Key', desc: 'The key to the vault clinic\'s drug locker. The doctor will notice it\'s missing.' });
+  K({ id: 'key_grand_central_stockroom', name: 'Grand Central Stockroom Key', desc: 'A ring key to the market\'s shared stockroom under the Main Concourse.' });
+  K({ id: 'key_chrysler_penthouse', name: 'Chrysler Penthouse Key', desc: 'An art-deco key with a tiny eagle head on the bow. Opens the raider boss\'s penthouse.' });
+  K({ id: 'key_exchange_vault', name: 'Exchange Vault Key', desc: 'A long bank-vault key taken from the raider boss of The Exchange.' });
+  K({ id: 'key_subway_maintenance', name: 'Subway Maintenance Key', desc: 'A transit authority key for the maintenance doors off the 42nd Street platform.' });
+  K({ id: 'key_neon_mayor', name: "Mayor's Office Key", desc: 'The key to the Neon mayor\'s office above the old theatre marquee.' });
+  K({ id: 'key_met_archive', name: 'Met Archive Keycard', desc: 'A laminated security keycard for the Metropolitan Museum\'s restricted archive.' });
+  K({ id: 'key_liberty_pedestal', name: 'Liberty Pedestal Key', desc: 'An Enclave-issue key for the service door in the base of the Statue of Liberty.' });
+  K({ id: 'key_generic_apartment', name: 'Apartment Key', desc: 'A plain brass apartment key on a ring with a plastic tag: "4B."' });
+  K({ id: 'key_generic_office', name: 'Office Key', desc: 'A desk key from some midtown office. Somewhere, a drawer awaits.' });
+})();
+

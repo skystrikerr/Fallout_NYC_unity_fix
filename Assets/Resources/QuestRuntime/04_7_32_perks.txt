@@ -1,0 +1,279 @@
+/* src/rpg/32_perks.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — RPG MODULE — PERKS
+ *
+ * Perk def: { id, name, desc, ranks, reqLevel, reqSpecial {S:5}, reqSkills {science:50},
+ *             reqKarma?, icon (Vault-Boy pose id), levelStep? (extra levels per rank),
+ *             mods(rank, ctx, choices) → modifier object (see 30_rpg_core emptyMods),
+ *             apply(choice, rank)  one-shot effect when taken,
+ *             choice?: 'special'|'skill' (UI may offer a picker; otherwise auto-chosen),
+ *             hidden?: true (quest-granted only) }
+ * Descriptions are original text.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const P = (d) => G.rpg.definePerk(d);
+  const R = () => G.rpg;
+
+  // ---------------- LEVEL 2 ----------------
+  P({ id: 'black_widow', name: () => (R().gender === 'f' ? 'Black Widow' : 'Lady Killer'), icon: 'wink', reqLevel: 2,
+    desc: () => (R().gender === 'f'
+      ? 'You deal +10% damage to men, and a certain charm opens special dialogue options with the more gullible of them.'
+      : 'You deal +10% damage to women, and a certain charm opens special dialogue options with the more gullible of them.'),
+    mods: () => ({ dmgVs: { oppositeSex: 0.1 } }) });
+  P({ id: 'intense_training', name: 'Intense Training', icon: 'flex', ranks: 10, reqLevel: 2, choice: 'special',
+    desc: 'Push-ups at dawn, crosswords at dusk. Put a single point into any of your S.P.E.C.I.A.L. attributes.',
+    apply(choice) {
+      const S = R()._state();
+      let k = choice;
+      if (!k || R().SPECIAL_KEYS.indexOf(k) < 0 || S.special[k] >= 10) {
+        // auto-pick the lowest attribute that can still grow
+        k = R().SPECIAL_KEYS.filter((x) => S.special[x] < 10).sort((a, b) => S.special[a] - S.special[b])[0];
+      }
+      if (k) { S.special[k] = Math.min(10, S.special[k] + 1); G.notify(R().SPECIAL_INFO[k].name + ' increased to ' + S.special[k] + '.', { kind: 'special' }); }
+      R()._dirty();
+    } });
+  P({ id: 'daddys_boy', name: () => (R().gender === 'f' ? "Daddy's Girl" : "Daddy's Boy"), icon: 'reading', ranks: 3, reqLevel: 2, reqSpecial: { I: 4 },
+    desc: 'Dad kept a shelf of dog-eared field manuals in the family quarters, and you read every one twice. +5 Science and +5 Medicine per rank.',
+    mods: (r) => ({ skills: { science: 5 * r, medicine: 5 * r } }) });
+  P({ id: 'gun_nut', name: 'Gun Nut', icon: 'gun_cleaning', ranks: 3, reqLevel: 2, reqSpecial: { I: 4, A: 4 },
+    desc: 'You spent your childhood cleaning guns that weren\'t yours. +5 Guns and +5 Repair per rank.',
+    mods: (r) => ({ skills: { guns: 5 * r, repair: 5 * r } }) });
+  P({ id: 'little_leaguer', name: 'Little Leaguer', icon: 'baseball', ranks: 3, reqLevel: 2, reqSpecial: { S: 4 },
+    desc: 'Years as the Vault 120 Little League MVP have honed your arm. +5 Melee Weapons and +5 Explosives per rank.',
+    mods: (r) => ({ skills: { melee_weapons: 5 * r, explosives: 5 * r } }) });
+  P({ id: 'swift_learner', name: 'Swift Learner', icon: 'running', ranks: 3, reqLevel: 2, reqSpecial: { I: 4 },
+    desc: 'Everything sticks the first time. Each rank adds +10% to every bit of experience you earn.',
+    mods: (r) => ({ xpMult: 0.1 * r }) });
+  P({ id: 'thief', name: 'Thief', icon: 'sneaking', ranks: 3, reqLevel: 2, reqSpecial: { A: 4, P: 4 },
+    desc: 'Sticky fingers and a light step. +5 Sneak and +5 Lockpick per rank.',
+    mods: (r) => ({ skills: { sneak: 5 * r, lockpick: 5 * r } }) });
+  P({ id: 'child_at_heart', name: 'Child at Heart', icon: 'thumbs_up', reqLevel: 2, reqSpecial: { C: 4 },
+    desc: 'You get along wonderfully with children and child-like people. +5 Speech, and kids tell you secrets they shouldn\'t.',
+    mods: () => ({ skills: { speech: 5 } }) });
+
+  // ---------------- LEVEL 4 ----------------
+  P({ id: 'comprehension', name: 'Comprehension', icon: 'reading', reqLevel: 4, reqSpecial: { I: 4 },
+    desc: 'You actually read the whole thing. Each skill book you read gives an additional skill point, and skill magazines give double their bonus.',
+    mods: () => ({ bookBonus: 1 }) });
+  P({ id: 'educated', name: 'Educated', icon: 'graduate', reqLevel: 4, reqSpecial: { I: 4 },
+    desc: 'A Vault-Tec education that actually took. Every level-up grants three extra skill points, so the sooner the better.',
+    mods: () => ({ skillPointsPerLevel: 3 }) });
+  P({ id: 'entomologist', name: 'Entomologist', icon: 'magnifier', reqLevel: 4, reqSpecial: { I: 4 }, reqSkills: { science: 40 },
+    desc: 'You do +50% damage to radroaches, bloatflies, mirelurks and every other overgrown bug in New York.',
+    mods: () => ({ dmgVs: { insect: 0.5 } }) });
+  P({ id: 'iron_fist', name: 'Iron Fist', icon: 'punch', ranks: 3, reqLevel: 4, reqSpecial: { S: 4 },
+    desc: 'You\'ve been punching concrete for practice. +5 unarmed damage per rank.',
+    mods: (r) => ({ unarmedDmg: 5 * r }) });
+  P({ id: 'scoundrel', name: 'Scoundrel', icon: 'wink', ranks: 3, reqLevel: 4, reqSpecial: { C: 4 },
+    desc: 'You\'ve learned to use your charm to sell a lie. +5 Speech and +5 Barter per rank.',
+    mods: (r) => ({ skills: { speech: 5 * r, barter: 5 * r } }) });
+  P({ id: 'survival_expert', name: 'Survival Expert', icon: 'campfire', ranks: 3, reqLevel: 4, reqSpecial: { E: 4 },
+    desc: 'Years of eating out of dumpsters have prepared you for this. +5 Survival per rank, and food heals 10% more.',
+    mods: (r) => ({ skills: { survival: 5 * r }, foodHealMult: 0.1 * r }) });
+
+  // ---------------- LEVEL 6 ----------------
+  P({ id: 'bloody_mess', name: 'Bloody Mess', icon: 'explode', reqLevel: 6,
+    desc: 'You do +5% damage with every weapon, and enemies occasionally explode into a spectacular red paste. Very gory!',
+    mods: () => ({ dmgMult: 0.05 }) });
+  P({ id: 'demolition_expert', name: 'Demolition Expert', icon: 'dynamite', ranks: 3, reqLevel: 6, reqSkills: { explosives: 50 },
+    desc: 'Every rank adds +20% damage to all your explosives — grenades, mines, missiles and mini-nukes.',
+    mods: (r) => ({ dmgType: { explosive: 0.2 * r } }) });
+  P({ id: 'fortune_finder', name: 'Fortune Finder', icon: 'caps', reqLevel: 6, reqSpecial: { L: 5 },
+    desc: 'Loose caps practically call your name. Containers you search hold far more bottle caps than usual.',
+    mods: () => ({ lootCaps: 0.6 }) });
+  P({ id: 'gunslinger', name: 'Gunslinger', icon: 'pistol', reqLevel: 6, reqSpecial: { A: 5 },
+    desc: 'Quick-draw like a matinee cowboy on 42nd Street. One-handed weapons get +25% chance to hit in V.A.T.S.',
+    mods: () => ({ vatsHitOneHand: 25 }) });
+  P({ id: 'lead_belly', name: 'Lead Belly', icon: 'drinking', reqLevel: 6, reqSpecial: { E: 5 },
+    desc: 'Your stomach has made peace with the Wasteland. Food and drink give you 50% less radiation.',
+    mods: () => ({ foodRadMult: -0.5 }) });
+  P({ id: 'toughness', name: 'Toughness', icon: 'tough', reqLevel: 6, reqSpecial: { E: 5 },
+    desc: 'Thicker skin, harder muscle. +10 Damage Resistance.',
+    mods: () => ({ dr: 10 }) });
+  P({ id: 'medic', name: 'Medic', icon: 'medic', reqLevel: 6, reqSkills: { medicine: 40 },
+    desc: 'You get more out of every dose: Stimpaks heal 25% more, RadAway purges 25% more and Rad-X protects 25% better.',
+    mods: () => ({ stimpakMult: 0.25, radMedMult: 0.25 }) });
+
+  // ---------------- LEVEL 8 ----------------
+  P({ id: 'commando', name: 'Commando', icon: 'rifle', reqLevel: 8, reqSpecial: { A: 6 },
+    desc: 'Stock to the shoulder, eye down the sights. Two-handed rifles and long guns get +25% chance to hit in V.A.T.S.',
+    mods: () => ({ vatsHitTwoHand: 25 }) });
+  P({ id: 'scrounger', name: 'Scrounger', icon: 'ammo', reqLevel: 8, reqSpecial: { L: 5 },
+    desc: 'You know every hiding place for a spare box of rounds. Containers and bodies turn up far more ammunition.',
+    mods: () => ({ lootAmmo: 0.6 }) });
+  P({ id: 'strong_back', name: 'Strong Back', icon: 'carry', reqLevel: 8, reqSpecial: { S: 5, E: 5 },
+    desc: 'Years of hauling salvage up subway stairs pays off: +50 pounds of carry capacity.',
+    mods: () => ({ carry: 50 }) });
+  P({ id: 'rad_resistance', name: 'Rad Resistance', icon: 'radiation', reqLevel: 8, reqSpecial: { E: 5 },
+    desc: 'Your cells have learned to shrug off the glow. +25% Radiation Resistance.',
+    mods: () => ({ radResist: 25 }) });
+  P({ id: 'hunter', name: 'Hunter', icon: 'hunter', reqLevel: 8, reqSkills: { survival: 45 },
+    desc: 'You know exactly where the soft spots are. Critical hits on animals and mutated creatures do +75% damage.',
+    mods: () => ({ critDmgVs: { creature: 0.75 } }) });
+  P({ id: 'lockmaster', name: 'Lockmaster', icon: 'lockpick', reqLevel: 8, reqSkills: { lockpick: 50 },
+    desc: 'You get +10 Lockpick, and about a third of the bobby pins you snap can be bent back into shape and used again.',
+    mods: () => ({ skills: { lockpick: 10 }, lockpickRetry: 1 }) });
+
+  // ---------------- LEVEL 10 ----------------
+  P({ id: 'animal_friend', name: 'Animal Friend', icon: 'dog', ranks: 2, reqLevel: 10, reqSpecial: { C: 6 },
+    desc: 'Wild dogs, mole rats and other normal animals will not attack you. At rank two, they come to your aid.',
+    mods: (r) => ({ animalFriend: r }) });
+  P({ id: 'finesse', name: 'Finesse', icon: 'crosshair', reqLevel: 10,
+    desc: 'Precision over power. Your odds of landing a critical hit rise as if you had 5 more points of Luck.',
+    mods: () => ({ crit: 5 }) });
+  P({ id: 'here_and_now', name: 'Here and Now', icon: 'star', reqLevel: 10,
+    desc: 'Why wait? You jump straight to the next experience level, with every benefit that comes with it.',
+    apply() { const need = R().xpForLevel(R().level + 1) - R().xp; if (need > 0) { R()._state().xp += need; R()._checkLevelUp(); } } });
+  P({ id: 'mysterious_stranger', name: 'Mysterious Stranger', icon: 'fedora', reqLevel: 10, reqSpecial: { L: 6 },
+    desc: 'A man in a long coat keeps turning up with a .44 revolver and a sense of timing. Now and then he steps into V.A.T.S. to finish what you started.',
+    mods: () => ({ mysteriousStranger: 1 }) });
+  P({ id: 'nerd_rage', name: 'Nerd Rage!', icon: 'rage', reqLevel: 10, reqSpecial: { I: 5 }, reqSkills: { science: 50 },
+    desc: 'You\'ve been pushed around long enough! When your Health drops to 20% or lower, you gain +10 Strength and +50 Damage Resistance.',
+    mods: (r, c) => (c.hpFrac <= 0.2 ? { special: { S: 10 }, dr: 50 } : null) });
+  P({ id: 'night_person', name: 'Night Person', icon: 'moon', reqLevel: 10,
+    desc: 'The city is yours after dark. From 6:00 p.m. to 6:00 a.m. you get +2 Intelligence and +2 Perception.',
+    mods: (r, c) => (c.night ? { special: { I: 2, P: 2 } } : null) });
+  P({ id: 'cannibal', name: 'Cannibal', icon: 'devil', reqLevel: 10,
+    desc: 'You can eat the bodies of dead humans to regain health. The Wasteland will not look kindly on it.',
+    mods: () => ({ cannibal: 1 }) });
+  P({ id: 'subway_rat', name: 'Subway Rat', icon: 'tunnel', reqLevel: 10, reqSpecial: { A: 5 },
+    desc: 'Years underground have tuned your instincts. Indoors and in the tunnels, you gain +10 Sneak and +5% critical chance.',
+    mods: (r, c) => (c.indoors ? { skills: { sneak: 10 }, crit: 5 } : null) });
+
+  // ---------------- LEVEL 12 ----------------
+  P({ id: 'fast_metabolism', name: 'Fast Metabolism', icon: 'running', reqLevel: 12,
+    desc: 'Your body burns through everything, medicine included. Stimpaks restore +20% Hit Points.',
+    mods: () => ({ stimpakMult: 0.2 }) });
+  P({ id: 'life_giver', name: 'Life Giver', icon: 'heart', reqLevel: 12, reqSpecial: { E: 6 },
+    desc: 'Hardier than the average survivor. +30 maximum Hit Points.',
+    mods: () => ({ hp: 30 }) });
+  P({ id: 'pyromaniac', name: 'Pyromaniac', icon: 'fire', reqLevel: 12, reqSkills: { explosives: 60 },
+    desc: 'You do +50% damage with fire-based weapons, like the flamer. Everything burns.',
+    mods: () => ({ dmgType: { fire: 0.5 } }) });
+  P({ id: 'robotics_expert', name: 'Robotics Expert', icon: 'robot', reqLevel: 12, reqSkills: { science: 50 },
+    desc: 'You know where RobCo hid the off switch. +25% damage against robots, and sneaking up on a hostile one lets you shut it down for good.',
+    mods: () => ({ dmgVs: { robot: 0.25 } }) });
+  P({ id: 'silent_running', name: 'Silent Running', icon: 'sneaking', reqLevel: 12, reqSpecial: { A: 6 }, reqSkills: { sneak: 50 },
+    desc: '+10 Sneak, and moving at a run no longer gives you away.',
+    mods: () => ({ skills: { sneak: 10 }, silentRunning: 1 }) });
+  P({ id: 'sniper', name: 'Sniper', icon: 'scope', reqLevel: 12, reqSpecial: { P: 6, A: 6 },
+    desc: 'Head shots are your specialty. Much better chance to hit the head in V.A.T.S.',
+    mods: () => ({ vatsHitHead: 25 }) });
+
+  // ---------------- LEVEL 14 ----------------
+  P({ id: 'adamantium_skeleton', name: 'Adamantium Skeleton', icon: 'skeleton', reqLevel: 14,
+    desc: 'Your bones could stop a subway car. Limbs take only half the damage they normally would.',
+    mods: () => ({ limbDmgMult: -0.5 }) });
+  P({ id: 'chemist', name: 'Chemist', icon: 'chem', reqLevel: 14, reqSkills: { medicine: 60 },
+    desc: 'You know how to stretch a dose. Chems last twice as long.',
+    mods: () => ({ chemDurationMult: 1 }) });
+  P({ id: 'cyborg', name: 'Cyborg', icon: 'robot', reqLevel: 14, reqSkills: { science: 60, medicine: 60 },
+    desc: 'Salvaged parts, surgically installed. +10% Damage, Poison and Radiation Resistance, and +10 Energy Weapons.',
+    mods: () => ({ dr: 10, poisonResist: 10, radResist: 10, skills: { energy_weapons: 10 } }) });
+  P({ id: 'lawbringer', name: 'Lawbringer', icon: 'sheriff', reqLevel: 14, reqKarma: 'good',
+    desc: 'Justice pays. Every evil-doer you kill carries a finger you can take as proof, and traders who post bounties will buy them. You also deal +5% damage to raiders, slavers and their kind.',
+    mods: () => ({ dmgVs: { evil: 0.05 }, lawbringer: 1 }), canTake: () => !R().hasPerk('contract_killer'), cantReason: 'Contract Killer taken' });
+  P({ id: 'contract_killer', name: 'Contract Killer', icon: 'devil', reqLevel: 14, reqKarma: 'evil',
+    desc: 'The good people of New York are worth a bounty to certain dark parties downtown. Every good person you kill carries an ear you can sell as proof, and you deal +5% damage to them.',
+    mods: () => ({ dmgVs: { good: 0.05 }, contractKiller: 1 }), canTake: () => !R().hasPerk('lawbringer'), cantReason: 'Lawbringer taken' });
+  P({ id: 'light_step', name: 'Light Step', icon: 'tiptoe', reqLevel: 14, reqSpecial: { A: 6, P: 6 }, needsHook: 'traps',
+    desc: 'You read a floor like a map. Pressure plates, tripwires and mines never go off under your feet.',
+    mods: () => ({ lightStep: 1 }) });
+  P({ id: 'master_trader', name: 'Master Trader', icon: 'caps', reqLevel: 14, reqSpecial: { C: 6 }, reqSkills: { barter: 60 },
+    desc: 'Every merchant in the five boroughs knows your name, and your haggling. Store prices are 25% lower.',
+    mods: () => ({ barterMult: -0.25 }) });
+
+  // ---------------- LEVEL 16 ----------------
+  P({ id: 'action_boy', name: () => (R().gender === 'f' ? 'Action Girl' : 'Action Boy'), icon: 'running', ranks: 2, reqLevel: 16, reqSpecial: { A: 6 },
+    desc: 'Nimble and quick. Each rank adds +25 Action Points for V.A.T.S.',
+    mods: (r) => ({ ap: 25 * r }) });
+  P({ id: 'better_criticals', name: 'Better Criticals', icon: 'crosshair', reqLevel: 16, reqSpecial: { P: 6, L: 6 },
+    desc: 'When you hit the weak spot, you really hit it. Critical hits do +50% damage.',
+    mods: () => ({ critDmg: 0.5 }) });
+  P({ id: 'chem_resistant', name: 'Chem Resistant', icon: 'chem', reqLevel: 16, reqSkills: { medicine: 60 },
+    desc: 'Your body keeps its independence. You\'re half as likely to get hooked on chems like Jet or Psycho.',
+    mods: () => ({ addictionMult: -0.5 }) });
+  P({ id: 'tag', name: 'Tag!', icon: 'star', reqLevel: 16, choice: 'skill',
+    desc: 'Pick a fourth specialty. It becomes a Tag skill and immediately gains 15 points.',
+    apply(choice) {
+      let sk = choice;
+      const S = R()._state();
+      if (!sk || R().SKILLS.indexOf(sk) < 0 || S.tags.indexOf(sk) >= 0) {
+        sk = R().SKILLS.filter((s) => S.tags.indexOf(s) < 0).sort((a, b) => R().skillBase(b) - R().skillBase(a))[0];
+      }
+      if (sk) { R().addTag(sk); G.notify(R().SKILL_INFO[sk].name + ' is now a Tag skill.', { kind: 'skill' }); }
+    } });
+  P({ id: 'nerves_of_steel', name: 'Nerves of Steel', icon: 'cool', reqLevel: 16, reqSpecial: { A: 7 },
+    desc: 'Calm under fire. Action Points regenerate 20% faster.',
+    mods: () => ({ apRegenMult: 0.2 }) });
+
+  // ---------------- LEVEL 18 ----------------
+  P({ id: 'computer_whiz', name: 'Computer Whiz', icon: 'terminal', reqLevel: 18, reqSpecial: { I: 7 }, reqSkills: { science: 70 },
+    desc: 'Fizzled a terminal and locked yourself out? No problem! You get two extra attempts on every hacking minigame.',
+    mods: () => ({ hackAttempts: 2 }) });
+  P({ id: 'concentrated_fire', name: 'Concentrated Fire', icon: 'crosshair', reqLevel: 18, reqSkills: { guns: 60 },
+    desc: 'Every hit you land on the same body part in V.A.T.S. makes the next one a little easier.',
+    mods: () => ({ vatsHit: 5, concentratedFire: 1 }) });
+  P({ id: 'infiltrator', name: 'Infiltrator', icon: 'lockpick', reqLevel: 18, reqSpecial: { P: 7 }, reqSkills: { lockpick: 70 },
+    desc: 'A jammed lock is just a second opinion. You can try a broken lock one more time.',
+    mods: () => ({ lockpickRetry: 1 }) });
+  P({ id: 'paralyzing_palm', name: 'Paralyzing Palm', icon: 'punch', reqLevel: 18, reqSkills: { unarmed: 70 },
+    desc: 'A trick an old boxer taught you under the Brooklyn Bridge: V.A.T.S. unarmed strikes sometimes leave the target paralyzed for 30 seconds.',
+    mods: () => ({ paralyzingPalm: 1, critMelee: 5 }) });
+
+  // ---------------- LEVEL 20 ----------------
+  P({ id: 'explorer', name: 'Explorer', icon: 'map', reqLevel: 20,
+    desc: 'You\'ve studied every pre-war subway map and street guide. All locations in New York appear on your map.',
+    apply() { try { for (const l of G.LAYOUT.LOCATIONS) if (!l.interior) G.discover(l.id); } catch (e) { /* ignore */ } } });
+  P({ id: 'grim_reapers_sprint', name: "Grim Reaper's Sprint", icon: 'reaper', reqLevel: 20,
+    desc: 'Death gives you a second wind. Kill a target in V.A.T.S. and your Action Points are fully restored on exit.',
+    mods: () => ({ grimReaper: 1 }) });
+  P({ id: 'ninja', name: 'Ninja', icon: 'ninja', reqLevel: 20, reqSkills: { sneak: 80, melee_weapons: 80 },
+    desc: 'Silent and precise up close. +15% critical chance with melee and unarmed weapons, and sneak-attack criticals do +25% damage.',
+    mods: () => ({ critMelee: 15, sneakAttackMult: 0.25 }) });
+  P({ id: 'solar_powered', name: 'Solar Powered', icon: 'sun', reqLevel: 20, reqSpecial: { E: 7 },
+    desc: 'In direct sunlight you gain +2 Strength and slowly regenerate lost Hit Points.',
+    mods: (r, c) => (c.sunlight ? { special: { S: 2 }, hpRegen: 1 } : null) });
+
+  // ---------------- LEVEL 22–30 (Broken Steel era) ----------------
+  P({ id: 'rad_absorption', name: 'Rad Absorption', icon: 'radiation', reqLevel: 22, reqSpecial: { E: 7 },
+    desc: 'The radiation you soak up slowly leaks back out. Your rad count drops over time.',
+    mods: () => ({ radDecay: 1 }) });
+  P({ id: 'party_boy', name: () => (R().gender === 'f' ? 'Party Girl' : 'Party Boy'), icon: 'drinking', reqLevel: 22,
+    desc: 'You can never become addicted to alcohol, and your Charisma rises by 1 when drinking.',
+    mods: () => ({ partyBoy: 1 }) });
+  P({ id: 'deep_sleep', name: 'Deep Sleep', icon: 'sleep', reqLevel: 22,
+    desc: 'You sleep deeply no matter where you are. You always get the Well Rested benefit, even outside your own bed.',
+    mods: () => ({ deepSleep: 1 }) });
+  P({ id: 'warmonger', name: 'Warmonger', icon: 'rifle', reqLevel: 24, reqSpecial: { I: 7 },
+    desc: 'Your obsession with weapons gives you +10 to Guns, Energy Weapons and Explosives.',
+    mods: () => ({ skills: { guns: 10, energy_weapons: 10, explosives: 10 } }) });
+  P({ id: 'nuclear_anomaly', name: 'Nuclear Anomaly', icon: 'mushroom', reqLevel: 26,
+    desc: 'Something unstable lives in your blood. When your Health falls to 20% or less, you detonate in a nuclear blast that spares no one nearby.',
+    mods: () => ({ nuclearAnomaly: 1 }) });
+  P({ id: 'almost_perfect', name: 'Almost Perfect', icon: 'star', reqLevel: 28,
+    desc: 'Every one of your S.P.E.C.I.A.L. attributes is raised to 9. Attributes already at 9 or 10 are unaffected.',
+    apply() { const S = R()._state(); for (const k of R().SPECIAL_KEYS) S.special[k] = Math.max(S.special[k], 9); R()._dirty(); } });
+  P({ id: 'devils_highway', name: "Devil's Highway", icon: 'devil', reqLevel: 30,
+    desc: 'Your Karma is instantly set to Very Evil. You can live with that.',
+    apply() { R().addKarma(-1000 - R().karma, "Devil's Highway"); } });
+  P({ id: 'karmic_rebalance', name: 'Karmic Rebalance', icon: 'balance', reqLevel: 30,
+    desc: 'Your Karma is instantly set to Neutral. The universe shrugs.',
+    apply() { R().addKarma(-R().karma, 'Karmic Rebalance'); } });
+  P({ id: 'escalator_to_heaven', name: 'Escalator to Heaven', icon: 'halo', reqLevel: 30,
+    desc: 'Your Karma is instantly set to Very Good. The universe smiles back.',
+    apply() { R().addKarma(1000 - R().karma, 'Escalator to Heaven'); } });
+
+  // ---------------- Special / quest-granted ----------------
+  P({ id: 'power_armor_training', name: 'Power Armor Training', icon: 'power_armor', hidden: true, reqLevel: 1,
+    desc: 'The Brotherhood drilled you in the servos, the balance and the weight. You can now wear Power Armor.' });
+  P({ id: 'wasteland_whisperer', name: 'Wasteland Whisperer', icon: 'dog', hidden: true, reqLevel: 1,
+    desc: 'A reward for sparing the Neon\'s outcasts: +5 Speech and creatures are 10% less likely to notice you.',
+    mods: () => ({ skills: { speech: 5 }, sneak: 5 }) });
+  P({ id: 'vault120_graduate', name: 'Vault 120 Alumnus', icon: 'vault', hidden: true, reqLevel: 1,
+    desc: 'You passed the Generalized Occupational Aptitude Test and left Vault 120 alive. +2 to every skill.',
+    mods: () => ({ skills: { barter: 2, energy_weapons: 2, explosives: 2, guns: 2, lockpick: 2, medicine: 2, melee_weapons: 2, repair: 2, science: 2, sneak: 2, speech: 2, survival: 2, unarmed: 2 } }) });
+})();
+

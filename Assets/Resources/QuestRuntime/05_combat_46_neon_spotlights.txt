@@ -1,0 +1,229 @@
+/* src/combat/46_neon_spotlights.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — COMBAT — 46: THE NEON'S GATE SEARCHLIGHTS
+ * Owned by: combat (Neon Guards behaviour, TIMES_SQUARE_PLAN "Population & safety").
+ *
+ * The exterior stream builds a searchlight at every gate (anchors `gate_<n|s|e|w>_spot`
+ * on G.landmarks.times_square). After dark the guards man them:
+ *   - idle: a slow sweep of the approach outside the gate;
+ *   - a hostile coming up the street: the beam snaps onto it and follows it (the
+ *     guards engage through 45_safezone); a hostile inside the walls too;
+ *   - a stranger walking up to the gate gets lit up for a few seconds ("halt, let's
+ *     see you") before the beam goes back to sweeping; while the guards are after the
+ *     player (gunfire in town / caught stealing) the beams hunt the player.
+ * Look: volumetric-looking additive cone + a hot spot on the ground. Cheap: ONE
+ * InstancedMesh for the four beams and ONE for the hot spots (2 draw calls), no real
+ * lights, only at night, only within ~260 m of the Neon, never in interiors.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const THREE = window.THREE;
+  const C = G.__cmb;
+
+  const NAMES = ['gate_n_spot', 'gate_s_spot', 'gate_e_spot', 'gate_w_spot'];
+  const LENS_H = 1.45, HALF = 0.075;                 // lens above the stand; cone half-angle (rad)
+  const S = { lights: [], beams: null, spots: null, built: false, tried: false, root: null, visible: false, retargetT: 0 };
+  C.neonSpots = S;
+  const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3();
+  const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _d = new THREE.Vector3();
+  const Z = new THREE.Vector3(0, 0, 1);
+
+  // ------------------------------------------------------------------
+  // Meshes
+  // ------------------------------------------------------------------
+  const BEAM_VS = `
+    varying float vZ; varying vec3 vN; varying vec3 vV;
+    void main() {
+      vZ = position.z;
+      vec4 wp = vec4(position, 1.0);
+      #ifdef USE_INSTANCING
+        wp = instanceMatrix * wp;
+        vN = normalize(mat3(modelViewMatrix) * mat3(instanceMatrix) * normal);
+      #else
+        vN = normalize(normalMatrix * normal);
+      #endif
+      vec4 mv = modelViewMatrix * wp;
+      vV = -mv.xyz;
+      gl_Position = projectionMatrix * mv;
+    }`;
+  const BEAM_FS = `
+    uniform vec3 uColor; uniform float uStrength;
+    varying float vZ; varying vec3 vN; varying vec3 vV;
+    void main() {
+      float along = pow(clamp(1.0 - vZ, 0.0, 1.0), 1.35);                  // bright at the lens, fading out
+      float edge = abs(dot(normalize(vN), normalize(vV)));                   // soft silhouette (fake volume)
+      float a = along * pow(edge, 1.6) * uStrength;
+      float dist = length(vV);
+      a *= clamp(1.0 - (dist - 120.0) / 140.0, 0.0, 1.0);                    // fade with distance (fog stand-in)
+      a *= clamp(dist / 2.5, 0.0, 1.0);                                      // don't blind a camera standing in it
+      gl_FragColor = vec4(uColor * a, a);
+    }`;
+  const SPOT_FS = `
+    uniform vec3 uColor; uniform float uStrength;
+    varying vec2 vUv;
+    void main() {
+      float r = length(vUv - 0.5) * 2.0;
+      float a = smoothstep(1.0, 0.35, r) * 0.9 + smoothstep(0.5, 0.0, r) * 0.5;
+      gl_FragColor = vec4(uColor * a * uStrength, a * uStrength);
+    }`;
+  const SPOT_VS = `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      vec4 wp = vec4(position, 1.0);
+      #ifdef USE_INSTANCING
+        wp = instanceMatrix * wp;
+      #endif
+      gl_Position = projectionMatrix * modelViewMatrix * wp;
+    }`;
+  function build() {
+    S.tried = true;
+    const lm = G.landmarks;
+    if (!lm || lm.__stub || typeof lm.getAnchor !== 'function') return false;
+    for (let i = 0; i < NAMES.length; i++) {
+      let v = null; try { v = lm.getAnchor('times_square', NAMES[i]); } catch (e) { v = null; }
+      if (!v || !isFinite(v.x) || !isFinite(v.z)) continue;
+      const yaw = isFinite(v.yaw) ? v.yaw : 0;
+      S.lights.push({
+        name: NAMES[i], lens: new THREE.Vector3(v.x, (isFinite(v.y) ? v.y : 0) + LENS_H, v.z),
+        out: new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)),   // player-yaw convention → outward (away from town)
+        phase: i * 1.7, aim: null, want: new THREE.Vector3(), mode: 'sweep', target: null, lockUntil: 0, playerCd: 0, len: 20,
+      });
+    }
+    if (!S.lights.length) return false;
+    const n = S.lights.length;
+    const beamGeo = new THREE.CylinderGeometry(0.25, 1, 1, 18, 1, true);
+    beamGeo.translate(0, -0.5, 0); beamGeo.rotateX(-Math.PI / 2);      // apex at the origin, opening along +Z, length 1
+    const beamMat = new THREE.ShaderMaterial({
+      uniforms: { uColor: { value: new THREE.Color(0xfff0d0) }, uStrength: { value: 0.45 } },
+      vertexShader: BEAM_VS, fragmentShader: BEAM_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    });
+    const spotGeo = new THREE.PlaneGeometry(2, 2); spotGeo.rotateX(-Math.PI / 2);
+    const spotMat = new THREE.ShaderMaterial({
+      uniforms: { uColor: { value: new THREE.Color(0xfff2d8) }, uStrength: { value: 0.55 } },
+      vertexShader: SPOT_VS, fragmentShader: SPOT_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    });
+    S.beams = new THREE.InstancedMesh(beamGeo, beamMat, n);
+    S.spots = new THREE.InstancedMesh(spotGeo, spotMat, n);
+    for (const m of [S.beams, S.spots]) { m.frustumCulled = false; m.renderOrder = 6; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); m.name = 'neon_searchlights'; }
+    S.root = new THREE.Group(); S.root.name = 'neon_searchlights'; S.root.add(S.beams, S.spots); S.root.visible = false;
+    G.scene.add(S.root);
+    S.built = true;
+    return true;
+  }
+
+  // ------------------------------------------------------------------
+  // Behaviour
+  // ------------------------------------------------------------------
+  function isNight() {
+    try { if (!G.isStub('atmos') && typeof G.atmos.isNight === 'function') return !!G.atmos.isNight(); } catch (e) { /* fall back */ }
+    const h = G.time.hour; return h < 5.6 || h > 19.8;
+  }
+  function zone() { return C.SAFE_ZONES && C.SAFE_ZONES.find((z) => z.id === 'times_square'); }
+  function inRect(z, x, zz, pad) { return x > z.x0 - pad && x < z.x1 + pad && zz > z.z0 - pad && zz < z.z1 + pad; }
+  function visibleFrom(l, p, h) { return G.world.lineOfSight(l.lens, _b.set(p.x, p.y + h, p.z), { ignoreTags: ['actor', 'foliage'] }); }
+  /** Choose what each light points at (4 Hz). */
+  function retarget(z) {
+    const t = G.time.elapsed, P = G.player;
+    const wanted = !!z.aggroT;
+    for (const l of S.lights) {
+      if (l.target && t < l.lockUntil) {
+        const tg = l.target;
+        if (tg !== 'player' && (tg.dead || tg.removed || !tg.inScene)) l.target = null;
+        else continue;
+      }
+      l.target = null; l.mode = 'sweep';
+      // hostiles coming up to (or inside) the gate
+      let best = null, bd = 58;
+      for (const a of C.list) {
+        if (a.dead || !a.inScene || a.burrowed || a.state === 'dormant' || a.safeGuard || a.following === 'player' || a.questTruce) continue;
+        if (!a.hostile() || a.faction === z.faction) continue;
+        const d = Math.hypot(a.pos.x - l.lens.x, a.pos.z - l.lens.z);
+        if (d >= bd || !inRect(z, a.pos.x, a.pos.z, z.margin + 25)) continue;
+        if (!visibleFrom(l, a.pos, 1.0)) continue;
+        best = a; bd = d;
+      }
+      if (best) { l.target = best; l.mode = 'track'; l.lockUntil = t + 1.5; continue; }
+      if (!P.alive || G.LAYOUT.isInterior(P.pos.x)) continue;
+      const pd = Math.hypot(P.pos.x - l.lens.x, P.pos.z - l.lens.z);
+      // the guards are after the player: every beam in range hunts them
+      if (wanted && pd < 70 && visibleFrom(l, P.pos, 1.0)) { l.target = 'player'; l.mode = 'track'; l.lockUntil = t + 1.0; continue; }
+      // a stranger walking up to the gate from outside: lit up for a few seconds, then waved through
+      const outside = !inRect(z, P.pos.x, P.pos.z, 0);
+      const ahead = (P.pos.x - l.lens.x) * l.out.x + (P.pos.z - l.lens.z) * l.out.z > 2;
+      if (outside && ahead && pd < 36 && t > l.playerCd && visibleFrom(l, P.pos, 1.0)) {
+        l.target = 'player'; l.mode = 'track'; l.lockUntil = t + 3.5 + Math.random() * 1.5; l.playerCd = l.lockUntil + 45;
+      }
+    }
+  }
+  function aimFor(l, t, out) {
+    const tg = l.target;
+    if (tg === 'player') return out.set(G.player.pos.x, G.player.pos.y, G.player.pos.z);
+    if (tg) return out.set(tg.pos.x, tg.pos.y, tg.pos.z);
+    // sweep: a slow arc over the approach, 14-26 m out
+    const sw = Math.sin(t * 0.21 + l.phase) * 0.62 + Math.sin(t * 0.07 + l.phase * 2.3) * 0.18;
+    const c = Math.cos(sw), s = Math.sin(sw);
+    const dx = l.out.x * c - l.out.z * s, dz = l.out.x * s + l.out.z * c;
+    const r = 20 + Math.sin(t * 0.13 + l.phase) * 6;
+    const x = l.lens.x + dx * r, z = l.lens.z + dz * r;
+    return out.set(x, G.world.groundHeight(x, z, l.lens.y + 0.5, 0.2), z);
+  }
+  function update(dt) {
+    if (!S.built) { if (S.tried) return; if (!build()) return; }
+    const P = G.player, z = zone();
+    const near = z && P && !G.LAYOUT.isInterior(P.pos.x) && inRect(z, P.pos.x, P.pos.z, 260);
+    const on = !!(near && isNight());
+    if (on !== S.visible) { S.visible = on; S.root.visible = on; if (on) for (const l of S.lights) l.aim = null; }
+    if (!on || dt <= 0) return;
+    const t = G.time.elapsed;
+    S.retargetT -= dt;
+    if (S.retargetT <= 0) { S.retargetT = 0.25; try { retarget(z); } catch (e) { G.reportError('combat:neonSpots', e); } }
+    for (let i = 0; i < S.lights.length; i++) {
+      const l = S.lights[i];
+      aimFor(l, t, l.want);
+      if (!l.aim) l.aim = l.want.clone();
+      // tracking is quick but still a heavy lamp on a yoke; the sweep is lazy
+      const k = 1 - Math.exp(-(l.mode === 'track' ? 3.2 : 1.1) * dt);
+      l.aim.lerp(l.want, k);
+      // beam: from the lens toward the (smoothed) aim point, cut at the first wall or the ground behind it
+      _d.subVectors(l.aim, l.lens);
+      let len = _d.length(); if (len < 0.5) continue;
+      _d.divideScalar(len);
+      if (_d.y > -0.02) _d.y = -0.02;                                // never skyward (fog-free sky would show it)
+      _d.normalize();
+      let end = Math.min(80, (l.lens.y - l.aim.y) / Math.max(0.05, -_d.y));
+      const hit = G.world.raycast(l.lens, _d, end + 0.5, { ignoreTags: ['actor', 'foliage'] });
+      if (hit && hit.dist < end) end = hit.dist;
+      l.len = end;
+      _q.setFromUnitVectors(Z, _d);
+      const rad = Math.tan(HALF) * end;
+      _s.set(rad, rad, end);
+      _m.compose(l.lens, _q, _s);
+      S.beams.setMatrixAt(i, _m);
+      // hot spot where it lands (flat pool; stretched a little along the beam for shallow angles)
+      _p.copy(l.lens).addScaledVector(_d, end);
+      const onWall = !!(hit && hit.dist <= end + 0.01 && hit.normal && hit.normal.y < 0.6);
+      _p.y = onWall ? _p.y : G.world.groundHeight(_p.x, _p.z, _p.y + 0.5, 0.2) + 0.04;
+      const yaw = Math.atan2(_d.x, _d.z);
+      _q.setFromAxisAngle(_a.set(0, 1, 0), yaw);
+      const stretch = 1 / Math.max(0.35, Math.min(1, -_d.y * 2.2));
+      if (onWall) _s.set(1e-4, 1e-4, 1e-4);                         // (a flat pool can't lie on a wall)
+      else _s.set(rad * 1.15, 1, rad * 1.15 * stretch);
+      _m.compose(_p, _q, _s);
+      S.spots.setMatrixAt(i, _m);
+    }
+    S.beams.instanceMatrix.needsUpdate = true;
+    S.spots.instanceMatrix.needsUpdate = true;
+    // brighter while hunting something
+    const hunting = S.lights.some((l) => l.mode === 'track');
+    const u = S.beams.material.uniforms.uStrength;
+    u.value += ((hunting ? 0.6 : 0.45) - u.value) * Math.min(1, dt * 3);
+  }
+
+  C.updateNeonSpots = function (dt) { try { update(dt); } catch (e) { G.reportError('combat:neonSpots', e); if (S.root) S.root.visible = false; S.built = false; S.tried = true; } };
+  G.events.on('reset', () => { for (const l of S.lights) { l.target = null; l.aim = null; l.playerCd = 0; l.lockUntil = 0; } });
+  void THREE;
+})();
+

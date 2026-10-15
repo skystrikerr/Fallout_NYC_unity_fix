@@ -1,0 +1,340 @@
+/* src/quests/49b_neon_guard_contracts.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 49b: THE NEON, GUARD CONTRACTS & RUMOURS
+ *
+ *   Sergeant Otis Mulroney (Guard Barracks, `barracks_sergeant`):
+ *     - quartermaster of the Neon Guard: the armory trades only with sworn
+ *       guards (FO3 Megaton / NV NCR style "members only" vendor);
+ *     - "Neon Guard Contract" — a repeatable (radiant, one per day) job off
+ *       the barracks bounty board: a feral nest / raider crew / mole rats /
+ *       wild dogs / giant ants / radscorpions / a super mutant patrol / a
+ *       yao guai, levelled to the player, dropped on a real Midtown
+ *       intersection 150–520 m from the square and named by its streets
+ *       ("West 47th Street & 8th Avenue"). Kill counter in the Pip-Boy,
+ *       report back for caps; milestones at 3 / 5 / 10 contracts.
+ *   "Word on the Street" — FO-style misc leads: every rumour you hear in
+ *       the Neon (Lucky Lou, the townsfolk) adds a Pip-Boy objective with a
+ *       marker on the person to talk to; ticked when that quest starts.
+ * All writing original.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+  const N = () => L.neonTown;
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  const TS = { x: -40, z: -262 };
+  const IXM = () => (G.LAYOUT ? G.LAYOUT.INTERIOR_X_MIN : 2500);
+  const npcM = (id, label) => ({ npc: id, label });
+  const QID = 'sq_neon_contract';
+
+  // ==================================================================
+  // Contracts
+  // ==================================================================
+  const KINDS = [
+    { k: 'ferals', what: 'a feral ghoul nest', minL: 1, pack: (l) => [['feral_ghoul', 4 + (l >= 6 ? 1 : 0)], l >= 8 ? ['glowing_one', 1] : null],
+      brief: 'Ferals came up a subway vent and they\'re nesting in the wreck of a crosstown bus. The night watch can hear them from the north gate. Go make it quiet.' },
+    { k: 'raiders', what: 'a raider crew', minL: 1, pack: (l) => [['raider', 3 + (l >= 5 ? 1 : 0) + (l >= 10 ? 1 : 0)]],
+      brief: 'Terminal Boys stragglers set up a toll on a Midtown corner. Charging caravans to pass. We don\'t allow tolls. Except ours. Go end theirs.' },
+    { k: 'molerats', what: 'a mole rat warren', minL: 1, maxL: 9, pack: () => [['molerat', 5]],
+      brief: 'Mole rats dug up through a water main and now they\'re eating the Depot\'s grain as it goes past. Bev wants the meat. I want them gone. Everybody wins except the rats.' },
+    { k: 'dogs', what: 'a wild dog pack', minL: 1, maxL: 12, pack: (l) => [['dog', 4 + (l >= 6 ? 1 : 0)]],
+      brief: 'Wild dogs have been running down porters on the avenue. Big ones. Hungry ones. Smart ones, which is the worst kind.' },
+    { k: 'ants', what: 'giant ants', minL: 3, pack: (l) => [['giant_ant', 4], l >= 7 ? ['fire_ant', 1] : null],
+      brief: 'Giant ants. Out of a storm drain, big as a dog, marching on the market like they\'ve got a shopping list. Burn the column before it finds the noodle stand.' },
+    { k: 'scorpions', what: 'radscorpions', minL: 6, pack: (l) => [['radscorpion', 2 + (l >= 10 ? 1 : 0)]],
+      brief: 'Radscorpions. In Manhattan. Don\'t ask me how — the Captain thinks a caravan brought eggs up from the Jersey flats. Kill them before they lay more.' },
+    { k: 'mutants', what: 'a super mutant patrol', minL: 7, pack: (l) => [['super_mutant', 2 + (l >= 11 ? 1 : 0)]],
+      brief: 'Super mutants scouting down from Herald Square. A patrol this close means a war party behind it. Kill the scouts, the war party loses its eyes.' },
+    { k: 'yaoguai', what: 'a yao guai', minL: 10, pack: (l) => [['yao_guai', 1], l >= 14 ? ['dog', 2] : null],
+      brief: 'A yao guai walked out of the Park and down the avenue like it owns the lease. It killed two brahmin and a porter\'s hat. The porter was in the hat. Put it down.' },
+  ];
+  const FRIENDLY = ['times_square', 'radio_city', 'grand_central', 'rockefeller', 'st_patricks', 'carnegie_hall', 'plaza_hotel', 'flatiron', 'vault120'];
+  let siteCache = null;
+  /** Real Midtown intersections for contracts: open street, off every site / location, on land. */
+  function contractSites() {
+    if (siteCache) return siteCache;
+    const Ly = G.LAYOUT, out = [];
+    if (!Ly || !Ly.avenues || !Ly.streets) return (siteCache = out);
+    for (const a of Ly.avenues) for (const s of Ly.streets) {
+      if (s.park) continue;
+      const x = a.x, z = s.z;
+      if (z < a.z0 + 8 || z > a.z1 - 8 || x < s.x0 + 8 || x > s.x1 - 8) continue;
+      const d = Math.hypot(x - TS.x, z - TS.z); if (d < 150 || d > 520) continue;
+      if (!Ly.isLand(x, z) || (Ly.inPark && Ly.inPark(x, z))) continue;
+      if (Ly.siteAt(x, z, 18)) continue;
+      if (Ly.locationAt(x, z)) continue;
+      let bad = false;
+      for (const id of FRIENDLY) { const l = Ly.getLocation(id); if (l && Math.hypot(x - l.x, z - l.z) < l.r + 70) { bad = true; break; } }
+      if (bad) continue;
+      const st = Ly.streetNameAt(x, z), av = Ly.avenueNameAt(x, z);
+      out.push({ x, z, name: (st || 'the cross street') + ' & ' + (av || 'the avenue') });
+    }
+    return (siteCache = out);
+  }
+  const C = () => L.flag('neon_contract') || null;
+  function lvl() { return Math.max(1, L.level()); }
+  function newContract() {
+    const l = lvl();
+    const kinds = KINDS.filter((k) => l >= k.minL && (!k.maxL || l <= k.maxL));
+    const last = C();
+    const kind = pick(kinds.filter((k) => !last || k.k !== last.kind).length ? kinds.filter((k) => !last || k.k !== last.kind) : kinds);
+    const sites = contractSites().filter((s) => !last || Math.hypot(s.x - last.x, s.z - last.z) > 60);
+    let site = null;
+    for (let tries = 0; tries < 12 && sites.length; tries++) {
+      const s = pick(sites);
+      const f = L.freeSpot(s.x, s.z, 0, { maxR: 10 });
+      if (f && !f.forced) { site = { x: f.x, y: f.y, z: f.z, name: s.name }; break; }
+    }
+    if (!site) return null;
+    const n = (Number(L.flag('neon_contract_n')) || 0) + 1;
+    const pack = kind.pack(l).filter(Boolean);
+    const ids = [];
+    pack.forEach(([type, cnt]) => { for (let i = 0; i < cnt; i++) ids.push({ id: 'nc' + n + '_' + ids.length, type }); });
+    const pay = Math.round((55 + l * 12 + ids.length * 8) / 5) * 5;
+    return { n, kind: kind.k, what: kind.what, brief: kind.brief, x: site.x, y: site.y, z: site.z, place: site.name, ids, lvl: l, pay, xp: 60 + l * 12 };
+  }
+  function spawnContract(c) {
+    if (!c) return;
+    const K = KINDS.find((k) => k.k === c.kind) || KINDS[0];
+    c.ids.forEach((t, i) => {
+      if (L.isDead(t.id)) return;
+      const ang = i * 2.39996, r = 2 + (i % 3) * 2.2;
+      const s = L.freeSpot(c.x + Math.cos(ang) * r, c.z + Math.sin(ang) * r, c.y || 0, { maxR: 6 }) || { x: c.x, y: c.y || 0, z: c.z };
+      const boss = t.type === 'glowing_one' || t.type === 'yao_guai' || (K.k === 'raiders' && i === 0);
+      const def = { id: t.id, type: t.type, level: c.lvl + (boss ? 2 : 0), pos: { x: s.x, y: s.y, z: s.z }, ai: 'guard', home: { x: s.x, z: s.z, r: 9 }, hostile: true, noRespawn: true };
+      if (t.type === 'raider') { def.faction = 'raiders'; def.voice = 'raider'; if (boss) { def.name = pick(['Toll Boss Vic', 'Crowbar Kate', 'Two-Tooth Tommy', 'Big Mouth Benny']); def.weapon = c.lvl >= 6 ? 'assault_rifle' : 'combat_shotgun'; } }
+      L.spawnNPC(def);
+    });
+  }
+  function aliveTargets(c, extraDead) { return c ? c.ids.filter((t) => t.id !== extraDead && !L.isDead(t.id)) : []; }
+  function contractMarker() {
+    const c = C(); if (!c) return [];
+    const alive = aliveTargets(c).map((t) => L.npc(t.id)).filter((a) => a && !a.dead && a.pos);
+    if (alive.length && alive.some((a) => Math.hypot(a.pos.x - c.x, a.pos.z - c.z) < 60)) {
+      let x = 0, z = 0; alive.forEach((a) => { x += a.pos.x; z += a.pos.z; });
+      return [{ x: x / alive.length, z: z / alive.length, label: 'Contract: ' + c.what }];
+    }
+    return [{ x: c.x, z: c.z, label: 'Contract: ' + c.what }];
+  }
+  function acceptContract() {
+    const c = newContract();
+    if (!c) { L.notify('The bounty board is empty. Come back tomorrow.'); return false; }
+    // radiant: the quest id is reused — clear its old completed/failed record first
+    if (Q.isComplete(QID) || Q.isFailed(QID)) L.STATE.delete(QID);
+    cleanupOld();
+    L.setFlag('neon_contract_n', c.n);
+    L.setFlag('neon_contract', c);
+    spawnContract(c);
+    Q.start(QID);
+    Q.setTracked(QID);
+    return true;
+  }
+  function cleanupOld() {
+    const prev = L.flag('neon_contract_prev');
+    if (prev && prev.ids) for (const t of prev.ids) L.removeNPC(t.id);
+    L.setFlag('neon_contract_prev', null);
+  }
+  function payContract() {
+    const c = C(); if (!c) return;
+    const done = L.incFlag('neon_contracts_done');
+    const def = L.DEFS.get(QID);
+    def.rewards = { xp: c.xp, caps: c.pay, karma: 10 };
+    Q.complete(QID);
+    L.setFlag('neon_contract_day', G.time.day);
+    L.setFlag('neon_contract_prev', { ids: c.ids });
+    L.setFlag('neon_contract', null);
+    if (done === 3) { L.giveCaps(100); L.notify('Contract bonus: +100 caps. "Three for three. You\'re starting to look like a guard."'); }
+    if (done === 5) { L.setFlag('neon_marksman', true); marksman(); L.notify('Neon Marksman: Sergeant Mulroney pins a tin sharpshooter\'s badge on your collar. +1 PER, +3 Guns.'); L.news('Word from the Neon: the Guard\'s newest contract hunter has cleared five nests around Midtown. Sergeant Mulroney says the avenues are "almost boring now. Almost."'); }
+    if (done === 10) { L.giveCaps(300); L.karma(50, 'Ten contracts for the Neon Guard'); L.news('The Neon Guard toasts its busiest contractor: ten nests, crews and packs cleared from the streets around Times Square. Mayor Crowe has proposed a statue. Nobody has seconded it.'); }
+  }
+  function abandonContract() {
+    const c = C(); if (!c) return;
+    Q.fail(QID);
+    L.setFlag('neon_contract_prev', { ids: c.ids });
+    L.setFlag('neon_contract', null);
+    L.setFlag('neon_contract_day', G.time.day);
+  }
+  /** 5-contract reward: a permanent perk-like effect (re-applied after every load, like the companion perks). */
+  function marksman() {
+    if (!L.flag('neon_marksman') || G.isStub('rpg') || !G.rpg.addEffect) return;
+    try { G.rpg.removeEffect && G.rpg.removeEffect('neon_marksman'); G.rpg.addEffect({ id: 'neon_marksman', name: 'Neon Marksman', kind: 'buff', duration: 0, mods: { special: { P: 1 }, skills: { guns: 3 } }, source: 'quest', desc: 'Mulroney\'s tin sharpshooter\'s pin. +1 PER, +3 Guns.' }); } catch (e) { G.reportError('quests:neonMarksman', e); }
+  }
+  const canTakeContract = () => !!L.flag('neon_guard_member') && !Q.isActive(QID) && L.flag('neon_contract_day') !== G.time.day;
+
+  // ==================================================================
+  // Word on the Street (rumour leads)
+  // ==================================================================
+  const RID = 'misc_neon_rumors';
+  const LEADS = [
+    { id: 'power', flags: ['neon_rumor_power', 'neon_rumor_neon_pearl'], done: () => Q.isStarted('sq_neon_power'), text: 'Ask Sparks Malloy why the Neon\'s lights keep failing.', npc: 'neon_sparks', label: 'Sparks Malloy' },
+    { id: 'opry', flags: ['neon_rumor_opry', 'neon_rumor_neon_ruby'], done: () => Q.isStarted('sq_neon_opry'), text: 'The Opry lost its leading man. See Lionel Fairweather.', npc: 'neon_director', label: 'Lionel Fairweather' },
+    { id: 'guard', flags: ['neon_rumor_guard', 'neon_rumor_neon_nicky'], done: () => Q.isStarted('sq_neon_guard'), text: 'Captain Kincaid is hiring for the Neon Guard.', npc: 'neon_capt', label: 'Captain Kincaid' },
+    { id: 'ball', flags: ['neon_rumor_ball'], done: () => Q.isStarted('sq_neon_ball'), text: 'Mayor Crowe wants someone to fix the Times Square Ball.', npc: 'neon_crowe', label: 'Mayor Crowe' },
+    { id: 'escort', flags: ['neon_rumor_escort', 'neon_rumor_neon_stan'], done: () => Q.isStarted('sq_neon_express1'), text: 'Eustace Byrd pays escorts at the Caravan Depot.', npc: 'neon_wagon', label: 'Eustace Byrd' },
+    { id: 'club', flags: ['neon_rumor_club'], done: () => Q.isStarted('sq_neon_club'), text: 'Try to talk your way past Big Sal at the Smoothskin Club.', npc: 'neon_sal', label: 'Big Sal' },
+    { id: 'cards', flags: ['neon_rumor_neon_gums'], done: () => Q.isStarted('sq_neon_caravan'), text: 'Learn Caravan from Eustace Byrd, then take on the Neon\'s card sharps.', npc: 'neon_wagon', label: 'Eustace Byrd' },
+    { id: 'oracle', flags: ['neon_rumor_oracle', 'neon_rumor_neon_dusty'], done: () => L.flag('neon_oracle_day') !== undefined && L.flag('neon_oracle_day') !== null, text: 'Have your fortune told at the Ticker Oracle.', anchor: ['oracle_booth', 'ticker_oracle'], label: 'Ticker Oracle' },
+    { id: 'speakeasy', flags: ['neon_rumor_speakeasy'], done: () => !!L.flag('neon_speakeasy_lore'), text: 'Find the secret Speakeasy down the 42nd Street subway stairs.', anchor: ['speakeasy_bar', 'speakeasy_bartender'], label: 'The Speakeasy' },
+  ];
+  const heard = (ld) => ld.flags.some((f) => !!L.flag(f));
+  function leadMarker(ld) {
+    if (ld.npc) return [npcM(ld.npc, ld.label)];
+    const a = N() && N().has(ld.anchor); return a ? [{ x: a.x, z: a.z, y: a.y, label: ld.label }] : [];
+  }
+  function rumorsTick() {
+    const any = LEADS.some(heard);
+    if (!any) return;
+    if (!Q.isStarted(RID)) { Q.start(RID); return; }
+    if (Q.isActive(RID) && LEADS.every((ld) => { try { return ld.done(); } catch (e) { return false; } })) Q.complete(RID);
+  }
+
+  // ==================================================================
+  // Quests, items
+  // ==================================================================
+  L.hook('init', function () {
+    L.quest({
+      id: QID, name: 'Neon Guard Contract', giver: 'Sergeant Otis Mulroney', location: 'Guard Barracks (The Neon)',
+      desc: () => { const c = C(); return c ? 'Contract #' + c.n + ' off the Neon Guard\'s bounty board: ' + c.what + ' at ' + c.place + '. "' + c.brief + '" Pay on proof: ' + c.pay + ' caps.' : 'A job off the Neon Guard\'s bounty board.'; },
+      stages: [
+        { id: 'hunt', text: () => { const c = C(); if (!c) return 'Clear the contract target.'; const dead = c.ids.length - aliveTargets(c).length; return 'Clear out ' + c.what + ' at ' + c.place + ' (' + dead + '/' + c.ids.length + ').'; },
+          markers: () => contractMarker() },
+        { id: 'report', text: () => (L.alive('neon_sarge') ? 'Report to Sergeant Mulroney in the Guard Barracks.' : 'Report to Captain Kincaid — Mulroney is off his post.'),
+          markers: () => [L.alive('neon_sarge') ? npcM('neon_sarge', 'Sergeant Mulroney') : npcM('neon_capt', 'Captain Kincaid')] },
+      ],
+      rewards: {},
+    });
+    L.quest({
+      id: RID, name: 'Word on the Street', giver: 'The Neon', location: 'The Neon (Times Square)',
+      desc: 'Everyone in the Neon talks. Some of it is even true. Rumours you\'ve picked up in the square, the Rad Room and the market — follow them up, or don\'t.',
+      stages: [{ id: 'listen', text: () => (LEADS.some((ld) => heard(ld) && !ld.done()) ? 'Follow up on the rumours going around the Neon.' : 'Keep your ears open around the Neon — the Rad Room, the market, the Ticker Oracle.') }]
+        .concat(LEADS.map((ld) => ({ id: 'lead_' + ld.id, text: ld.text, sideObjective: true, showIf: () => heard(ld), doneIf: () => heard(ld) && !!ld.done(), markers: () => leadMarker(ld) }))),
+      rewards: { xp: 100 },
+    });
+  });
+
+  // ==================================================================
+  // Dialogues
+  // ==================================================================
+  L.hook('register', function () {
+    const member = () => !!L.flag('neon_guard_member');
+    L.dialogue('dlg_neon_sarge', {
+      start: () => (L.flag('met_mulroney') ? 'hello' : 'first'),
+      nodes: {
+        first: { text: 'Barracks. [A big ghoul in patched combat armour doesn\'t look up from the rifle he\'s cleaning.] Sergeant Otis Mulroney. I run the armory, the duty roster and the bounty board, and I do all three better than anybody alive. Low bar. State your business.',
+          onEnter() { L.setFlag('met_mulroney'); }, responses: [{ text: 'What is this place?', next: 'place' }, { text: 'Just looking around.', next: 'hello' }] },
+        place: { text: 'Used to be a subway entrance and a recruiting office upstairs. The Army had it, then the bombs had it, then the ferals had it. Now the Guard has it. Bunks for the night watch, the armory cage, the board. Anybody wants to hurt the Neon, they get planned against in this room.',
+          responses: [{ text: 'Got it.', next: 'hello' }] },
+        hello: { text: () => (DLG.paid = null, L.flag('neon_guard_sergeant') ? pick(['Sergeant. Coffee\'s cold, board\'s fresh.', 'Sergeant on deck. What do you need?']) : member() ? pick(['Guardsman. Boots clean? Rifle clean? Conscience optional.', 'Recruit. What\'s it gonna be?']) : pick(['Civilian. You lost?', 'Barracks is for the Guard. You\'re not the Guard. What do you want?'])),
+          responses: [
+            { text: 'Let\'s see the armory.', cond: member, barter: true, end: true },
+            { text: 'Can I buy from the armory?', cond: () => !member(), next: 'members' },
+            { text: 'Anything on the bounty board?', cond: () => member() && !Q.isActive(QID), next: 'board' },
+            { text: () => { const c = C(); return 'About the contract — ' + (c ? c.what + ' at ' + c.place : '…') + '.'; }, cond: () => Q.stage(QID) === 'hunt', next: 'remind' },
+            { text: 'Contract\'s done. They\'re dead.', cond: () => Q.stage(QID) === 'report', next: 'pay' },
+            { text: 'How am I doing?', cond: member, next: 'record' },
+            { text: 'How do I join the Guard?', cond: () => !member(), next: 'join' },
+            { text: 'Carry on, Sergeant.' }] },
+        members: { text: 'Armory\'s for sworn Guard only. Kincaid\'s orders, and mine, and the rifles\'. Swear in with the Captain at the north gate and I\'ll sell you anything in that cage at cost. Well. At my cost. Which includes my time. Which is valuable.', responses: [{ text: 'Fair enough.', next: 'hello' }] },
+        join: { text: 'Talk to Captain Kincaid, north gate. She\'ll give you three names off the Mayor\'s board. Kill them, and you\'re Guard. Die, and you\'re also Guard — posthumously. We\'re not picky about paperwork.', responses: [{ text: 'Thanks.', next: 'hello' }] },
+        board: { text: () => { if (!canTakeContract()) return 'Board\'s picked clean for today. New notices come in with the morning caravan. Come back tomorrow.'; if (!DLG.offer || DLG.offerDay !== G.time.day) { DLG.offer = newContract(); DLG.offerDay = G.time.day; } const c = DLG.offer; return c ? 'Contract. ' + c.brief + ' ' + c.place + '. That\'s ' + c.what + '. Pays ' + c.pay + ' caps on proof. You want it?' : 'Board\'s empty. Enjoy it. It won\'t last.'; },
+          responses: [
+            { text: 'I\'ll take it.', cond: () => canTakeContract() && !!DLG.offer, action: () => takeOffer(), next: 'taken' },
+            { text: 'Not today.', next: 'hello' }] },
+        taken: { text: () => { const c = C(); return c ? 'It\'s on your Pip-Whatever. ' + c.place + '. Bring your own ammo, or buy mine. Mine\'s better. Mine\'s also mine.' : 'Hm. The notice blew away. Try again.'; }, responses: [{ text: 'On my way.' }] },
+        remind: { text: () => { const c = C(); if (!c) return '…'; const left = aliveTargets(c).length; return c.place + '. ' + (left === c.ids.length ? 'All of \'em still breathing, by my reckoning.' : left + ' left, by my reckoning.') + ' Want to back out? No shame. Some shame. Mostly no.'; },
+          responses: [{ text: 'I\'m on it.' }, { text: 'I\'m backing out of this one.', next: 'quit' }] },
+        quit: { text: 'Fine. I\'ll send the night watch. They\'ll complain. Board\'s closed to you till tomorrow — rules are rules.', onEnter() { abandonContract(); }, responses: [{ text: 'Understood.' }] },
+        pay: { text: () => { const c = DLG.paid || C(); return c ? pick(['Good. Clean work. ', 'Heard the shooting from here. Heard it stop. Good. ', 'That\'s one less thing on the avenue. ']) + c.pay + ' caps, as posted. Guard thanks you, the porters thank you, and I thank you, silently, in my heart, which still works.' : 'Paid. Go.'; },
+          onEnter() { DLG.paid = C(); payContract(); }, responses: [{ text: 'Anything else on the board?', next: 'board' }, { text: 'Thanks, Sergeant.' }] },
+        record: { text: () => { const n = Number(L.flag('neon_contracts_done')) || 0; return n === 0 ? 'Zero contracts. Zero complaints, zero compliments. Take one off the board and let\'s see what you are.' : n < 3 ? n + ' contract' + (n > 1 ? 's' : '') + '. You\'re not dead, which puts you ahead of the last recruit. Three gets you a bonus.' : n < 5 ? n + ' contracts. Solid. Five gets you my marksman\'s pin. It\'s very shiny. Don\'t tell anyone I said shiny.' : n < 10 ? n + ' contracts, and a pin. At ten, I buy you a drink, the Mayor gives a speech, and you pretend to listen.' : n + ' contracts. You\'ve done more for these streets than the Army ever did. Don\'t let it get to your head. Get it to your trigger finger.'; },
+          responses: [{ text: 'Good to know.', next: 'hello' }] },
+      },
+    });
+    const DLG = { offer: null, paid: null };
+    function takeOffer() {
+      const c = DLG.offer; DLG.offer = null;
+      if (!c) return;
+      if (Q.isComplete(QID) || Q.isFailed(QID)) L.STATE.delete(QID);
+      cleanupOld();
+      L.setFlag('neon_contract_n', c.n);
+      L.setFlag('neon_contract', c);
+      spawnContract(c);
+      Q.start(QID);
+      Q.setTracked(QID);
+    }
+
+    // actor-less: the barracks bounty board
+    L.dialogue('dlg_neon_bounty_board', {
+      start: 'look',
+      nodes: {
+        look: { text: () => { const c = C(); const done = Number(L.flag('neon_contracts_done')) || 0;
+          return '[Three WANTED posters, a duty roster and a clipboard of contract notices, most of them crossed out in red grease pencil.]\n\n' +
+            (c ? 'OPEN CONTRACT #' + c.n + ': ' + c.what.toUpperCase() + ' — ' + c.place.toUpperCase() + '. ' + c.pay + ' CAPS. TAKEN BY: ' + (G.player && G.player.name ? G.player.name.toUpperCase() : 'YOU') + '.'
+              : canTakeContract() ? 'NEW NOTICES POSTED. SEE SGT. MULRONEY.' : member() ? 'NO NEW NOTICES. NEXT BOARD: TOMORROW MORNING.' : 'CONTRACTS FOR SWORN GUARD ONLY. APPLY: CAPT. M. KINCAID, NORTH GATE.') +
+            (done ? '\n\nCONTRACTS CLOSED BY YOU: ' + done + '.' : ''); },
+          responses: [{ text: '[Leave.]' }] },
+      },
+    });
+
+    // Kincaid points finished bounty hunters at the Sergeant
+    const capt = L.DIALOGUES.get('dlg_neon_capt');
+    if (capt && capt.nodes && capt.nodes.hello && !capt.nodes.hello.responses.some((r) => r._sarge)) {
+      capt.nodes.hello.responses.splice(Math.max(0, capt.nodes.hello.responses.length - 2), 0,
+        { _sarge: true, text: 'Any more work for the Guard?', cond: () => L.alive('neon_sarge') && (Q.isComplete('sq_neon_guard') || (member() && !Q.isActive('sq_neon_guard'))), next: 'sarge_work' });
+      // Completability: if Mulroney is not in the world (barracks not built, or he died), Kincaid runs the board herself.
+      const sarge = L.DIALOGUES.get('dlg_neon_sarge');
+      const names = ['board', 'taken', 'remind', 'quit', 'pay'];
+      for (const n of names) {
+        const src = sarge.nodes[n]; if (!src) continue;
+        const rs = Array.isArray(src.responses) ? src.responses.map((r) => Object.assign({}, r, names.indexOf(r.next) >= 0 ? { next: 'sg_' + r.next } : null)) : src.responses;
+        capt.nodes['sg_' + n] = Object.assign({}, src, { responses: rs });
+      }
+      const noSarge = () => !L.alive('neon_sarge');
+      capt.nodes.hello.responses.splice(Math.max(0, capt.nodes.hello.responses.length - 2), 0,
+        { _sarge: true, text: 'Mulroney\'s not at his post. Anything on the bounty board?', cond: () => noSarge() && member() && !Q.isActive(QID), next: 'sg_board' },
+        { _sarge: true, text: () => { const c = C(); return 'About the contract — ' + (c ? c.what + ' at ' + c.place : '…') + '.'; }, cond: () => noSarge() && Q.stage(QID) === 'hunt', next: 'sg_remind' },
+        { _sarge: true, text: 'Contract\'s done. They\'re dead.', cond: () => noSarge() && Q.stage(QID) === 'report', next: 'sg_pay' });
+      capt.nodes.sarge_work = { text: 'Always. Mulroney runs the contract board down in the barracks — the subway kiosk by the island. One job a day, paid on proof. He\'ll also sell you guard kit at cost. Tell him I said to stop hoarding the good grenades.', responses: [{ text: 'I\'ll see him.', next: 'hello' }] };
+    }
+    // Barnaby and the townsfolk now drop the Speakeasy / Oracle rumours
+    const bell = L.DIALOGUES.get('dlg_neon_bellhop');
+    if (bell && bell.nodes && bell.nodes.subway && !bell.nodes.subway._r) { bell.nodes.subway._r = true; const prev = bell.nodes.subway.onEnter; bell.nodes.subway.onEnter = function (a) { if (prev) prev(a); L.setFlag('neon_rumor_speakeasy'); }; }
+    if (bell && bell.nodes && bell.nodes.tour && !bell.nodes.tour._r) { bell.nodes.tour._r = true; const prev = bell.nodes.tour.onEnter; bell.nodes.tour.onEnter = function (a) { if (prev) prev(a); L.setFlag('neon_rumor_oracle'); }; }
+  });
+
+  // ==================================================================
+  // World, spawn, events, update
+  // ==================================================================
+  L.hook('world', function () {
+    const b = N() && N().has(['bounty_board']);
+    if (b) G.world.addInteractable({ pos: L.V3(b.x, (b.y || 0) + 1.6, b.z), radius: 1.0, label: 'Guard Bounty Board', verb: 'Read', priority: 0.8,
+      onInteract() { L.startDialogue('dlg_neon_bounty_board', null); } });
+  });
+  L.hook('spawn', function () {
+    siteCache = null;
+    marksman();
+    const c = C();
+    if (c && Q.stage(QID) === 'hunt') spawnContract(c);
+  });
+  G.events.on('actorKilled', (a) => {
+    if (!a || !a.id || !/^nc\d+_/.test(a.id)) return;
+    const c = C(); if (!c || Q.stage(QID) !== 'hunt' || !c.ids.some((t) => t.id === a.id)) return;
+    const left = aliveTargets(c, a.id).length;
+    if (left <= 0) { Q.setStage(QID, 'report'); L.notify('Contract target cleared. Report to Sergeant Mulroney.'); } else L.refresh(QID);
+  });
+  G.events.on('questFlag', (name) => { if (typeof name === 'string' && name.indexOf('neon_rumor_') === 0) L.later(0.5, rumorsTick); });
+  let t1 = 0;
+  L.hook('update', function (dt) {
+    if (dt <= 0) return;
+    t1 += dt; if (t1 < 1) return; t1 = 0;
+    if (Q.isActive(RID)) { try { rumorsTick(); } catch (e) { G.reportError('quests:neon rumors', e); } }
+  });
+
+  // Debug (dev console)
+  Q.debug.neonContract = () => { L.setFlag('neon_guard_member', true); L.setFlag('neon_contract_day', -1); acceptContract(); return C(); };
+  Q.debug.neonContractSites = () => contractSites().map((s) => s.name + ' (' + Math.round(s.x) + ',' + Math.round(s.z) + ')');
+  L.neonContracts = { newContract, spawnContract, acceptContract, contractSites, LEADS, KINDS };
+})();
+

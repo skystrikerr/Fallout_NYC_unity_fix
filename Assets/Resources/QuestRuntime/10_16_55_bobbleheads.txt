@@ -1,0 +1,108 @@
+/* src/quests/55_bobbleheads.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 55: "VAULT-TEC'S FINEST" (BOBBLEHEAD HUNT)
+ * The twenty Vault-Tec promotional bobbleheads (defined by rpg: 7 S.P.E.C.I.A.L.
+ * + 13 skills) are hidden across Manhattan's landmarks. Picking one up
+ * grants its bonus (rpg). This file places them and tracks the collection.
+ * A Vault-Tec promotional flyer in Vault 120 kicks the hunt off.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+
+  // [bobblehead key, site, anchor names, fallback offset from the site centre, hint]
+  const SPOTS = [
+    ['strength', 'empire_state', ['loot_deck', 'observation_deck'], [0, 0], 'the Empire State observation deck'],
+    ['perception', 'chrysler', ['sniper', 'loot2'], [0, 0], 'a sniper\'s nest high on the Chrysler Building'],
+    ['endurance', 'brooklyn_bridge', ['truck', 'deck_mid'], [0, 0], 'a wrecked truck on the Brooklyn Bridge'],
+    ['charisma', 'times_square', ['stage', 'plaza'], [0, 0], 'the stage in the Neon'],
+    ['intelligence', 'nypl', ['hall', 'terrace'], [0, 0], 'the hall of the Public Library'],
+    ['agility', 'statue_of_liberty', ['balcony', 'fort_top'], [0, 0], 'the balcony of the Statue of Liberty'],
+    ['luck', 'grand_central', ['clock', 'info_booth'], [0, 0], 'the Grand Central information booth'],
+    ['barter', 'grand_central', ['loot3', 'west_balcony'], [0, 0], 'a balcony in Grand Central'],
+    ['energy_weapons', 'un_hq', ['loot1', 'terminal'], [0, 0], 'deep inside the UN compound'],
+    ['explosives', 'nyse', ['loot', 'trading_floor'], [0, 0], 'the Exchange trading floor'],
+    ['guns', 'rockefeller', ['loot1', 'plaza'], [0, 0], 'the Brotherhood compound at Rockefeller Center'],
+    ['lockpick', 'macys', ['safe', 'office'], [0, 0], 'the Macy\'s manager\'s office'],
+    ['medicine', 'flatiron', ['doctor', 'bar'], [0, 0], 'the Flatiron clinic counter'],
+    ['melee_weapons', 'washington_square', ['arch', 'fountain'], [0, 0], 'under the Washington Square arch'],
+    ['repair', 'radio_city', ['loot1', 'generator'], [0, 0], 'the Radio City lobby'],
+    ['science', 'met', ['great_hall', 'info_desk'], [0, 0], 'the Great Hall of the Met'],
+    ['sneak', 'st_patricks', ['confessor', 'loot2'], [0, 0], 'a confessional in St. Patrick\'s'],
+    ['speech', 'city_hall', ['rotunda', 'boss'], [0, 0], 'the City Hall rotunda'],
+    ['survival', 'battery_park', ['castle', 'castle_gate'], [0, 0], 'Castle Clinton in Battery Park'],
+    ['unarmed', 'woolworth', ['boss', 'footlocker'], [0, 0], 'the raider den in the Woolworth Building'],
+  ];
+  const ids = () => SPOTS.map((s) => 'bobblehead_' + s[0]);
+  function owned(id) {
+    if (!G.isStub('rpg') && G.rpg.hasBobblehead) { try { if (G.rpg.hasBobblehead(id)) return true; } catch (e) { /* */ } }
+    return L.has(id) || !!L.flag('bh_' + id);
+  }
+  function count() { return ids().filter(owned).length; }
+
+  L.hook('init', function () {
+    L.defineItem({ id: 'q_note_bobblehead_flyer', type: 'note', name: 'Vault-Tec Promotional Flyer', title: 'COLLECT ALL 20!',
+      text: 'CONGRATULATIONS, VAULT DWELLER!\n\nTo celebrate the opening of Vault-Tec\'s Manhattan vaults, twenty (20) limited-edition Vault Boy Bobbleheads ' +
+        'have been placed at famous New York landmarks for our lucky tenants to discover!\n\nEach bobblehead contains Vault-Tec\'s patented ' +
+        'Confidence Formula™*. Find them all and become one of VAULT-TEC\'S FINEST!\n\n*Confidence Formula is not a formula. Results are, however, guaranteed.\n\n' +
+        '[Handwritten on the back in Zeke\'s writing: "Kid — I found the Luck one at Grand Central, left it for you by the clock. Don\'t say I never gave you nothing."]',
+      weight: 0, value: 0 });
+    L.quest({
+      id: 'sq_bobbleheads', name: 'Vault-Tec\'s Finest', giver: 'Vault-Tec Promotional Flyer', location: 'Manhattan',
+      desc: 'Twenty Vault Boy bobbleheads were hidden at New York landmarks before the war. Each one grants a permanent bonus.',
+      stages: [
+        { id: 'collect', text: () => 'Collect the Vault-Tec bobbleheads (' + count() + '/20).',
+          markers: () => {
+            // Only show the next few nearest undiscovered bobbleheads whose landmark you've discovered.
+            const P = G.player.pos, out = [];
+            for (const s of SPOTS) {
+              const id = 'bobblehead_' + s[0]; if (owned(id)) continue;
+              const pk = L.pickups['bh_' + s[0]]; if (!pk) continue;
+              const loc = G.LAYOUT.LOCATIONS.find((l) => l.id === s[1] || (s[1] === 'nyse' && l.id === 'wall_street') || (s[1] === 'statue_of_liberty' && l.id === 'liberty') || (s[1] === 'un_hq' && l.id === 'un_hq'));
+              if (loc && !G.discovered.has(loc.id)) continue;
+              out.push({ x: pk.pos.x, z: pk.pos.z, y: pk.pos.y, label: 'Bobblehead (' + s[0].replace(/_/g, ' ') + ')', d: Math.hypot(P.x - pk.pos.x, P.z - pk.pos.z) });
+            }
+            return out.sort((a, b) => a.d - b.d).slice(0, 3);
+          } },
+      ],
+      rewards: { xp: 1000, caps: 500 },
+      onComplete() {
+        L.notify('You are one of VAULT-TEC\'S FINEST! (Vault-Tec regrets that there is no prize. The prize is the bobbleheads.)');
+        L.news('Collectors\' corner, folks: I have it on good authority that somebody out there has found all twenty of the old Vault-Tec bobbleheads. All twenty! That\'s a lot of nodding. Congratulations, you strange, wonderful obsessive.');
+      },
+    });
+  });
+
+  L.hook('spawn', function () {
+    for (const s of SPOTS) {
+      const id = 'bobblehead_' + s[0];
+      if (owned(id)) continue;
+      const site = G.LAYOUT.getSite(s[1]); if (!site) continue;
+      const c = { x: (site.x0 + site.x1) / 2 + s[3][0], z: (site.z0 + site.z1) / 2 + s[3][1] };
+      const p = L.anchor(s[1], s[2], c, { maxR: 10 });
+      if (!p) continue;
+      // nudge off the anchor so it doesn't sit inside an NPC standing there
+      L.pickup('bh_' + s[0], id, 1, { x: p.x + 0.7, y: p.y, z: p.z + 0.5 });
+    }
+    // The flyer in the player's quarters (vault).
+    const V = L.vault && L.vault.spots;
+    if (V && V.locker && !L.has('q_note_bobblehead_flyer')) L.pickup('bh_flyer', 'q_note_bobblehead_flyer', 1, { x: V.locker.x + 0.9, y: V.locker.y, z: V.locker.z + 0.4 });
+  });
+
+  function refresh(id) {
+    if (id && /^bobblehead_/.test(id)) L.setFlag('bh_' + id);
+    if (id === 'q_note_bobblehead_flyer' && !Q.isStarted('sq_bobbleheads')) Q.start('sq_bobbleheads');
+    const n = count();
+    if (n > 0 && !Q.isStarted('sq_bobbleheads')) Q.start('sq_bobbleheads');
+    if (Q.isActive('sq_bobbleheads')) {
+      if (n >= 20) Q.complete('sq_bobbleheads');
+      else if (id && /^bobblehead_/.test(id)) L.refresh('sq_bobbleheads');
+    }
+  }
+  G.events.on('itemAdded', (id) => refresh(id));
+  G.events.on('bobblehead', (id) => refresh(typeof id === 'string' ? id : null));
+  L.bobbleheads = { count, SPOTS };
+})();
+

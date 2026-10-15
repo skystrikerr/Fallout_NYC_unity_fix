@@ -1,0 +1,658 @@
+/* src/combat/00_data.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — COMBAT: static data
+ * Owned by: combat.  Provides G.actors / G.combat / G.vats (see CONTRACT §2).
+ *
+ * This first file creates the three public namespaces (replacing the core
+ * stubs wholesale) plus a PRIVATE cross-file namespace `G.__cmb` that the
+ * other files in src/combat/ share.  Nothing outside this directory should
+ * touch G.__cmb.
+ *
+ * Contents: factions & default relations, creature/NPC archetype table,
+ * natural (creature/robot) attacks, fallback NPC weapon stats (only used
+ * when the weapons module is absent), NPC weapon pools per faction/level,
+ * VATS part labels, loot hints, bark lines (all original writing),
+ * roaming encounter tables and generic settlement populations.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+
+  // Public namespaces — replaced wholesale at load time (contract rule 3).
+  G.actors = {};
+  G.combat = {};
+  G.vats = {};
+
+  // Private shared namespace
+  const C = (G.__cmb = {});
+
+  // ------------------------------------------------------------------
+  // Factions & relations
+  // ------------------------------------------------------------------
+  C.FACTIONS = ['player', 'vault', 'settlers', 'ghouls', 'brotherhood', 'children_of_atom', 'raiders',
+    'super_mutants', 'feral_ghouls', 'creatures', 'robots', 'enclave',
+    // karma hit squads (spawned only against the player): Gallowglass mercs, Lantern Marshals
+    'mercenaries', 'lawmen'];
+
+  /** Default relations. Anything not listed is 'neutral'. Symmetric. */
+  const H = 'hostile', A = 'ally';
+  C.DEFAULT_REL = {};
+  function rel(a, b, r) { C.DEFAULT_REL[a + '|' + b] = r; C.DEFAULT_REL[b + '|' + a] = r; }
+  // Everyone likes themselves
+  for (const f of C.FACTIONS) rel(f, f, A);
+  rel('player', 'vault', A);
+  // The wasteland's bad guys hate the player…
+  for (const f of ['raiders', 'super_mutants', 'feral_ghouls', 'creatures', 'robots', 'enclave']) rel('player', f, H);
+  // …and every civilised faction
+  for (const good of ['vault', 'settlers', 'ghouls', 'brotherhood', 'children_of_atom']) {
+    for (const bad of ['raiders', 'super_mutants', 'feral_ghouls', 'creatures', 'robots']) rel(good, bad, H);
+  }
+  rel('brotherhood', 'enclave', H);
+  rel('settlers', 'enclave', H); rel('ghouls', 'enclave', H);
+  // Monsters also fight each other opportunistically
+  rel('raiders', 'super_mutants', H); rel('raiders', 'feral_ghouls', H); rel('raiders', 'creatures', H);
+  rel('raiders', 'enclave', H); rel('raiders', 'robots', H);
+  rel('super_mutants', 'feral_ghouls', H); rel('super_mutants', 'enclave', H); rel('super_mutants', 'creatures', H);
+  rel('super_mutants', 'robots', H);
+  rel('enclave', 'feral_ghouls', H); rel('enclave', 'creatures', H); rel('enclave', 'ghouls', H);
+  rel('feral_ghouls', 'creatures', 'neutral');
+  rel('robots', 'creatures', 'neutral');
+  rel('enclave', 'robots', 'neutral');
+  // Friendly ghouls & ferals ignore each other (lore!)
+  rel('ghouls', 'feral_ghouls', 'neutral');
+  // Karma hit squads: they came for the player, and shoot back at whatever attacks them on the way
+  rel('player', 'mercenaries', H); rel('player', 'lawmen', H);
+  for (const f of ['super_mutants', 'feral_ghouls', 'creatures']) { rel('mercenaries', f, H); rel('lawmen', f, H); }
+  rel('lawmen', 'raiders', H); rel('mercenaries', 'raiders', H);
+  rel('mercenaries', 'enclave', 'neutral');   // the Liberty Island paymaster
+
+  /** Factions whose members count as "innocent" for karma when murdered. */
+  C.INNOCENT_FACTIONS = new Set(['vault', 'settlers', 'ghouls', 'brotherhood', 'children_of_atom']);
+  /** Factions that are "evil": killing them gives a small karma bonus (FO3-ish). */
+  C.EVIL_FACTIONS = new Set(['raiders', 'enclave']);
+
+  // ------------------------------------------------------------------
+  // Archetype table.  Keyed by G.chars type (plus a few aliases).
+  //  ai:      behaviour family (see 20_ai.js)
+  //  hp/hpLvl base & per-level HP, dr damage resistance (%), dt threshold
+  //           (ONE mitigation model per hit: DT is subtracted first and then only
+  //           HALF the DR applies — see C.mitigate in 30_combat.js. Power-armoured
+  //           humanoids use DR only so common guns still work: 10mm ≈ 4-6/hit,
+  //           laser rifle ≈ 12-15/hit on an Enclave soldier at player level 15.)
+  //  swarm:   comes in clusters of 2-3 at locations (radroach, mole rat, bloatfly)
+  //  maxPerGroup: hard cap per location group (eyebots)
+  //  walk/run speeds (m/s), sight (m), per (Perception 1-10), xp value
+  //  natural: attack key in C.NATURAL (creatures & robots), or null
+  //  gore:    'red'|'green'|'oil', robot/creature flags, hover height
+  //  flee:    HP fraction at which the actor may flee (0 = never)
+  //  voice:   bark table id, sounds: alert/hurt/death/idle sfx names
+  // ------------------------------------------------------------------
+  C.TYPES = {
+    human: { name: 'Wastelander', faction: 'settlers', ai: 'humanoid', hp: 40, hpLvl: 6, dr: 0, walk: 1.6, run: 5.0, sight: 55, per: 5, xp: 10,
+      gore: 'red', flee: 0.25, voice: 'settler', sounds: { hurt: 'hurt_human', death: 'death_human' }, height: 1.78, radius: 0.35, human: true },
+    raider: { name: 'Raider', charType: 'raider', faction: 'raiders', ai: 'humanoid', hp: 42, hpLvl: 8, dr: 6, walk: 1.7, run: 5.2, sight: 55, per: 5, xp: 15,
+      gore: 'red', flee: 0.2, voice: 'raider', sounds: { hurt: 'hurt_human', death: 'death_human' }, height: 1.78, radius: 0.35, human: true, grenades: 0.25 },
+    enclave_soldier: { name: 'Enclave Soldier', charType: 'enclave_soldier', faction: 'enclave', ai: 'humanoid', hp: 140, hpLvl: 7, dr: 28, walk: 1.6, run: 4.6, sight: 75,
+      per: 8, xp: 60, gore: 'red', flee: 0, voice: 'enclave', sounds: { hurt: 'hurt_human', death: 'death_human' }, height: 1.95, radius: 0.42, human: true, grenades: 0.35, accuracy: 1.4 },
+    brotherhood_paladin: { name: 'Brotherhood Paladin', charType: 'brotherhood_paladin', faction: 'brotherhood', ai: 'humanoid', hp: 150, hpLvl: 7, dr: 28, walk: 1.5, run: 4.4,
+      sight: 70, per: 7, xp: 60, gore: 'red', flee: 0, voice: 'brotherhood', sounds: { hurt: 'hurt_human', death: 'death_human' }, height: 1.95, radius: 0.42, human: true, accuracy: 1.3 },
+    feral_ghoul: { name: 'Feral Ghoul', faction: 'feral_ghouls', ai: 'ghoul', hp: 30, hpLvl: 7, dr: 0, walk: 1.3, run: 6.8, sight: 38, per: 4, xp: 10, natural: 'ghoul_claw',
+      gore: 'red', flee: 0, voice: 'feral', sounds: { alert: 'ghoul_scream', hurt: 'ghoul_growl', death: 'ghoul_growl', idle: 'ghoul_growl' }, height: 1.7, radius: 0.33, dormantChance: 0.35 },
+    glowing_one: { name: 'Glowing One', faction: 'feral_ghouls', ai: 'ghoul', hp: 90, hpLvl: 10, dr: 8, walk: 1.3, run: 6.2, sight: 40, per: 5, xp: 40, natural: 'ghoul_claw_glow',
+      gore: 'red', flee: 0, voice: 'feral', sounds: { alert: 'ghoul_scream', hurt: 'ghoul_growl', death: 'ghoul_scream', idle: 'ghoul_growl' }, height: 1.75, radius: 0.34, glowing: true },
+    super_mutant: { name: 'Super Mutant', faction: 'super_mutants', ai: 'mutant', hp: 110, hpLvl: 12, dr: 12, walk: 1.5, run: 5.2, sight: 60, per: 5, xp: 40,
+      gore: 'green', flee: 0, voice: 'mutant', sounds: { alert: 'mutant_roar', hurt: 'mutant_hurt', death: 'mutant_hurt' }, height: 2.35, radius: 0.55, human: true, grenades: 0.1 },
+    super_mutant_behemoth: { name: 'Super Mutant Behemoth', faction: 'super_mutants', ai: 'behemoth', hp: 900, hpLvl: 30, dr: 20, dt: 4, walk: 1.5, run: 3.8, sight: 70, per: 6, xp: 250,
+      natural: 'behemoth_club', gore: 'green', flee: 0, voice: 'behemoth', sounds: { alert: 'mutant_roar', hurt: 'mutant_hurt', death: 'mutant_roar' }, height: 5.6, radius: 1.3, boss: true },
+    deathclaw: { name: 'Deathclaw', faction: 'creatures', ai: 'deathclaw', hp: 260, hpLvl: 20, dr: 15, dt: 3, walk: 2.0, run: 10.5, sight: 65, per: 8, xp: 150, natural: 'deathclaw_swipe',
+      gore: 'red', flee: 0, voice: 'deathclaw', sounds: { alert: 'deathclaw_roar', hurt: 'deathclaw_roar', death: 'deathclaw_roar', idle: 'deathclaw_roar' }, height: 2.8, radius: 0.7, isCreature: true },
+    radroach: { name: 'Radroach', faction: 'creatures', ai: 'swarm', hp: 8, hpLvl: 2, dr: 0, walk: 1.6, run: 6.0, sight: 22, per: 3, xp: 3, natural: 'roach_bite',
+      gore: 'green', flee: 0, voice: null, sounds: { alert: 'roach_hiss', hurt: 'roach_hiss', death: 'roach_hiss', idle: 'roach_hiss' }, height: 0.35, radius: 0.35, isCreature: true, small: true, swarm: true },
+    molerat: { name: 'Mole Rat', faction: 'creatures', ai: 'swarm', hp: 18, hpLvl: 3, dr: 0, walk: 1.7, run: 6.4, sight: 28, per: 4, xp: 5, natural: 'molerat_bite',
+      gore: 'red', flee: 0, voice: null, sounds: { alert: 'molerat_squeak', hurt: 'molerat_squeak', death: 'molerat_squeak', idle: 'molerat_squeak' }, height: 0.6, radius: 0.45, isCreature: true, burrows: true, swarm: true },
+    bloatfly: { name: 'Bloatfly', faction: 'creatures', ai: 'flyer', hp: 12, hpLvl: 2, dr: 0, walk: 1.8, run: 4.2, sight: 30, per: 4, xp: 5, natural: 'bloatfly_spit',
+      gore: 'green', flee: 0, voice: null, sounds: { alert: 'bloatfly_buzz', hurt: 'bloatfly_buzz', death: 'bloatfly_buzz', idle: 'bloatfly_buzz' }, height: 0.6, radius: 0.4, isCreature: true, hover: 1.7, small: true, swarm: true },
+    mirelurk: { name: 'Mirelurk', faction: 'creatures', ai: 'mirelurk', hp: 90, hpLvl: 8, dr: 10, walk: 1.4, run: 5.4, sight: 35, per: 5, xp: 25, natural: 'mirelurk_claw',
+      gore: 'green', flee: 0, voice: null, sounds: { alert: 'mirelurk_click', hurt: 'mirelurk_click', death: 'mirelurk_click', idle: 'mirelurk_click' }, height: 1.5, radius: 0.7, isCreature: true, amphibious: true, shelled: true },
+    mirelurk_queen: { name: 'Mirelurk Queen', faction: 'creatures', ai: 'queen', hp: 1000, hpLvl: 25, dr: 25, dt: 5, walk: 1.4, run: 3.8, sight: 60, per: 6, xp: 400, natural: 'queen_slam',
+      gore: 'green', flee: 0, voice: null, sounds: { alert: 'mirelurk_click', hurt: 'mirelurk_click', death: 'mirelurk_click', idle: 'mirelurk_click' }, height: 5.5, radius: 2.4, isCreature: true, amphibious: true, boss: true, shelled: true },
+    dog: { name: 'Wild Dog', faction: 'creatures', ai: 'dog', hp: 26, hpLvl: 4, dr: 0, walk: 1.8, run: 8.2, sight: 40, per: 6, xp: 8, natural: 'dog_bite',
+      gore: 'red', flee: 0.15, voice: null, sounds: { alert: 'dog_bark', hurt: 'dog_bark', death: 'dog_bark', idle: 'dog_bark' }, height: 0.8, radius: 0.4, isCreature: true },
+    protectron: { name: 'Protectron', faction: 'robots', ai: 'robot', hp: 85, hpLvl: 8, dr: 22, dt: 2, walk: 1.1, run: 2.0, sight: 45, per: 5, xp: 25, natural: 'protectron_laser',
+      gore: 'oil', flee: 0, voice: 'protectron', sounds: { alert: 'robot_voice', hurt: 'robot_beep', death: 'robot_death', idle: 'robot_beep' }, height: 2.0, radius: 0.45, isRobot: true },
+    mister_handy: { name: 'Mister Gutsy', faction: 'robots', ai: 'handy', hp: 75, hpLvl: 8, dr: 18, dt: 1, walk: 2.2, run: 5.0, sight: 50, per: 7, xp: 30, natural: 'handy_flamer',
+      gore: 'oil', flee: 0, voice: 'gutsy', sounds: { alert: 'robot_voice', hurt: 'robot_beep', death: 'robot_death', idle: 'robot_beep' }, height: 1.6, radius: 0.55, isRobot: true, hover: 0.55 },
+    eyebot: { name: 'Enclave Eyebot', faction: 'enclave', ai: 'eyebot', hp: 25, hpLvl: 3, dr: 8, walk: 2.0, run: 5.2, sight: 55, per: 7, xp: 10, natural: 'eyebot_zap',
+      gore: 'oil', flee: 0, voice: 'eyebot', sounds: { alert: 'eyebot_chatter', hurt: 'robot_beep', death: 'robot_death', idle: 'eyebot_chatter' }, height: 0.7, radius: 0.4, isRobot: true, hover: 2.3, small: true, maxPerGroup: 2 },
+    sentry_bot: { name: 'Sentry Bot', faction: 'robots', ai: 'robot', hp: 300, hpLvl: 15, dr: 30, dt: 6, walk: 1.4, run: 3.4, sight: 60, per: 6, xp: 120, natural: 'sentry_minigun',
+      gore: 'oil', flee: 0, voice: 'protectron', sounds: { alert: 'robot_voice', hurt: 'robot_beep', death: 'robot_death', idle: 'robot_beep' }, height: 2.4, radius: 0.9, isRobot: true },
+    // --- characters' round-1 creatures (src/characters/32_creatures2.js) ---
+    radscorpion: { name: 'Radscorpion', faction: 'creatures', ai: 'stinger', hp: 70, hpLvl: 7, dr: 14, walk: 1.4, run: 5.4, sight: 40, per: 5, xp: 25, natural: 'scorpion_claw',
+      gore: 'green', flee: 0, voice: null, sounds: { alert: 'mirelurk_click', hurt: 'roach_hiss', death: 'roach_hiss', idle: 'mirelurk_click' }, height: 0.65, radius: 0.7, isCreature: true, stinger: 'scorpion_sting' },
+    giant_radscorpion: { name: 'Giant Radscorpion', faction: 'creatures', ai: 'stinger', hp: 180, hpLvl: 12, dr: 20, dt: 3, walk: 1.6, run: 5.8, sight: 45, per: 5, xp: 60, natural: 'giant_scorpion_claw',
+      gore: 'green', flee: 0, voice: null, sounds: { alert: 'mirelurk_click', hurt: 'roach_hiss', death: 'roach_hiss', idle: 'mirelurk_click' }, height: 1.2, radius: 1.15, isCreature: true, stinger: 'giant_scorpion_sting' },
+    bark_scorpion: { name: 'Bark Scorpion', faction: 'creatures', ai: 'stinger', hp: 14, hpLvl: 2, dr: 2, walk: 1.2, run: 4.8, sight: 24, per: 3, xp: 6, natural: 'bark_scorpion_claw',
+      gore: 'green', flee: 0, voice: null, sounds: { alert: 'roach_hiss', hurt: 'roach_hiss', death: 'roach_hiss', idle: 'roach_hiss' }, height: 0.42, radius: 0.4, isCreature: true, small: true, swarm: true, stinger: 'bark_scorpion_sting' },
+    giant_ant: { name: 'Giant Ant', faction: 'creatures', ai: 'swarm', hp: 30, hpLvl: 4, dr: 4, walk: 1.6, run: 5.8, sight: 30, per: 4, xp: 10, natural: 'ant_mandibles',
+      gore: 'green', flee: 0, voice: null, sounds: { alert: 'roach_hiss', hurt: 'roach_hiss', death: 'roach_hiss', idle: 'roach_hiss' }, height: 0.55, radius: 0.55, isCreature: true, swarm: true },
+    fire_ant: { name: 'Fire Ant', faction: 'creatures', ai: 'spitter', hp: 40, hpLvl: 5, dr: 6, walk: 1.6, run: 5.8, sight: 34, per: 4, xp: 15, natural: 'fire_ant_mandibles',
+      gore: 'green', flee: 0, voice: null, sounds: { alert: 'roach_hiss', hurt: 'roach_hiss', death: 'roach_hiss', idle: 'roach_hiss' }, height: 0.55, radius: 0.55, isCreature: true, swarm: true },
+    yao_guai: { name: 'Yao Guai', faction: 'creatures', ai: 'dog', hp: 160, hpLvl: 12, dr: 8, walk: 1.5, run: 7.8, sight: 50, per: 6, xp: 60, natural: 'yao_guai_swipe',
+      gore: 'red', flee: 0, voice: null, sounds: { alert: 'deathclaw_roar', hurt: 'deathclaw_roar', death: 'deathclaw_roar', idle: 'dog_bark' }, height: 1.3, radius: 0.95, isCreature: true },
+    centaur: { name: 'Centaur', faction: 'super_mutants', ai: 'spitter', hp: 55, hpLvl: 6, dr: 4, walk: 1.2, run: 4.2, sight: 40, per: 4, xp: 20, natural: 'centaur_lash',
+      gore: 'green', flee: 0, voice: null, sounds: { alert: 'ghoul_growl', hurt: 'ghoul_growl', death: 'ghoul_scream', idle: 'ghoul_growl' }, height: 1.05, radius: 0.6, isCreature: true },
+  };
+  // A dog that is somebody's friend uses the same archetype.
+  C.typeDef = (type) => C.TYPES[type] || C.TYPES.human;
+
+  // ------------------------------------------------------------------
+  // Natural attacks (creatures & robots).  kind: melee|ranged|flame|spit
+  //  dmg / dmgLvl, range (m), cooldown (s), windup (s before the hit lands),
+  //  type = damage type passed to G.player.damage, sound = sfx on attack.
+  // ------------------------------------------------------------------
+  C.NATURAL = {
+    ghoul_claw: { kind: 'melee', dmg: 6, dmgLvl: 1.2, range: 1.7, cooldown: 1.0, windup: 0.3, type: 'melee', sound: 'ghoul_growl', lunge: 3.5 },
+    ghoul_claw_glow: { kind: 'melee', dmg: 11, dmgLvl: 1.5, range: 1.8, cooldown: 1.0, windup: 0.3, type: 'melee', sound: 'ghoul_scream', lunge: 3.5, rads: 6 },
+    behemoth_club: { kind: 'melee', dmg: 60, dmgLvl: 3, range: 4.6, cooldown: 2.4, windup: 0.8, type: 'melee', sound: 'mutant_roar', slam: 6 },
+    deathclaw_swipe: { kind: 'melee', dmg: 45, dmgLvl: 3, range: 2.8, cooldown: 1.25, windup: 0.35, type: 'melee', sound: 'deathclaw_roar', knock: 7 },
+    roach_bite: { kind: 'melee', dmg: 2, dmgLvl: 0.4, range: 0.9, cooldown: 1.25, windup: 0.15, type: 'melee', sound: 'roach_hiss' },
+    molerat_bite: { kind: 'melee', dmg: 4, dmgLvl: 0.8, range: 1.1, cooldown: 1.0, windup: 0.2, type: 'melee', sound: 'molerat_squeak' },
+    dog_bite: { kind: 'melee', dmg: 6, dmgLvl: 1, range: 1.3, cooldown: 0.9, windup: 0.2, type: 'melee', sound: 'dog_bark', lunge: 2.5 },
+    mirelurk_claw: { kind: 'melee', dmg: 12, dmgLvl: 2, range: 1.9, cooldown: 1.4, windup: 0.4, type: 'melee', sound: 'mirelurk_click' },
+    queen_slam: { kind: 'melee', dmg: 50, dmgLvl: 3, range: 4.5, cooldown: 2.2, windup: 0.6, type: 'melee', sound: 'mirelurk_click', slam: 7,
+      alt: { kind: 'spit', dmg: 25, dmgLvl: 1, range: 35, cooldown: 3.5, projectile: 'spit', speed: 22, type: 'poison', sound: 'mirelurk_click', count: 3 } },
+    bloatfly_spit: { kind: 'spit', dmg: 5, dmgLvl: 0.8, range: 22, cooldown: 2.0, projectile: 'spit', speed: 16, type: 'poison', sound: 'bloatfly_buzz' },
+    protectron_laser: { kind: 'ranged', dmg: 8, dmgLvl: 1, range: 60, cooldown: 1.1, burst: 2, spread: 0.035, type: 'energy', sound: 'gun_laser', beam: 'red', energy: 'laser' },
+    handy_flamer: { kind: 'flame', dmg: 3, dmgLvl: 0.6, range: 8, cooldown: 0.07, burstTime: 1.6, rest: 1.4, type: 'fire', sound: 'fire_loop',
+      alt: { kind: 'melee', dmg: 14, dmgLvl: 1.5, range: 1.8, cooldown: 1.1, windup: 0.3, type: 'melee', sound: 'melee_swing' } },
+    eyebot_zap: { kind: 'ranged', dmg: 4, dmgLvl: 0.6, range: 45, cooldown: 1.4, burst: 1, spread: 0.03, type: 'energy', sound: 'gun_laser', beam: 'blue', energy: 'laser', pitch: 1.6 },
+    sentry_minigun: { kind: 'ranged', dmg: 5, dmgLvl: 0.5, range: 80, cooldown: 0.06, burst: 30, rest: 1.8, spread: 0.06, type: 'ballistic', sound: 'gun_minigun' },
+    fists: { kind: 'melee', dmg: 3, dmgLvl: 0.5, range: 1.5, cooldown: 1.0, windup: 0.25, type: 'melee', sound: 'punch' },
+    // round-1 creatures. poison: {dps, dur} = damage over time on the player (stacks refresh the timer)
+    scorpion_claw: { kind: 'melee', dmg: 9, dmgLvl: 1.4, range: 1.6, cooldown: 1.1, windup: 0.3, type: 'melee', sound: 'mirelurk_click' },
+    scorpion_sting: { kind: 'melee', dmg: 6, dmgLvl: 1, range: 1.9, cooldown: 2.4, windup: 0.45, type: 'poison', sound: 'roach_hiss', poison: { dps: 2.5, dur: 6 }, part: 'leftLeg' },
+    giant_scorpion_claw: { kind: 'melee', dmg: 18, dmgLvl: 2, range: 2.3, cooldown: 1.2, windup: 0.35, type: 'melee', sound: 'mirelurk_click', knock: 3 },
+    giant_scorpion_sting: { kind: 'melee', dmg: 12, dmgLvl: 1.5, range: 2.8, cooldown: 2.6, windup: 0.5, type: 'poison', sound: 'roach_hiss', poison: { dps: 5, dur: 7 }, part: 'leftLeg' },
+    bark_scorpion_claw: { kind: 'melee', dmg: 2, dmgLvl: 0.4, range: 0.9, cooldown: 1.1, windup: 0.2, type: 'melee', sound: 'roach_hiss' },
+    bark_scorpion_sting: { kind: 'melee', dmg: 2, dmgLvl: 0.4, range: 1.1, cooldown: 2.2, windup: 0.3, type: 'poison', sound: 'roach_hiss', poison: { dps: 1, dur: 5 }, part: 'leftLeg' },
+    ant_mandibles: { kind: 'melee', dmg: 5, dmgLvl: 1, range: 1.2, cooldown: 1.0, windup: 0.2, type: 'melee', sound: 'roach_hiss' },
+    fire_ant_mandibles: { kind: 'melee', dmg: 6, dmgLvl: 1, range: 1.2, cooldown: 1.0, windup: 0.2, type: 'melee', sound: 'roach_hiss',
+      alt: { kind: 'spit', dmg: 7, dmgLvl: 0.8, range: 14, cooldown: 3.0, projectile: 'spit', speed: 14, type: 'fire', sound: 'fire_loop', minRange: 3 } },
+    yao_guai_swipe: { kind: 'melee', dmg: 22, dmgLvl: 2.2, range: 2.1, cooldown: 1.2, windup: 0.35, type: 'melee', sound: 'deathclaw_roar', lunge: 4, knock: 4 },
+    centaur_lash: { kind: 'melee', dmg: 7, dmgLvl: 1, range: 2.2, cooldown: 1.3, windup: 0.3, type: 'melee', sound: 'ghoul_growl',
+      alt: { kind: 'spit', dmg: 9, dmgLvl: 1, range: 26, cooldown: 3.2, projectile: 'spit', speed: 18, type: 'poison', sound: 'ghoul_growl', rads: 4 } },
+  };
+
+  // ------------------------------------------------------------------
+  // Fallback NPC weapon stats (only used when G.weapons is a stub or an
+  // id is unknown). Mirrors src/weapons/00_defs.js closely.
+  // ------------------------------------------------------------------
+  const FW = (o) => Object.assign({ skill: 'guns', damage: 10, rof: 3, automatic: false, magSize: 10, reloadTime: 2, spread: 0.03, adsSpread: 0.01,
+    range: 120, pellets: 1, projectile: 'hitscan', critMult: 1, critChance: 1, sound: 'gun_pistol', damageType: 'ballistic', apCost: 20 }, o);
+  C.FALLBACK_WEAPONS = {
+    pistol_32: FW({ damage: 16, rof: 3, magSize: 6, sound: 'gun_pistol', apCost: 15, ammo: 'ammo_32' }),
+    pistol_10mm: FW({ damage: 11, rof: 4, magSize: 12, sound: 'gun_pistol', apCost: 17, ammo: 'ammo_10mm' }),
+    magnum_44: FW({ damage: 36, rof: 2, magSize: 6, sound: 'gun_hunting', apCost: 22, ammo: 'ammo_44', critMult: 1.5 }),
+    smg_10mm: FW({ damage: 8, rof: 10, automatic: true, magSize: 30, spread: 0.05, sound: 'gun_smg', apCost: 20, ammo: 'ammo_10mm' }),
+    chinese_assault_rifle: FW({ damage: 10, rof: 8, automatic: true, magSize: 24, spread: 0.04, sound: 'gun_rifle', apCost: 23, ammo: 'ammo_556' }),
+    assault_rifle: FW({ damage: 10, rof: 8, automatic: true, magSize: 24, spread: 0.035, sound: 'gun_rifle', apCost: 23, ammo: 'ammo_556' }),
+    hunting_rifle: FW({ damage: 30, rof: 1.2, magSize: 5, spread: 0.01, range: 200, sound: 'gun_hunting', apCost: 25, ammo: 'ammo_308', critMult: 2 }),
+    sniper_rifle: FW({ damage: 40, rof: 1, magSize: 5, spread: 0.006, range: 300, sound: 'gun_hunting', apCost: 38, ammo: 'ammo_308', critMult: 2.5 }),
+    pipe_rifle: FW({ damage: 14, rof: 1.5, magSize: 1, reloadTime: 1.5, spread: 0.04, sound: 'gun_rifle', apCost: 20, ammo: 'ammo_32' }),
+    combat_shotgun: FW({ damage: 5, pellets: 8, rof: 1.6, magSize: 12, spread: 0.08, range: 45, sound: 'gun_shotgun', apCost: 30, ammo: 'ammo_12ga' }),
+    sawed_off_shotgun: FW({ damage: 6, pellets: 8, rof: 2, magSize: 2, spread: 0.12, range: 30, sound: 'gun_shotgun', apCost: 30, ammo: 'ammo_12ga' }),
+    laser_pistol: FW({ skill: 'energy_weapons', damage: 12, rof: 3, magSize: 30, spread: 0.02, sound: 'gun_laser', apCost: 17, damageType: 'energy', beamColor: 'red', ammo: 'ammo_energy_cell' }),
+    laser_rifle: FW({ skill: 'energy_weapons', damage: 22, rof: 2.5, magSize: 24, spread: 0.012, range: 180, sound: 'gun_laser', apCost: 25, damageType: 'energy', beamColor: 'red', ammo: 'ammo_mf_cell' }),
+    plasma_pistol: FW({ skill: 'energy_weapons', damage: 25, rof: 2, magSize: 16, spread: 0.02, sound: 'gun_plasma', apCost: 22, damageType: 'energy', projectile: 'plasma', projectileSpeed: 45, ammo: 'ammo_energy_cell' }),
+    plasma_rifle: FW({ skill: 'energy_weapons', damage: 45, rof: 1.5, magSize: 12, spread: 0.012, sound: 'gun_plasma', apCost: 28, damageType: 'energy', projectile: 'plasma', projectileSpeed: 55, ammo: 'ammo_mf_cell' }),
+    minigun: FW({ damage: 5, rof: 18, automatic: true, magSize: 240, spread: 0.06, sound: 'gun_minigun', apCost: 40, ammo: 'ammo_5mm' }),
+    missile_launcher: FW({ skill: 'explosives', damage: 120, rof: 0.5, magSize: 1, reloadTime: 3, spread: 0.01, range: 300, sound: 'gun_missile', projectile: 'missile', projectileSpeed: 40, explosionRadius: 5, damageType: 'explosive', apCost: 45, ammo: 'ammo_missile' }),
+    flamer: FW({ skill: 'energy_weapons', damage: 5, rof: 16, automatic: true, magSize: 60, spread: 0.06, range: 14, sound: 'fire_loop', projectile: 'flame', projectileSpeed: 18, damageType: 'fire', apCost: 30, ammo: 'ammo_flamer_fuel' }),
+    combat_knife: FW({ skill: 'melee_weapons', damage: 12, rof: 1.6, magSize: 0, range: 2.1, sound: 'melee_swing', melee: true, apCost: 12 }),
+    switchblade: FW({ skill: 'melee_weapons', damage: 8, rof: 1.8, magSize: 0, range: 2.0, sound: 'melee_swing', melee: true, apCost: 10 }),
+    baseball_bat: FW({ skill: 'melee_weapons', damage: 15, rof: 1.0, magSize: 0, range: 2.6, sound: 'melee_swing', melee: true, apCost: 20 }),
+    lead_pipe: FW({ skill: 'melee_weapons', damage: 12, rof: 1.2, magSize: 0, range: 2.4, sound: 'melee_swing', melee: true, apCost: 18 }),
+    super_sledge: FW({ skill: 'melee_weapons', damage: 40, rof: 0.7, magSize: 0, range: 2.8, sound: 'melee_swing', melee: true, apCost: 32 }),
+    power_fist: FW({ skill: 'unarmed', damage: 26, rof: 1.1, magSize: 0, range: 2.0, sound: 'punch', melee: true, apCost: 20 }),
+    brass_knuckles: FW({ skill: 'unarmed', damage: 6, rof: 1.8, magSize: 0, range: 1.8, sound: 'punch', melee: true, apCost: 12 }),
+    unarmed: FW({ skill: 'unarmed', damage: 3, rof: 1.6, magSize: 0, range: 1.8, sound: 'punch', melee: true, apCost: 10 }),
+    frag_grenade: FW({ skill: 'explosives', damage: 100, projectile: 'grenade', projectileSpeed: 17, explosionRadius: 5, damageType: 'explosive', apCost: 23 }),
+  };
+
+  // ------------------------------------------------------------------
+  // NPC weapon pools: function(level) → array of [weaponId, weight]
+  // ------------------------------------------------------------------
+  C.WEAPON_POOLS = {
+    raider: (l) => l <= 3
+      ? [['pistol_10mm', 3], ['pistol_32', 2], ['pipe_rifle', 3], ['lead_pipe', 2], ['baseball_bat', 2], ['switchblade', 1], ['sawed_off_shotgun', 1]]
+      : l <= 7
+        ? [['pistol_10mm', 2], ['hunting_rifle', 2], ['chinese_assault_rifle', 2], ['smg_10mm', 2], ['sawed_off_shotgun', 2], ['combat_knife', 1], ['baseball_bat', 1], ['lead_pipe', 1]]
+        : [['assault_rifle', 3], ['combat_shotgun', 2], ['chinese_assault_rifle', 2], ['sniper_rifle', 1], ['magnum_44', 1], ['super_sledge', 1], ['missile_launcher', 0.4], ['power_fist', 0.5]],
+    super_mutant: (l) => l <= 6
+      ? [['hunting_rifle', 3], ['lead_pipe', 2], ['assault_rifle', 1], ['baseball_bat', 1]]
+      : [['assault_rifle', 3], ['hunting_rifle', 1], ['super_sledge', 2], ['minigun', 1], ['missile_launcher', 0.6], ['combat_shotgun', 1]],
+    enclave_soldier: () => [['plasma_rifle', 3], ['laser_rifle', 2], ['plasma_pistol', 1]],
+    brotherhood_paladin: () => [['laser_rifle', 4], ['minigun', 1], ['super_sledge', 1]],
+    settler: () => [['pistol_10mm', 3], ['hunting_rifle', 2], ['sawed_off_shotgun', 1], ['pistol_32', 2], ['lead_pipe', 1]],
+    ghoul: () => [['hunting_rifle', 2], ['smg_10mm', 2], ['pistol_10mm', 2], ['sawed_off_shotgun', 1]],
+    atom: () => [['laser_pistol', 2], ['combat_knife', 2], ['pistol_32', 1]],
+    merchant_guard: () => [['combat_shotgun', 2], ['assault_rifle', 2], ['hunting_rifle', 1]],
+  };
+
+  // ------------------------------------------------------------------
+  // VATS part labels (Fallout naming), with per-type overrides.
+  // Part keys come from G.chars character parts; unknown keys are title-cased.
+  // Plus the virtual 'weapon' part (shoot the gun out of their hands).
+  // ------------------------------------------------------------------
+  C.PART_LABELS = {
+    _default: { head: 'Head', torso: 'Torso', leftArm: 'Left Arm', rightArm: 'Right Arm', leftLeg: 'Left Leg', rightLeg: 'Right Leg', weapon: 'Weapon' },
+    radroach: { head: 'Head', torso: 'Body', leftArm: 'Left Antenna', rightArm: 'Right Antenna', leftLeg: 'Left Legs', rightLeg: 'Right Legs' },
+    molerat: { head: 'Head', torso: 'Body', leftArm: 'Left Foreleg', rightArm: 'Right Foreleg', leftLeg: 'Left Hind Leg', rightLeg: 'Right Hind Leg' },
+    dog: { head: 'Head', torso: 'Body', leftArm: 'Left Foreleg', rightArm: 'Right Foreleg', leftLeg: 'Left Hind Leg', rightLeg: 'Right Hind Leg' },
+    bloatfly: { head: 'Head', torso: 'Thorax', leftArm: 'Left Wing', rightArm: 'Right Wing', leftLeg: 'Legs', rightLeg: 'Abdomen' },
+    mirelurk: { head: 'Face', torso: 'Shell', leftArm: 'Left Claw', rightArm: 'Right Claw', leftLeg: 'Left Legs', rightLeg: 'Right Legs' },
+    mirelurk_queen: { head: 'Face', torso: 'Shell', leftArm: 'Left Claw', rightArm: 'Right Claw', leftLeg: 'Left Legs', rightLeg: 'Right Legs' },
+    eyebot: { head: 'Antenna', torso: 'Body', leftArm: 'Left Fin', rightArm: 'Right Fin', leftLeg: 'Thruster', rightLeg: 'Speaker' },
+    mister_handy: { head: 'Sensor Eyes', torso: 'Body', leftArm: 'Saw Arm', rightArm: 'Flamer Arm', leftLeg: 'Thruster', rightLeg: 'Claw Arm' },
+    protectron: { head: 'Combat Inhibitor', torso: 'Torso', leftArm: 'Left Arm', rightArm: 'Right Arm', leftLeg: 'Left Leg', rightLeg: 'Right Leg' },
+    sentry_bot: { head: 'Sensor', torso: 'Fusion Core', leftArm: 'Left Gun', rightArm: 'Right Gun', leftLeg: 'Left Tread', rightLeg: 'Right Tread' },
+    deathclaw: { head: 'Head', torso: 'Torso', leftArm: 'Left Claw', rightArm: 'Right Claw', leftLeg: 'Left Leg', rightLeg: 'Right Leg' },
+  };
+  C.partLabel = function (type, key, ch) {
+    const t = C.PART_LABELS[type];
+    if (t && t[key]) return t[key];
+    // G.chars supplies per-type labels (e.g. creature limbs)
+    if (!t && !G.isStub('chars') && typeof G.chars.info === 'function') { try { const inf = G.chars.info(type); if (inf && inf.labels && inf.labels[key]) return inf.labels[key]; } catch (e) { /* ignore */ } }
+    if (C.PART_LABELS._default[key]) return C.PART_LABELS._default[key];
+    return String(key).replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase());
+  };
+  /** Damage multiplier per part (Fallout: headshots ×2). Per-type overrides for armour. */
+  C.PART_MULT = {
+    _default: { head: 2.0, torso: 1.0, leftArm: 0.85, rightArm: 0.85, leftLeg: 0.85, rightLeg: 0.85, weapon: 0 },
+    // Mirelurks: shell soaks damage, the soft face is the weak spot
+    mirelurk: { head: 3.0, torso: 0.3, leftArm: 0.45, rightArm: 0.45, leftLeg: 0.6, rightLeg: 0.6, weapon: 0 },
+    mirelurk_queen: { head: 2.5, torso: 0.4, leftArm: 0.6, rightArm: 0.6, leftLeg: 0.7, rightLeg: 0.7, weapon: 0 },
+    deathclaw: { head: 1.8, torso: 1.0, leftArm: 0.8, rightArm: 0.8, leftLeg: 1.0, rightLeg: 1.0, weapon: 0 },
+    eyebot: { head: 1.5, torso: 1.0, leftArm: 0.8, rightArm: 0.8, leftLeg: 0.8, rightLeg: 0.8, weapon: 0 },
+  };
+  C.partMult = (type, key) => { const t = C.PART_MULT[type] || C.PART_MULT._default; return t[key] !== undefined ? t[key] : (C.PART_MULT._default[key] !== undefined ? C.PART_MULT._default[key] : 0.9); };
+
+  // ------------------------------------------------------------------
+  // Loot hints: loot-table id for G.items.rollLoot, plus explicit extras
+  // (filtered by G.items.get existing at spawn time).
+  // extra entry format: [itemId, chance, min=1, max=min]
+  // ------------------------------------------------------------------
+  C.LOOT = {
+    raider: { table: 'raider', extra: [['caps', 1, 3, 25], ['jet', 0.2], ['psycho', 0.1], ['stimpak', 0.15], ['bobby_pin', 0.3, 1, 3], ['whiskey', 0.1], ['beer', 0.15]] },
+    enclave_soldier: { table: 'enclave', extra: [['caps', 1, 10, 40], ['stimpak', 0.4], ['frag_grenade', 0.3]] },
+    brotherhood_paladin: { table: 'brotherhood', extra: [['stimpak', 0.5], ['caps', 1, 5, 20]] },
+    super_mutant: { table: 'super_mutant', extra: [['caps', 0.6, 1, 15], ['stimpak', 0.1], ['frag_grenade', 0.15], ['teddy_bear', 0.03]] },
+    super_mutant_behemoth: { table: 'super_mutant', extra: [['caps', 1, 40, 120], ['stimpak', 1, 1, 3], ['frag_grenade', 0.5]] },
+    feral_ghoul: { table: 'feral_ghoul', extra: [['caps', 0.4, 1, 6], ['tin_can', 0.1]] },
+    glowing_one: { table: 'feral_ghoul', extra: [['caps', 1, 5, 20], ['radaway', 0.4]] },
+    human: { table: 'settler', extra: [['caps', 1, 3, 20], ['dirty_water', 0.3], ['stimpak', 0.1]] },
+    deathclaw: { table: 'deathclaw', extra: [['deathclaw_hand', 1], ['deathclaw_meat', 0.6]] },
+    radroach: { table: 'radroach', extra: [['radroach_meat', 0.6]] },
+    molerat: { table: 'molerat', extra: [['molerat_meat', 0.7]] },
+    bloatfly: { table: 'bloatfly', extra: [['bloatfly_meat', 0.5]] },
+    mirelurk: { table: 'mirelurk', extra: [['mirelurk_meat', 0.8]] },
+    mirelurk_queen: { table: 'mirelurk', extra: [['mirelurk_meat', 1, 2, 4], ['caps', 1, 20, 60]] },
+    dog: { table: 'dog', extra: [['dog_meat', 0.6]] },
+    protectron: { table: 'robot', extra: [['ammo_energy_cell', 0.5, 4, 12], ['scrap_metal', 0.5], ['sensor_module', 0.2], ['fission_battery', 0.3]] },
+    mister_handy: { table: 'robot', extra: [['ammo_flamer_fuel', 0.6, 10, 30], ['scrap_metal', 0.5], ['fission_battery', 0.3], ['sensor_module', 0.15]] },
+    eyebot: { table: 'robot', extra: [['ammo_energy_cell', 0.6, 3, 10], ['scrap_metal', 0.3], ['sensor_module', 0.2]] },
+    sentry_bot: { table: 'robot', extra: [['ammo_5mm', 1, 40, 120], ['fission_battery', 0.6], ['sensor_module', 0.5]] },
+  };
+
+  // ------------------------------------------------------------------
+  // Barks (floating subtitles). ALL ORIGINAL LINES.
+  // categories: idle, alert, search, lost, combat, hurt, flee, kill, reload,
+  //             grenade, allyDown, greet, cower, disarmed
+  // ------------------------------------------------------------------
+  C.BARKS = {
+    raider: {
+      idle: ['Who keeps stealing my good knife? I KNOW it was one of you.', 'Smells like burnt tires and regret out here. Home sweet home.',
+        'I traded a whole skull collection for these boots. Worth it.', 'Pass the Jet. No, the OTHER Jet.', 'Another day, another dead guy\'s wallet.',
+        'You ever think about goin\' straight? ...Nah, me neither.', 'Boss says we hit the market tomorrow. Boss says a lot of things.'],
+      alert: ['Well, well! Something shiny wandered in!', 'Ooh, fresh meat with a lunchbox!', 'Hey! That one\'s wearing a whole jumpsuit! Dibs!',
+        'You lost, pumpkin? Good. Stay lost!', 'Wake up, boys! We got a customer!', 'Vault dweller! I\'m gonna wear that Pip-Boy as a hat!'],
+      search: ['Come out, come out, little vault bunny...', 'I can smell the soap on you. Where are ya?', 'Somebody\'s creeping around. I hate creeping.',
+        'I ain\'t mad. I just wanna talk. With my knife.'],
+      lost: ['Eh. Probably a mole rat.', 'Forget it. Too hungover for this.', 'Whatever it was, it\'s gone now.'],
+      combat: ['Hold still, I\'m tryin\' to shoot you!', 'Gonna hang your teeth on my necklace!', 'Bleed for me, sweetheart!',
+        'Flank \'em! Somebody flank \'em! ...Anybody?', 'You\'re gonna look great on a pike!', 'Is that all the vault taught ya?'],
+      hurt: ['Agh! That\'s my good arm!', 'You\'ll pay for that, vault rat!', 'Ow! OW! Rude!', 'Now you made me angry AND leaky!'],
+      flee: ['Nope! Nope nope nope!', 'This ain\'t worth the caps!', 'I\'m out! Tell my ma... actually, don\'t.', 'Retreat! Tactical... running!'],
+      kill: ['Heh. Another one for the pile.', 'Check the pockets!', 'That\'s what you get!'],
+      reload: ['Reloading!', 'Cover me, I\'m dry!', 'Hang on, hang on, gotta feed it!'],
+      grenade: ['Catch!', 'Fire in the hole!', 'Present for ya!'],
+      allyDown: ['They got Stitches!', 'Aw, not Mikey! He owed me caps!', 'Man down! ...Eh, more loot for me.'],
+      disarmed: ['My gun! You shot my GUN!', 'Hey! That was a family heirloom!'],
+    },
+    mutant: {
+      idle: ['Humans small. Humans crunchy.', 'Big building good. Can see all the food from up top.', 'Mutant strong. Mutant not need nap. ...Maybe small nap.',
+        'Who move the bag of heads? Was sorted.', 'Sky ugly today. Like human face.'],
+      alert: ['Little human! Come here, little human!', 'Smell you! Smell you good!', 'Puny thing wander into OUR city!', 'FOOD! Food walking around!'],
+      search: ['Where you hiding, tiny one?', 'Come out! Only want to squish a little!', 'Mutant hear you. Mutant FIND you.'],
+      lost: ['Nothing here. Stupid noise.', 'Hiding human not worth it. Go back.', 'Bah. Was probably ghoul.'],
+      combat: ['CRUSH! CRUSH!', 'You break easy!', 'Mutant make you into paste!', 'Stand still so I can hit you!', 'Metal-suit human is best kind: easy open!'],
+      hurt: ['Grraah! You hurt ME?!', 'That tickle! Now you die!', 'Ow! Now mutant angry!'],
+      kill: ['Ha! Small human stopped moving.', 'Too easy. Need bigger humans.', 'Put that one in the pot.'],
+      reload: ['Stupid tiny gun! Need more boom-sticks!'],
+      grenade: ['Take this, human!'],
+      allyDown: ['Brother fall! You pay!', 'Human killed brother! KILL HUMAN!'],
+      disarmed: ['Gun gone? Fine! Use FISTS!'],
+    },
+    behemoth: {
+      alert: ['HHHHRRRRAAAAAAGH!', 'TINY... THING...', 'SMASH... THE... TINY...'],
+      combat: ['CRUSH!', 'GRAAAHH!', 'SMAAASH!'],
+      hurt: ['RRRRAAAGH!'],
+      search: ['WHERE...?'],
+    },
+    enclave: {
+      idle: ['Sector seven quiet. Too quiet, if you ask me.', 'Reminder: fraternizing with the locals is a court-martial offense.',
+        'Command wants the island locked down by nightfall.', 'I miss real coffee. The kind before the war.', 'Keep your eyes open. These mutants learn.'],
+      alert: ['Unregistered civilian in the exclusion zone!', 'Contact! Hostile wastelander!', 'Target acquired. Weapons free.', 'Mutated local spotted. Engaging.'],
+      search: ['Movement on sensors. Sweep the area.', 'Something\'s out there. Stay frosty.', 'Show yourself! By order of the President!'],
+      lost: ['Sensor ghost. Resume patrol.', 'Area clear. Logging the anomaly.', 'Negative contact. Back to posts.'],
+      combat: ['Suppress that target!', 'Squad, advance by bounding!', 'You are in violation of federal law!', 'Put it down, citizen! Permanently!', 'Flank left! Move!'],
+      hurt: ['I\'m hit! Armor holding!', 'Medic! ...Right, no medic.', 'Damn it! Breach in plating!'],
+      kill: ['Target neutralized.', 'Hostile down. Next.', 'That\'s one less for the census.'],
+      reload: ['Changing cells!', 'Reloading, cover me!'],
+      grenade: ['Grenade out!', 'Frag out!'],
+      allyDown: ['Man down! Man down!', 'We lost Sergeant Hale!', 'Soldier down! Avenge him!'],
+      greet: ['Citizen. Stay behind the patrol and you\'ll be fine.', 'Liberty Island sends its regards.', 'Keep moving, friend of the Enclave.'],
+    },
+    brotherhood: {
+      idle: ['The Codex is clear on this matter.', 'Keep the perimeter tight. Mutants love this plaza.', 'Scribes are cataloguing the library tomorrow. Escort detail again.',
+        'Power armor\'s due for maintenance. Again.', 'Ad astra... no, wrong motto. Steel stands.'],
+      alert: ['Hostile in sight! Engaging!', 'Contact! Weapons free!', 'For the Brotherhood!'],
+      search: ['Stay sharp. Something\'s moving.', 'Sweep the sector.'],
+      lost: ['Nothing. Back to post.', 'Clear. Stay vigilant.'],
+      combat: ['Steel stands!', 'Hold the line!', 'Burn them down!', 'Keep firing!'],
+      hurt: ['Armor breach!', 'I\'m hit!'],
+      kill: ['Target down.', 'Abomination eliminated.', 'One less threat.'],
+      reload: ['Cell swap!', 'Reloading!'],
+      allyDown: ['Knight down!', 'We lost a brother!'],
+      greet: ['Civilian. Keep your weapons holstered in the outpost.', 'The Brotherhood protects this plaza. Behave.', 'Move along, wastelander. Nothing to see.'],
+    },
+    settler: {
+      idle: ['Water\'s up two caps again. Two!', 'I used to sell insurance. Can you believe that? Insurance.', 'If the Brahmin get out again I\'m moving to Jersey.'],
+      alert: ['Raiders! Get inside!', 'Trouble! Somebody help!', 'Grab your guns, folks!'],
+      search: ['Who\'s there? I\'m armed! ...Sort of.'],
+      lost: ['Must be my nerves.', 'Probably just the wind.'],
+      combat: ['Stay back! I mean it!', 'Get away from our homes!', 'Somebody shoot it!'],
+      hurt: ['Ah! I\'m bleeding!', 'Help! I\'m hit!'],
+      flee: ['I\'m not dying for this market!', 'Run! Everybody run!'],
+      kill: ['Did... did I get it?', 'Oh god, I actually hit it.'],
+      reload: ['Reloading!'],
+      cower: ['Please don\'t hurt me!', 'I have a family! Well, I had a cat.', 'Take the caps! Take the caps!'],
+      greet: ['Welcome, friend. Wipe your feet, the floor\'s the only clean thing we got.', 'You\'re from a vault? Huh. You look... hydrated.',
+        'Keep your weapon down in the market and we\'ll get along fine.', 'Stranger. Good to see someone who isn\'t trying to eat me.',
+        'Mind the dog. He bites. Mostly raiders.', 'If you\'re buying, talk to the stalls. If you\'re stealing, talk to the guards.'],
+    },
+    ghoul: {
+      idle: ['Two hundred years and my back STILL hurts.', 'Nobody tell the smoothskins the neon runs on stolen power.', 'Used to be an usher on Broadway. Still know every line.'],
+      alert: ['Ferals! Or worse, tourists!', 'Trouble on the square!'],
+      combat: ['I\'ve had worse days. Survived the end of the world!', 'Come on, you ugly... oh. Heh.'],
+      hurt: ['Careful! I\'m already falling apart!'],
+      kill: ['Rest easy, pal.'],
+      reload: ['Loading up!'],
+      greet: ['Don\'t stare, smoothskin. It\'s rude.', 'Welcome to The Neon. Try not to glow on anything.', 'Relax, I\'m not the feral kind. Just the grumpy kind.',
+        'You look lost. Everybody looks lost. It\'s a whole thing here.'],
+    },
+    atom: {
+      idle: ['Atom\'s glow is in all things.', 'Every rad a blessing, every blessing a rad.', 'Division is holy. Especially of the atom.'],
+      alert: ['An unbeliever draws a weapon in Atom\'s house!'],
+      combat: ['Atom judges you!', 'Be split asunder!'],
+      hurt: ['The pain is... illuminating!'],
+      greet: ['Atom\'s light upon you, traveler.', 'Have you felt the warmth of the Glow, child?', 'Stand closer to the relic. Closer. Feel that?'],
+    },
+    protectron: {
+      idle: ['Scheduled maintenance overdue: seventy-three thousand days.', 'Please enjoy the exhibits. Do not touch the exhibits.', 'All citizens are reminded: loitering is a misdemeanor.'],
+      alert: ['Halt, citizen. Present identification.', 'Unauthorized visitor detected. Remain where you are.', 'Please state your business. You have three seconds.'],
+      search: ['Scanning for unauthorized persons.', 'Motion detected. Investigating.'],
+      lost: ['Scan complete. Resuming patrol route.', 'Area secure. Have a pleasant day.'],
+      combat: ['Non-compliance detected. Commencing correction.', 'Please remain still while you are corrected.', 'Resistance has been noted in your permanent record.', 'You have been found in violation.'],
+      hurt: ['Warning: chassis integrity compromised.', 'Damage sustained. Filing incident report.'],
+      kill: ['Citizen corrected.', 'Violation resolved.'],
+    },
+    gutsy: {
+      idle: ['Hup, two, three, four! Keep it tight, maggots!', 'Perimeter secure, sir! Probably!', 'Polishing my chassis for inspection, sir!'],
+      alert: ['Intruder! Sound the alarm!', 'Red menace sighted! Deploying freedom!', 'Unidentified civilian! Hands where I can see \'em!'],
+      search: ['Come out, you yellow-bellied infiltrator!', 'I know you\'re out there, pinko!'],
+      lost: ['Must\'ve been a communist squirrel. Back to patrol!', 'All clear! Freedom prevails!'],
+      combat: ['Eat some freedom!', 'You call that a haircut, soldier?!', 'Burn, you subversive!', 'Liberty never sleeps!'],
+      hurt: ['That the best you got?!', 'Just a flesh wound! I don\'t HAVE flesh!'],
+      kill: ['Target liberated!', 'Another victory for democracy!'],
+    },
+    eyebot: { alert: ['[Transmission crackles: ...exclusion zone... citizens will comply...]'] },
+    feral: {}, deathclaw: {},
+    guard: {
+      greet: ['Keep it civil and we\'ll keep you breathing.', 'Market rules: no shooting, no stealing, no Jet on the stairs.', 'Evening. Don\'t make me earn my caps today.',
+        'Heard a vault opened up. That you? Welcome to the worst city in the world.'],
+      idle: ['Quiet shift. I love a quiet shift.', 'My feet hurt. My everything hurts.'],
+      alert: ['Hostiles! Defend the market!', 'Contact! Everybody down!'],
+      combat: ['Keep them off the stalls!', 'Push them back!', 'Not in my market!'],
+      hurt: ['I\'m hit!', 'Ahh! Somebody cover me!'],
+      kill: ['Got one!', 'Down you go.'],
+      reload: ['Reloading!'],
+    },
+    merchant: {
+      greet: ['Caps, trades, IOUs from reputable skeletons. What\'ll it be?', 'Everything\'s for sale, except my dignity. That went years ago.',
+        'Ah, a customer! You look like someone with disposable caps.'],
+    },
+  };
+  /** Pick a random bark line from category; returns null if none. */
+  C.bark = function (voice, cat) {
+    const t = C.BARKS[voice]; if (!t) return null;
+    const arr = t[cat]; if (!arr || !arr.length) return null;
+    return arr[Math.floor(Math.random() * arr.length)];
+  };
+
+  // ------------------------------------------------------------------
+  // Roaming encounters (by district).  Each entry: [weight, group spec]
+  // group spec: {types:[[type,count]...], faction?, ai?, name?, friendly?, merchant?}
+  // ------------------------------------------------------------------
+  C.ENCOUNTERS = {
+    central_park: [[4, { types: [['molerat', 3]] }], [3, { types: [['bloatfly', 2]] }], [3, { types: [['dog', 3]] }], [2, { types: [['radroach', 5]] }],
+      [1, { types: [['feral_ghoul', 3]] }], [0.4, { types: [['deathclaw', 1]], minLevel: 8 }],
+      [0.8, { types: [['yao_guai', 1]], minLevel: 6 }], [0.8, { types: [['radscorpion', 2]], minLevel: 4 }], [0.8, { types: [['bark_scorpion', 4]] }]],
+    upper_west_side: [[3, { types: [['feral_ghoul', 3]] }], [2, { types: [['raider', 3]] }], [2, { types: [['dog', 3]] }], [1, { types: [['mister_handy', 1]] }], [1, { patrol: 'bos' }]],
+    upper_east_side: [[3, { types: [['feral_ghoul', 3]] }], [2, { types: [['raider', 3]] }], [2, { types: [['radroach', 5]] }], [1, { types: [['protectron', 1]] }], [1, { patrol: 'bos' }]],
+    midtown: [[3, { types: [['raider', 3]] }], [3, { types: [['feral_ghoul', 4]] }], [2, { types: [['super_mutant', 2]] }], [2, { types: [['radroach', 5]] }],
+      [1, { types: [['mister_handy', 1]] }], [1.3, { patrol: 'bos' }], [0.8, { caravan: true }]],
+    midtown_south: [[0.7, { types: [['super_mutant', 1], ['centaur', 2]], minLevel: 5 }], [3, { types: [['super_mutant', 2]] }], [3, { types: [['raider', 3]] }], [2, { types: [['feral_ghoul', 3]] }], [1, { types: [['dog', 3]] }], [0.8, { caravan: true }], [0.8, { patrol: 'bos' }]],
+    greenwich_village: [[1, { types: [['giant_ant', 4]] }], [0.6, { types: [['fire_ant', 3]], minLevel: 5 }], [3, { types: [['raider', 3]] }], [3, { types: [['dog', 3]] }], [2, { types: [['molerat', 3]] }], [2, { types: [['feral_ghoul', 3]] }], [0.8, { caravan: true }]],
+    financial_district: [[4, { types: [['raider', 4]] }], [2, { types: [['mister_handy', 1]] }], [2, { types: [['mirelurk', 2]] }], [1, { types: [['super_mutant', 2]] }]],
+    brooklyn: [[1.2, { types: [['radscorpion', 2]], minLevel: 4 }], [0.5, { types: [['giant_radscorpion', 1]], minLevel: 10 }], [4, { types: [['mirelurk', 2]] }], [3, { types: [['dog', 3]] }], [2, { types: [['raider', 3]] }], [1, { types: [['radroach', 5]] }]],
+    harbor: [[1, { types: [['mirelurk', 2]] }]],
+  };
+
+  /** Generic settlement populations (quests add the named NPCs). */
+  C.SETTLEMENT_POP = {
+    grand_central: [{ type: 'human', outfit: 'settler', name: 'Market Guard', voice: 'guard', ai: 'guard', pool: 'merchant_guard', count: 3 },
+      { type: 'human', outfit: 'settler', name: 'Settler', voice: 'settler', ai: 'wander', pool: null, count: 3 }],
+    flatiron: [{ type: 'human', outfit: 'combat_armor', name: 'Caravan Guard', voice: 'guard', ai: 'guard', pool: 'merchant_guard', count: 2 },
+      { type: 'human', outfit: 'wastelander', name: 'Trader', voice: 'settler', ai: 'wander', pool: null, count: 2 }],
+    radio_city: [{ type: 'human', outfit: 'settler', name: 'Radio City Guard', voice: 'guard', ai: 'guard', pool: 'settler', count: 2 }],
+    times_square: [{ type: 'human', outfit: 'ghoul_wear', ghoul: true, faction: 'ghouls', name: 'Neon Bouncer', voice: 'ghoul', ai: 'guard', pool: 'ghoul', count: 2 },
+      { type: 'human', outfit: 'ghoul_wear', ghoul: true, faction: 'ghouls', name: 'Ghoul Resident', voice: 'ghoul', ai: 'wander', pool: null, count: 3 }],
+    rockefeller: [{ type: 'brotherhood_paladin', name: 'Brotherhood Knight', voice: 'brotherhood', ai: 'guard', pool: 'brotherhood_paladin', count: 3, faction: 'brotherhood' }],
+    st_patricks: [{ type: 'human', outfit: 'atom_robes', faction: 'children_of_atom', name: 'Atom Devotee', voice: 'atom', ai: 'wander', pool: 'atom', count: 3 }],
+  };
+
+  /** Settlements whose population the quests module spawns itself (generics above only without quests). */
+  C.SETTLEMENT_QUEST_OWNED = { times_square: true };
+
+  /** Fallout-style rank names by level (used when a spawn def gives no name). */
+  C.rankName = function (type, level, def) {
+    const L = level || 1;
+    switch (type) {
+      case 'raider': return L >= 9 ? C.pick(['Raider Veteran', 'Raider Psycho', 'Raider Waster']) : L >= 5 ? C.pick(['Raider', 'Raider Psycho', 'Raider Scavver', 'Raider Punk']) : C.pick(['Raider', 'Raider', 'Raider Scum', 'Raider Punk']);
+      case 'super_mutant': return L >= 17 ? 'Super Mutant Overlord' : L >= 12 ? 'Super Mutant Master' : L >= 7 ? 'Super Mutant Brute' : 'Super Mutant';
+      case 'feral_ghoul': return L >= 10 ? 'Feral Ghoul Reaver' : L >= 5 ? 'Feral Ghoul Roamer' : 'Feral Ghoul';
+      case 'deathclaw': return L >= 14 ? 'Alpha Male Deathclaw' : 'Deathclaw';
+      case 'mirelurk': return L <= 3 ? 'Softshell Mirelurk' : 'Mirelurk';
+      case 'radroach': return L >= 8 ? 'Glowing Radroach' : 'Radroach';
+      case 'enclave_soldier': return L >= 18 ? 'Enclave Hellfire Trooper' : L >= 14 ? 'Enclave Sergeant' : 'Enclave Soldier';
+      case 'brotherhood_paladin': return L >= 12 ? 'Brotherhood Paladin' : 'Brotherhood Knight';
+      case 'mister_handy': return def && def._roaming ? 'Mister Gutsy' : 'Mister Handy';
+      case 'dog': return L >= 6 ? 'Feral Dog' : 'Wild Dog';
+      default: return null;
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // Reaction window ([CAUTION]): half-noticed player → a "?" bark and a turn of the head.
+  // ------------------------------------------------------------------
+  C.CAUTION_BARKS = {
+    _default: ['Huh?', 'What was that?', 'Hello?', '...?'],
+    raider: ['Huh? Somebody there?', 'Who\'s creepin\'?', 'Eh? I see ya... maybe.', 'That you, Skeeter? ...Skeeter?'],
+    mutant: ['Hm? Something move?', 'Smell... something.', 'Who there?'],
+    enclave: ['Movement. Hold.', 'Did you see that?', 'Possible contact. Confirm.'],
+    brotherhood: ['Hold. Something\'s out there.', 'Movement. Eyes up.'],
+    settler: ['Hello? Who\'s out there?', 'Is someone there?'],
+    guard: ['Who goes there?', 'Show yourself.'],
+    ghoul: ['Somebody there? I got bad eyes, not bad aim.'],
+    atom: ['Who approaches the Glow?'],
+    protectron: ['Motion detected. Please identify.', 'Citizen? Please state your business.'],
+    gutsy: ['Who goes there, soldier?!', 'Something\'s rustling! Communist squirrel?'],
+  };
+  C.cautionBark = (voice) => C.pick(C.CAUTION_BARKS[voice] || C.CAUTION_BARKS._default);
+
+  // ------------------------------------------------------------------
+  // Trespass (UN Plaza garrison before "The Company You Keep" is resolved):
+  // warn → last warning → open fire. ALL ORIGINAL LINES.
+  // ------------------------------------------------------------------
+  C.TRESPASS_BARKS = {
+    warn: ['Halt! This is a federal exclusion zone. Turn around, civilian.', 'You are approaching a restricted installation. Leave. Now.',
+      'Stop right there! Unauthorized personnel are not permitted on the plaza.', 'Civilian! You are entering a secured area. Back off.'],
+    last: ['Final warning. Five seconds, then we open fire.', 'I will not tell you again. Leave the plaza.', 'Weapons are hot, civilian. Walk away. NOW.'],
+    open: ['Trespasser will not comply. Weapons free!', 'That\'s it. Light them up!', 'Non-compliant hostile. Engage!'],
+    leave: ['That\'s right. Keep walking.', 'Smart choice. Stay off the plaza.', 'And don\'t come back without an invitation.'],
+    eyebot: ['[Crackling loudspeaker: RESTRICTED AREA... PERSONNEL WITHOUT CLEARANCE WILL BE... DETAINED...]',
+      '[Eyebot: ...EXCLUSION ZONE... TURN BACK... GOD BLESS AMERICA...]'],
+  };
+
+  // ------------------------------------------------------------------
+  // NPC greetings that react to the faction armour the player wears (FO3/NV style).
+  // key: 'bos' | 'enclave' → voice → lines.  ALL ORIGINAL LINES.
+  // ------------------------------------------------------------------
+  C.ARMOR_GREET = {
+    bos: {
+      settler: ['A Brotherhood suit! Thank God. Are you with the patrols from Rockefeller?', 'Knight! The raiders have been at the south fence again.',
+        'We don\'t get many of you tin cans this far out. Welcome.'],
+      guard: ['Good to see steel on the street. Keep the mutants off our market, will you?', 'Brotherhood. Our gate\'s open to you.'],
+      ghoul: ['Brotherhood, huh? Your lot usually shoots first and asks if I\'m feral later. Appreciate the restraint.'],
+      atom: ['The Brotherhood hoards the Atom\'s gifts in their vaults of steel. Still — peace, knight.'],
+      brotherhood: ['Ad Victoriam, brother.', 'Good to see you in the suit. Steel stands.', 'Hold the line out there.'],
+      enclave: ['Brotherhood trash. Walk on before I remember my orders.'],
+      merchant: ['Brotherhood discount? ...No. But I\'ll throw in a smile.'],
+    },
+    enclave: {
+      settler: ['That... that\'s Enclave armor. We don\'t want any trouble. Please.', 'Take what you need, sir. Just — take it and go.'],
+      guard: ['Easy. Nobody here wants a fight with the Enclave.', 'I\'ll be watching you, Liberty.'],
+      ghoul: ['Enclave. Great. Here to "purify" the neighborhood again?', 'I\'ve outlived three governments. I\'ll outlive yours.'],
+      atom: ['The Enclave would split the world and call it order.'],
+      brotherhood: ['You\'ve got a lot of nerve wearing that on our street.', 'Enclave colors. Keep your hands where I can see them.'],
+      enclave: ['God bless America, soldier.', 'Good to see a friendly helmet out here.', 'Stay frosty. The locals bite.'],
+      merchant: ['Enclave scrip isn\'t worth the paper. Caps only... sir.'],
+    },
+  };
+
+  // ------------------------------------------------------------------
+  // Karma & faction world reactions (roaming "special" encounters).
+  // Good karma → the Gallowglass Company, mercenaries on a Liberty Island
+  // contract (the Enclave wants the hero quiet); a grateful stranger with a gift.
+  // Evil karma → the Lantern Marshals, a self-appointed posse with a warrant.
+  // After MQ04: allied Brotherhood / Enclave patrols clashing with the other side.
+  // All names & text original.
+  // ------------------------------------------------------------------
+  C.BARKS.merc = {
+    alert: ['There\'s the payday! Weapons up!', 'Target confirmed. Collect the bounty!', 'Nothing personal, pal. Liberty pays in gold.'],
+    combat: ['Earn your cut, boys!', 'Push! Push!', 'Contract says dead. Not "mostly dead".', 'Pin them down!'],
+    search: ['Spread out. The client wants a body.', 'They\'re close. I can smell the vault on \'em.'],
+    lost: ['Lost the mark. Regroup.', 'Damn it. The paymaster won\'t like this.'],
+    hurt: ['I\'m hit! Hazard pay!', 'Agh! Double the fee!'],
+    kill: ['Contract fulfilled.', 'Payday.'],
+    reload: ['Reloading!', 'Changing mags!'],
+    grenade: ['Frag out!'],
+    allyDown: ['Man down! That\'s a bigger cut for me.', 'They got Rourke!'],
+    flee: ['This ain\'t worth the gold!'],
+  };
+  C.BARKS.marshal = {
+    alert: ['By the Lantern! There\'s the one on the warrant!', 'You\'re under arrest! ...Kidding. Draw!', 'Wanted, dead or deader. We\'ll take either.'],
+    combat: ['Justice don\'t miss twice!', 'Answer for what you did!', 'Hold the line, marshals!', 'Too late to repent now!'],
+    search: ['Spread out. Warrant says they\'re close.', 'Come out and face the Lantern!'],
+    lost: ['Slippery. We\'ll find \'em.', 'The warrant stays open.'],
+    hurt: ['Winged me!', 'Still standing!'],
+    kill: ['Warrant served.', 'May whoever\'s left forgive you.'],
+    reload: ['Reloading!'],
+    allyDown: ['Marshal down!', 'They killed Hollis!'],
+  };
+  C.BARKS.gift = {
+    greet: ['You probably don\'t remember me. You helped my family. Here — it\'s not much.', 'Word gets around about folks like you. Take this, please.',
+      'I\'ve been looking for you! My brother says you saved his life. This is from both of us.'],
+    idle: ['Hello there, friend!'],
+  };
+  C.KARMA_SQUADS = {
+    merc: { faction: 'mercenaries', voice: 'merc', leader: 'Gallowglass Captain', member: 'Gallowglass Merc', outfit: 'combat_armor', note: 'cmb_note_contract',
+      pool: 'mercenary', count: [3, 4], levelBonus: 1, evil: true },
+    marshal: { faction: 'lawmen', voice: 'marshal', leader: 'Lantern Marshal', member: 'Lantern Deputy', outfit: 'leather_armor', hat: 'cowboy', note: 'cmb_note_warrant',
+      pool: 'lawman', count: [3, 4], levelBonus: 0 },
+  };
+  C.NOTES = {
+    cmb_note_contract: { name: 'Gallowglass Contract', title: 'Contract No. 77-L', value: 0,
+      text: 'GALLOWGLASS COMPANY — LETTER OF ENGAGEMENT\n\nClient: Office of Civil Pacification, Liberty Island (via courier).\nTarget: the individual from Vault 120 ' +
+        'calling themself a friend of Manhattan.\n\nThe client notes with concern the target\'s growing popularity among the local population. Popular people ' +
+        'become symbols. Symbols become problems.\n\nTerms: 500 in pre-war gold on proof of death. Pip-Boy to be returned intact.\nThe Company does not ask why.\n\n— signed, Capt. M. Rourke' },
+    cmb_note_warrant: { name: 'Lantern Warrant', title: 'Warrant of the Lantern Marshals', value: 0,
+      text: 'BY THE AUTHORITY OF THE LANTERN (which is to say: nobody\'s, and so everybody\'s)\n\nWANTED: the vault dweller from 120.\nCharges: murder of ' +
+        'innocents; theft; general wickedness as witnessed by the good people of Manhattan.\n\nThe bearer of this warrant is empowered to bring the accused ' +
+        'to justice, or justice to the accused, whichever proves simpler.\n\nLet the lamp stay lit.\n— Marshal H. Crane, Flatiron District' },
+  };
+  C.WEAPON_POOLS.mercenary = (l) => l <= 6 ? [['assault_rifle', 3], ['combat_shotgun', 2], ['smg_10mm', 2], ['hunting_rifle', 1]]
+    : [['assault_rifle', 3], ['combat_shotgun', 2], ['sniper_rifle', 1], ['laser_rifle', 1], ['missile_launcher', 0.3]];
+  C.WEAPON_POOLS.lawman = (l) => l <= 6 ? [['hunting_rifle', 3], ['magnum_44', 2], ['pistol_10mm', 2], ['sawed_off_shotgun', 1]]
+    : [['hunting_rifle', 2], ['magnum_44', 3], ['combat_shotgun', 2], ['sniper_rifle', 1]];
+  C.GIFTS = [[['stimpak', 3]], [['stimpak', 2], ['rad_x', 1]], [['caps', 100]], [['nuka_cola_quantum', 1], ['stimpak', 1]], [['radaway', 2], ['purified_water', 2]],
+    [['ammo_10mm', 40], ['frag_grenade', 2]], [['super_stimpak', 1], ['stimpak', 1]]];
+
+  // Human first names for generic NPC flavour (original list)
+  C.FIRST_NAMES = ['Mags', 'Dutch', 'Rosie', 'Tully', 'Vic', 'Sal', 'Bea', 'Jojo', 'Lou', 'Nell', 'Otis', 'Pip', 'Ruth', 'Gus', 'Hank', 'Ida', 'Moe', 'Dot', 'Frankie', 'Lefty'];
+  C.RAIDER_NAMES = ['Raider', 'Raider', 'Raider', 'Raider Scum', 'Raider Psycho', 'Raider Punk', 'Raider Scavver'];
+
+  // ------------------------------------------------------------------
+  // Small shared helpers
+  // ------------------------------------------------------------------
+  C.rand = (a, b) => a + Math.random() * (b - a);
+  C.randInt = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
+  C.pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  C.weighted = (pairs) => {
+    let tot = 0; for (const p of pairs) tot += p[1];
+    let r = Math.random() * tot;
+    for (const p of pairs) { r -= p[1]; if (r <= 0) return p[0]; }
+    return pairs[pairs.length - 1][0];
+  };
+  C.clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  C.sfx = function (name, opts) { try { return G.sfx.play(name, opts); } catch (e) { return null; } };
+  C.fx = function (fn) { if (G.isStub('fx')) return null; const f = G.fx[fn]; if (typeof f !== 'function') return null; try { return f.apply(G.fx, Array.prototype.slice.call(arguments, 1)); } catch (e) { G.reportError('combat:fx.' + fn, e); return null; } };
+
+  /** Does the player have a perk? Defensive against different rpg shapes. */
+  C.hasPerk = function (id) {
+    if (G.isStub('rpg')) return false;
+    const R = G.rpg;
+    try {
+      if (typeof R.hasPerk === 'function') return !!R.hasPerk(id);
+      if (typeof R.perkRank === 'function') return R.perkRank(id) > 0;
+      const t = R.takenPerks || R.perksTaken || R.myPerks;
+      if (t) { if (t instanceof Set) return t.has(id); if (Array.isArray(t)) return t.includes(id) || t.some((p) => p && p.id === id); if (typeof t === 'object') return !!t[id]; }
+    } catch (e) { /* ignore */ }
+    return false;
+  };
+  C.skill = (id, dflt) => { if (G.isStub('rpg') || typeof G.rpg.skill !== 'function') return dflt === undefined ? 30 : dflt; try { const v = G.rpg.skill(id); return typeof v === 'number' ? v : (dflt || 30); } catch (e) { return dflt || 30; } };
+  C.special = (k, dflt) => { if (G.isStub('rpg')) return dflt || 5; const s = G.rpg.special; return (s && typeof s[k] === 'number') ? s[k] : (dflt || 5); };
+  C.playerLevel = () => (!G.isStub('rpg') && typeof G.rpg.level === 'number') ? G.rpg.level : 1;
+})();
+

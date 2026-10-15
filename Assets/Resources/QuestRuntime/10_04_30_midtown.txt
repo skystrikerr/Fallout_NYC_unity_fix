@@ -1,0 +1,485 @@
+/* src/quests/30_midtown.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 30: GRAND CENTRAL MARKET & RADIO CITY
+ *   MQ02 "All Aboard"            (find Zeke's trail at Grand Central)
+ *   MQ03 "Radio Free Manhattan"  (fix Vinnie Valentine's transmitter)
+ * NPCs: Stationmaster Delphine Okafor, Moe Kessler (Oyster Bar), INFO-BOT,
+ * Doc Hollis, Rosa "Two-Guns" Marquez, guards Kowalski & Ng,
+ * Vinnie Valentine (DJ), ROCKETTE-7 (stagehand robot).
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+  const pname = () => G.player.name || 'Wanderer';
+
+  // ------------------------------------------------------------------
+  // Placement
+  // ------------------------------------------------------------------
+  const GC = { x: 240, z: -230 };            // concourse centre
+  const RC = { x: 0, z: -340 };              // Radio City
+  const gcSpot = (names, dx, dz) => ({ site: 'grand_central', anchors: names, fallback: { x: GC.x + dx, z: GC.z + dz } });
+  const rcSpot = (names, dx, dz) => ({ site: 'radio_city', anchors: names, fallback: { x: RC.x + dx, z: RC.z + dz } });
+
+  // Merchant stock presets (ids resolved at spawn; missing ones are skipped)
+  const STOCK = {
+    bar: [[['nuka_cola', /^nuka-cola$/i], 8], [['sunset_sarsaparilla', /sarsaparilla/i], 5], [['purified_water', /purified water/i], 6],
+      [['beer', /^beer$/i], 6], [['whiskey', /whiskey/i], 3], [['mirelurk_meat', /mirelurk meat/i], 2], [['cram', /^cram$/i], 4],
+      [['iguana_on_a_stick', /iguana/i], 4], [['blamco_mac', /blamco/i], 2]],
+    doctor: [[['stimpak', /^stimpak$/i], 8], [['super_stimpak', /super stimpak/i], 2], [['radaway', /radaway/i], 4], [['rad_x', /rad-x/i], 4],
+      [['med_x', /med-x/i], 2], [['purified_water', /purified water/i], 4]],
+    guns: [[['pistol_32'], 1], [['pistol_10mm'], 1], [['hunting_rifle'], 1], [['sawed_off_shotgun'], 1], [['combat_knife'], 1],
+      [['baseball_bat'], 1], [['frag_grenade'], 4], [['ammo_32'], 60], [['ammo_10mm'], 80], [['ammo_308'], 30], [['ammo_12ga'], 30],
+      [['ammo_556'], 40], [['stimpak', /^stimpak$/i], 3], [['leather_armor', /leather armor/i], 1], [['metal_armor', /metal armor/i], 1]],
+    infobot: [[['bobby_pin', /bobby pin/i], 10], [['nuka_cola', /^nuka-cola$/i], 2]],
+    water: [[['purified_water', /purified water/i], 14], [['dirty_water', /dirty water/i], 6], [['nuka_cola', /^nuka-cola$/i], 3]],
+    junk: [[['scrap_metal', /scrap metal/i], 8], [['tin_can', /tin can/i], 10], [['fission_battery', /fission battery/i], 2], [['sensor_module', /sensor module/i], 1],
+      [['abraxo_cleaner', /abraxo/i], 2], [['bobby_pin', /bobby pin/i], 6], [['duct_tape', /duct tape/i], 3], [['wonderglue', /wonderglue/i], 2]],
+  };
+
+  // ------------------------------------------------------------------
+  // Quests
+  // ------------------------------------------------------------------
+  L.hook('init', function () {
+    L.quest({
+      id: 'mq02', main: true, order: 2, name: 'All Aboard', giver: 'Zeke Marlow (holotape)', location: 'Grand Central Market',
+      desc: 'Zeke\'s birthday holotape says he was heading for Grand Central, and to ask for him at the Oyster Bar. Grand Central is ' +
+        'southeast of Central Park, on 42nd Street.',
+      stages: [
+        { id: 'travel', text: 'Travel to Grand Central Market.', markers: [{ anchor: ['grand_central', ['entrance', 'door', 'main_entrance']], fallback: { x: 240, z: -185 }, label: 'Grand Central Market' }],
+          onEnter() { L.hint('radio', 'Tip: Your Pip-Boy radio (DATA → Radio) can pick up local stations.', 25); } },
+        { id: 'ask', text: 'Ask about Zeke at the Oyster Bar.', markers: () => [{ npc: 'gc_moe', label: 'Moe Kessler' }] },
+        { id: 'infobot', text: '(Optional) Buy information about Zeke from the INFO-BOT.', sideObjective: true, optional: true,
+          showIf: () => Q.stage('mq02') === 'ask' && !L.flag('infobot_zeke'), markers: () => [{ npc: 'gc_infobot', label: 'INFO-BOT' }] },
+      ],
+      rewards: { xp: 150 },
+      onComplete() { Q.start('mq03'); },
+    });
+
+    L.quest({
+      id: 'mq03', main: true, order: 3, name: 'Radio Free Manhattan', giver: 'Moe Kessler', location: 'Radio City Music Hall',
+      desc: 'Zeke went to see Vinnie Valentine, the voice of Radio Free Manhattan, who has been picking up strange military signals ' +
+        'bouncing off the Statue of Liberty. Vinnie broadcasts from Radio City Music Hall on 6th Avenue.',
+      stages: [
+        { id: 'vinnie', text: 'Find Vinnie Valentine at Radio City Music Hall.', markers: () => [{ npc: 'rc_vinnie', label: 'Vinnie Valentine' }] },
+        { id: 'amp', text: 'Find a Signal Amplifier for Vinnie\'s transmitter.',
+          markers: () => {
+            const m = [];
+            if (!L.flag('got_amp_chrysler') && L.pickups.amp) m.push(L.chryslerMarker ? L.chryslerMarker(L.pickups.amp.pos, 'Signal Amplifier (Chrysler crown)') : { x: L.pickups.amp.pos.x, z: L.pickups.amp.pos.z, label: 'Signal Amplifier (Chrysler Building)' });
+            if (!L.flag('rosa_sold_amp')) m.push({ npc: 'gc_rosa', label: 'Rosa Marquez (sells parts)' });
+            return m;
+          } },
+        { id: 'deliver', text: 'Bring the Signal Amplifier to Vinnie.', markers: () => [{ npc: 'rc_vinnie', label: 'Vinnie Valentine' }] },
+        { id: 'listen', text: 'Listen to the intercepted transmission with Vinnie.', markers: () => [{ npc: 'rc_vinnie', label: 'Vinnie Valentine' }] },
+      ],
+      rewards: { xp: 300, caps: 50 },
+      onComplete() {
+        L.news('Folks, this is Vinnie Valentine, and Radio Free Manhattan is now coming to you LOUDER, CLEARER and FURTHER than ever, thanks to a certain vault dweller with a screwdriver and a heart of gold. You know who you are. Everybody knows who you are, now. I made sure.');
+        L.hint('radio2', 'Tune in: Pip-Boy → DATA → Radio → Radio Free Manhattan. Vinnie will report on your deeds.', 3);
+        Q.start('mq04');
+      },
+    });
+  });
+
+  // Arrival at Grand Central
+  L.trigger({ id: 'gc_arrive', x: GC.x, z: GC.z, r: 48, cond: () => Q.stage('mq02') === 'travel',
+    fire() {
+      Q.setStage('mq02', 'ask');
+      L.say('gc_delphine', 'New face! Welcome to Grand Central Market. Keep your gun holstered and your caps handy.');
+      if (!G.isStub('music') && G.music.setMood) try { G.music.setMood('settlement'); } catch (e) { /* */ }
+    } });
+  // If the player reaches Grand Central before MQ02 even starts (explorers), still set things up.
+  L.trigger({ id: 'gc_arrive_early', x: GC.x, z: GC.z, r: 48, cond: () => !Q.isStarted('mq02') && Q.isComplete('mq01'),
+    fire() { Q.start('mq02', { stage: 'ask' }); } });
+  L.trigger({ id: 'rc_arrive', x: RC.x, z: RC.z, r: 40, cond: () => Q.stage('mq03') === 'vinnie',
+    fire() { L.say('rc_vinnie', 'Is that a vault suit? In MY lobby? Somebody get this kid a microphone!'); } });
+
+  G.events.on('itemAdded', (id) => {
+    if (id === 'q_signal_amplifier') {
+      L.setFlag('got_amp_chrysler');
+      if (Q.stage('mq03') === 'amp' || Q.stage('mq03') === 'vinnie') Q.setStage('mq03', 'deliver');
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // World: terminals, notes, the amplifier
+  // ------------------------------------------------------------------
+  L.hook('world', function () {
+    const t1 = L.anchor('grand_central', ['stationmaster_terminal', 'mayor_terminal', 'office'], { x: GC.x + 22, z: GC.z - 6 });
+    if (t1) L.spawnTerminal('gc_stationmaster', t1, Math.PI);
+    const t2 = L.anchor('radio_city', ['terminal', 'console', 'radio_dj_terminal'], { x: RC.x + 4, z: RC.z + 3 });
+    if (t2) L.spawnTerminal('rc_console', t2, 0);
+  });
+  L.hook('spawn', function () {
+    // The Chrysler amplifier (MQ03) — guarded by raiders (combat populates the Chrysler).
+    const amp = L.anchor('chrysler', ['amplifier', 'loot2', 'loot1', 'boss'], { x: 309, z: -186 });
+    if (amp && !L.has('q_signal_amplifier') && !L.flag('amp_delivered')) L.pickup('amp', 'q_signal_amplifier', 1, amp);
+    // Market rules notice
+    const board = L.anchor('grand_central', ['notice_board', 'entrance', 'door'], { x: GC.x - 4, z: GC.z + 20 });
+    if (board) L.pickup('market_rules', 'q_note_market_rules', 1, { x: board.x + 0.8, y: board.y, z: board.z });
+
+    // ---- Grand Central Market NPCs ----
+    L.spawnNPC({ id: 'gc_delphine', type: 'human', name: 'Stationmaster Delphine Okafor', outfit: 'settler', gender: 'f', faction: 'settlers', ai: 'guard', home: 'here', homeR: 3,
+      at: gcSpot(['stationmaster', 'mayor', 'leader'], 24, -7), dialogue: 'dlg_gc_delphine', essential: true, weapon: ['hunting_rifle'], level: 8, skinTone: 0.75,
+      barks: ['Keep it moving, keep it civil.', 'Caps only. No teeth.', 'Clock\'s broken. Don\'t ask.'] });
+    L.spawnNPC({ id: 'gc_moe', type: 'human', name: 'Moe Kessler', outfit: 'merchant', gender: 'm', faction: 'settlers', ai: 'merchant', home: 'here',
+      at: gcSpot(['bar', 'oyster_bar', 'merchant2'], -14, -8), dialogue: 'dlg_gc_moe', essential: true,
+      merchant: { caps: 350, stock: STOCK.bar, restock: 3 }, barks: ['Oyster Bar\'s open. Oysters ain\'t.', 'Tunnel shrimp! Fresh-ish!'] });
+    // The info booth is a closed kiosk: INFO-BOT stands at its south counter, facing the concourse (inside it,
+    // nobody could see or talk to him).
+    const booth = L.anchor('grand_central', ['info_booth', 'clock', 'center'], { x: GC.x, z: GC.z });
+    const botAt = booth ? L.freeSpot(booth.x, booth.z + 3.3, booth.y, { maxR: 3 }) : null;
+    L.spawnNPC({ id: 'gc_infobot', type: 'protectron', name: 'INFO-BOT', faction: 'settlers', ai: 'static',
+      at: botAt && !botAt.forced ? undefined : gcSpot(['info_booth', 'clock', 'center'], 0, 0), pos: botAt && !botAt.forced ? botAt : undefined, lookYaw: Math.PI,
+      dialogue: 'dlg_gc_infobot', essential: true,
+      merchant: { caps: 120, stock: STOCK.infobot }, barks: ['INFORMATION! Now only slightly outdated!', 'Track 23 is now boarding. Track 23 has been boarding since 2077.', 'Please do not feed the Info-Bot.'], voice: 'robot' });
+    { const b = L.npc('gc_infobot'); if (b && booth && botAt && !botAt.forced && Math.hypot(b.pos.x - booth.x, b.pos.z - booth.z) < 2.4) { b.pos.set(botAt.x, botAt.y, botAt.z); b.yaw = Math.PI; } }   // older saves: step out of the kiosk
+    L.spawnNPC({ id: 'gc_doc', type: 'human', name: 'Doc Hollis', outfit: 'doctor', gender: 'm', faction: 'settlers', ai: 'merchant', home: 'here',
+      at: gcSpot(['doctor', 'clinic', 'merchant3'], 13, -8), dialogue: 'dlg_gc_doc', essential: true,
+      merchant: { caps: 300, stock: STOCK.doctor, restock: 3 }, barks: ['Next patient!', 'If it\'s glowing, I charge extra.'], hair: 'bald' });
+    L.spawnNPC({ id: 'gc_rosa', type: 'human', name: 'Rosa "Two-Guns" Marquez', outfit: 'merchant', gender: 'f', faction: 'settlers', ai: 'merchant', home: 'here',
+      at: gcSpot(['merchant4', 'guns', 'stall1'], -12, 9), dialogue: 'dlg_gc_rosa', essential: true, weapon: ['pistol_10mm'],
+      merchant: { caps: 600, stock: STOCK.guns, restock: 3 }, barks: ['Guns, ammo, questionable advice!', 'You break it, you bought it. You shoot it, you REALLY bought it.'], skinTone: 0.45 });
+    L.spawnNPC({ id: 'gc_guard_kowalski', type: 'human', name: 'Guard Kowalski', outfit: 'combat_armor', gender: 'm', faction: 'settlers', ai: 'guard', home: 'here',
+      at: gcSpot(['guard1', 'entrance'], -6, 30), dialogue: 'dlg_gc_guard', weapon: ['assault_rifle', 'hunting_rifle'], level: 7,
+      barks: ['Market\'s safe. Street ain\'t.', 'Eyes up. Something\'s been sniping on 42nd.'] });
+    L.spawnNPC({ id: 'gc_guard_ng', type: 'human', name: 'Guard Ng', outfit: 'leather_armor', gender: 'f', faction: 'settlers', ai: 'patrol', home: 'here', homeR: 12,
+      at: gcSpot(['guard2', 'spawn2'], 10, 22), dialogue: 'dlg_gc_guard', weapon: ['smg_10mm', 'pistol_10mm'], level: 6,
+      barks: ['No trouble, now.', 'Keep your hands where I can see \'em. Both of them. Ghouls too.'] });
+
+    L.spawnNPC({ id: 'gc_water', type: 'human', name: 'Aqua Al', outfit: 'settler', gender: 'm', faction: 'settlers', ai: 'merchant', home: 'here',
+      at: gcSpot(['vendor_water', 'merchant2'], -7, 19), dialogue: 'dlg_gc_vendor', merchant: { caps: 150, stock: STOCK.water, restock: 2 },
+      barks: ['Water! Clean water! Only slightly haunted!', 'Purified! Filtered! Blessed by nobody!'], skinTone: 0.8 });
+    L.spawnNPC({ id: 'gc_junk', type: 'human', name: 'Scrapper Sue', outfit: 'wastelander', gender: 'f', faction: 'settlers', ai: 'merchant', home: 'here',
+      at: gcSpot(['vendor_junk', 'merchant3'], 7, 19), dialogue: 'dlg_gc_vendor', merchant: { caps: 250, stock: STOCK.junk, restock: 2 },
+      barks: ['One settler\'s junk is another settler\'s slightly different junk.', 'Tin cans! Get your tin cans!'] });
+
+    // ---- Radio City ----
+    L.spawnNPC({ id: 'rc_vinnie', type: 'human', name: 'Vinnie Valentine', outfit: 'dj', gender: 'm', faction: 'settlers', ai: 'sit', home: 'here',
+      at: rcSpot(['radio_dj', 'dj', 'booth'], 0, 4), dialogue: 'dlg_rc_vinnie', essential: true, hair: 'slick',
+      barks: ['Tell your friends! Tell your enemies! Tell your mutated uncle!', 'Radio Free Manhattan — the only station that\'s never been nuked twice!'], voice: 'm_radio' });
+    L.spawnNPC({ id: 'rc_rockette', type: 'mister_handy', name: 'ROCKETTE-7', faction: 'settlers', ai: 'wander', home: 'here', homeR: 6,
+      at: rcSpot(['stage', 'lobby', 'spawn1'], -6, 6), dialogue: 'dlg_rc_rockette', essential: true,
+      barks: ['Five, six, seven, eight! Kick!', 'The show must go on. The show has been going on since 2077.', 'Jazz hands! All three of them!'], voice: 'robot' });
+  });
+
+  // ------------------------------------------------------------------
+  // Terminals
+  // ------------------------------------------------------------------
+  L.hook('register', function () {
+    L.terminal('gc_stationmaster', {
+      title: 'STATIONMASTER\'S OFFICE', header: 'NEW YORK CENTRAL RAILROAD — TERMINAL OPERATIONS\n(Repurposed: GRAND CENTRAL MARKET ADMINISTRATION)',
+      lock: 25,
+      entries: [
+        { title: 'Market Ledger', text: 'STALL RENT THIS WEEK:\nMoe (Oyster Bar) ...... paid\nRosa (arms) ........... paid, complained\nDoc Hollis ............ paid in stimpaks (accepted)\nINFO-BOT .............. paid in information (disputed)\nCaldwell caravan ...... OVERDUE (caravan missing)' },
+        { title: 'Security Concerns', text: 'Three caravans hit on 42nd this month. Single shots, long range, always the pack-bot — never the drivers, so far. Kowalski swears the flashes come from up the Chrysler, "where the eagles are."\n\nThe Brooklyn Bridge gang raised the toll again. Sixty percent of our imports come across that bridge.' },
+        { title: 'The Children of Atom', text: 'Father Hollowell came by asking about our water tower. Specifically: how tall it is, who guards it, and whether it "yearns." I told him water towers don\'t yearn. He said "not yet."\n\nDoubled the guard on the tower.' },
+        { title: 'Personal — Do Not Read', text: 'If you\'re reading this, Kowalski, I know it\'s you. The password was my birthday. You were at my birthday. Get back to work.' },
+      ],
+    });
+    L.terminal('rc_console', {
+      title: 'RADIO FREE MANHATTAN — BROADCAST CONSOLE', header: 'RCA BROADCAST SYSTEMS / ROBCO INTERFACE\nON AIR: ' + 'YES (ALWAYS)',
+      lock: 0,
+      entries: [
+        { title: 'Tonight\'s Running Order', text: '1. Open with the good song\n2. Weather (it\'s bad)\n3. News (it\'s worse)\n4. Listener letters\n5. The other good song\n6. Emergency stretch of talking if I forget the third good song' },
+        { title: 'Listener Letters', text: '"Dear Vinnie, my husband got turned into a ghoul and now he won\'t stop saying he\'s \'fine\'. Is he fine?" — Worried in Queens\n\n"Dear Vinnie, you played the good song four times on Tuesday. Please never stop." — Your Biggest Fan (Kong)\n\n[Vinnie has circled "Kong" and written "???" next to it.]' },
+        { title: 'Signal Log', text: () => 'UNKNOWN MILITARY CIPHER — ORIGIN: LIBERTY ISLAND\nDetected: 11 times this month\nStrength: too weak to decode on current amplifier\n\n' + (Q.isComplete('mq03') ? 'UPDATE: decoded. Recording filed. God help us.' : 'NOTE: Need a proper amplifier. Zeke says the Chrysler raiders stripped one from the old WNYC relay.') },
+        { title: 'Rockette-7 Maintenance', text: 'Oil: weekly. Choreography subroutines: DO NOT UPDATE (last update resulted in 36 continuous hours of the Charleston).' },
+      ],
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Dialogue
+  // ------------------------------------------------------------------
+  const barterR = { text: 'Let\'s trade.', barter: true };
+  L.hook('register', function () {
+    // ---------------- Stationmaster Delphine Okafor ----------------
+    L.dialogue('dlg_gc_delphine', {
+      start: () => L.flag('met_delphine') ? 'again' : 'first',
+      nodes: {
+        first: { text: 'Delphine Okafor, Stationmaster. You\'re new, you\'re blue, and you\'re standing in my concourse, which makes you my business. Welcome to Grand Central Market — the safest forty thousand square feet in Manhattan, give or take the pigeons.',
+          onEnter() { L.setFlag('met_delphine'); },
+          responses: [
+            { text: 'I\'m looking for an old man. Zeke Marlow.', next: 'zeke' },
+            { text: 'Tell me about the market.', next: 'market' },
+            { text: 'The safest? That\'s a low bar out here.', next: 'bar' },
+          ] },
+        again: { text: () => ['Stationmaster\'s office is open. What do you need?', 'You again. Good. I like repeat customers who haven\'t been shot yet.', 'Walk with me — no, stand still, I\'m busy. What is it?'][Math.floor(Math.random() * 3)],
+          responses: [
+            { text: 'About Zeke Marlow...', next: 'zeke', cond: () => Q.isActive('mq02') },
+            { text: 'Tell me about the market.', next: 'market' },
+            { text: 'Got any work?', next: 'work' },
+            { text: 'About the sniper on 42nd...', next: 'sniper_report', cond: () => Q.isActive('sq_sniper') && (L.flag('dolores_dead') || L.flag('dolores_recruited') || L.flag('dolores_left')) },
+            { text: 'About the Brooklyn Bridge toll...', next: 'bridge_report', cond: () => Q.isActive('sq_bridge') && L.flag('bridge_resolved') },
+            { text: 'Father Hollowell wants to "bless" your water tower.', next: 'atom_warn', cond: () => Q.isActive('sq_atom') && !L.flag('atom_told_delphine') && !L.flag('atom_isotope_planted') },
+            { text: 'Nothing. Just saying hello.' },
+          ] },
+        bar: { text: 'Low bar, high walls. We\'ve got food, water, a doctor who mostly washes his hands, and a gun merchant who only occasionally shoots customers. That\'s paradise, kid. Ask anyone who\'s lived outside it.',
+          responses: [{ text: 'I\'m looking for Zeke Marlow.', next: 'zeke' }, { text: 'Tell me about the market.', next: 'market' }] },
+        zeke: { text: 'Old man, vault suit like yours, fixed our water pump for free and wouldn\'t shut up about the Statue of Liberty? Yeah, he was here. Try Moe at the Oyster Bar, down the ramp. Zeke drank there every night he was in town. Moe notices everything a man says after his third drink.',
+          responses: [{ text: 'Thanks, Stationmaster.' }, { text: 'Got any work while I\'m here?', next: 'work' }] },
+        market: { text: 'Moe runs the Oyster Bar — food and drink. Doc Hollis patches holes. Rosa sells guns and opinions. INFO-BOT sells information, some of it true. Rules are on the board: no shooting in the concourse, caps only, be nice to the ghouls.',
+          responses: [{ text: 'What\'s the story with the INFO-BOT?', next: 'infobot' }, { text: 'Got any work?', next: 'work' }, { text: 'Thanks.' }] },
+        infobot: { text: 'Came with the building. Knows every train schedule from 2077 and nothing useful after. We fed it Pip-Boy data from traders for a few years, so now it knows gossip too. It charges. Don\'t tip it. It gets ideas.',
+          responses: [{ text: 'Got any work?', next: 'work' }, { text: 'Thanks.' }] },
+        work: { text: 'Two problems, both of them shooting at my caravans. Somebody\'s sniping pack-bots on 42nd from the Chrysler Building. And the Brooklyn Bridge gang has raised the toll so high the Brooklyn traders won\'t cross. Fix either one and I\'ll make it worth your while.',
+          responses: [
+            { text: 'I\'ll deal with the sniper.', cond: () => !Q.isStarted('sq_sniper'), action: () => Q.start('sq_sniper') },
+            { text: 'I\'ll look into the bridge.', cond: () => !Q.isStarted('sq_bridge'), action: () => Q.start('sq_bridge') },
+            { text: 'Maybe later.' },
+          ] },
+        sniper_report: { text: () => L.flag('dolores_recruited')
+          ? 'You... hired her? The sniper? And she\'s going to guard OUR caravans now? [She rubs her temples.] That is the single most New York solution I have ever heard. Fine. Here\'s your pay. If she shoots Kowalski, it\'s coming out of your end.'
+          : L.flag('dolores_left') ? 'You paid her to leave? Out of your own pocket? ...Well, the flashes stopped, and I\'m not going to argue with a miracle. Here — let me at least pay you back.'
+          : 'No more flashes from the Chrysler. Kowalski\'s actually smiling, which is upsetting for everybody. Here — you earned this.',
+          responses: [{ text: 'Pleasure doing business.', action: () => Q.complete('sq_sniper') }] },
+        bridge_report: { text: () => L.flag('bridge_legit') ? 'A "Toll Authority"? With receipts? Tony the raider is issuing RECEIPTS? ...Honestly, that\'s better than dead. Dead men don\'t reopen trade routes. Here\'s your cut.'
+          : L.flag('bridge_charges') ? 'Tony says you "inspected" his toll booth and now he flinches every time a cart hits a pothole. Toll\'s five caps. I don\'t want to know. Here\'s your cut.'
+          : L.flag('bridge_paid') ? 'You paid him off? With your own caps? That\'s either very generous or very stupid, and out here those look the same. The Brooklyn traders are crossing again, though. Take this.'
+            : 'Tony\'s done and the bridge is open. Brooklyn caravans are already lining up. Nice work.',
+          responses: [{ text: 'Glad to help.', action: () => Q.complete('sq_bridge') }] },
+        atom_warn: { text: 'He WHAT? [She takes a breath.] Okay. Okay. Thank you. That tower feeds every tap in this building. I\'m putting two guards on it and a third guard on the first two. You did right telling me.',
+          onEnter() { L.setFlag('atom_told_delphine'); L.karma(50, 'Warned Grand Central'); L.giveCaps(60); }, responses: [{ text: 'Keep your people safe.' }] },
+      },
+    });
+
+    // ---------------- Moe Kessler (Oyster Bar) ----------------
+    L.dialogue('dlg_gc_moe', {
+      start: () => Q.stage('mq02') === 'ask' || Q.stage('mq02') === 'travel' ? 'zeke' : 'bar',
+      nodes: {
+        zeke: { text: 'Welcome to the Oyster Bar, home of zero oysters since \'77. What\'ll it be? ...Hold on. Blue suit, lost look, "one-twenty" on the back. You\'re Zeke\'s kid. He said you\'d come. He said you\'d be taller, but he said a lot of things after the third drink.',
+          responses: [
+            { text: 'Where is he? Is he alright?', next: 'zeke2' },
+            { text: 'What else did he say after the third drink?', check: { special: 'C', value: 5 }, next: 'zeke_c', failNext: 'zeke2' },
+            { text: 'Buy me a drink first. (10 caps)', next: 'drink', cond: () => L.caps() >= 10 },
+          ] },
+        drink: { text: 'A man after Zeke\'s own heart. [He pours something amber and slightly fizzy.] On the house — no, I\'m kidding, ten caps. Now: Zeke.',
+          onEnter() { L.pay(10); L.give(['beer', /^beer$/i, 'nuka_cola'], 1, true); }, responses: [{ text: 'Where is he?', next: 'zeke2' }] },
+        zeke_c: { text: 'He said the Superintendent was the best landlord in New York because it only ever evicted the right people. Then he cried a little. Then he said if anything happened to him, his kid should get this. [He slides a holotape across the bar.] And he said you\'d probably try to pay for it. Don\'t.',
+          onEnter() { L.setFlag('moe_extra'); L.xp(10, 'Charisma'); }, responses: [{ text: 'Where did he go?', next: 'zeke2' }] },
+        zeke2: { text: 'Went to see Vinnie Valentine over at Radio City — the DJ. Something about signals off the Statue of Liberty. That was nine days ago. He left this for you. [A worn holotape.] Radio City\'s on 6th Avenue, north of Times Square. Don\'t cut through Times Square after dark unless you like ghouls. Friendly ones. Mostly.',
+          onEnter() { if (!L.has('q_holo_zeke_travel')) L.give('q_holo_zeke_travel', 1); },
+          responses: [
+            { text: 'Thanks, Moe. I owe you one.', action: () => Q.complete('mq02') },
+            { text: 'Let me see what you\'ve got for sale first.', barter: true, action: () => Q.complete('mq02') },
+          ] },
+        bar: { text: () => ['Back again? The tunnel shrimp are fresh. Well. They\'re fresher than yesterday\'s.', 'What\'ll it be, vault kid?', 'You look like a man who needs a Nuka. Or a person. You look like a person who needs a Nuka.'][Math.floor(Math.random() * 3)],
+          responses: [
+            barterR,
+            { text: 'What\'s the word around the market?', next: 'rumor' },
+            { text: 'What exactly is tunnel shrimp?', next: 'shrimp' },
+            { text: 'See you, Moe.' },
+          ] },
+        shrimp: { text: 'Crustacean. Probably. Comes out of the flooded tracks under Track 42. It\'s got more legs than a shrimp and fewer than a radroach, and I choose to live in that middle ground.', responses: [barterR, { text: 'I\'ll pass.' }] },
+        rumor: { text: () => {
+          const r = [];
+          if (!Q.isStarted('sq_neon')) r.push('The ghoul mayor over at Times Square — Crowe — says the Neon\'s lights are dying. Man looks worried, and ghouls don\'t worry easy.');
+          if (!Q.isStarted('sq_overdue')) r.push('The Brotherhood\'s got a scribe at Rockefeller paying caps for pre-war books. The library\'s full of books. Also ghouls. It\'s a trade-off.');
+          if (!Q.isStarted('sq_caravan')) r.push('Hattie Caldwell\'s caravan never showed up from the Flatiron. Hattie\'s stuck down there worrying herself sick.');
+          if (!Q.isStarted('sq_shellshock')) r.push('Old Ossie, the ferryman at Battery Park, is having mirelurk trouble. Says they keep trying to eat his boat.');
+          if (!Q.isStarted('sq_borough') && !L.flag('borough_recruited')) r.push('Traders keep talking about a dog down at Bethesda Terrace in the park. Won\'t leave some dead fella\'s side. Breaks your heart.');
+          if (!r.length) r.push('Word is, YOU\'RE the word around the market. Vinnie won\'t shut up about you.');
+          return r[Math.floor(Math.random() * r.length)];
+        }, responses: [{ text: 'Anything else?', next: 'rumor' }, barterR, { text: 'Thanks, Moe.' }] },
+      },
+    });
+
+    // ---------------- INFO-BOT ----------------
+    L.dialogue('dlg_gc_infobot', {
+      start: 'hello',
+      nodes: {
+        hello: { speaker: 'INFO-BOT', text: 'WELCOME TO GRAND CENTRAL TERMINAL. I AM INFO-BOT. HOW MAY I DIRECT YOUR JOURNEY? PLEASE NOTE: ALL TRAINS ARE DELAYED. DELAY ESTIMATE: INDEFINITE.',
+          responses: [
+            { text: 'Have you seen an old man named Zeke Marlow? (20 caps)', next: 'zeke', cond: () => !L.flag('infobot_zeke') && (Q.isActive('mq02') || Q.isActive('mq03')) },
+            { text: 'I need a map of Manhattan. (30 caps)', next: 'map', cond: () => !L.flag('infobot_map') },
+            { text: 'Sell me a rumour. (10 caps)', next: 'rumor' },
+            { text: 'When is the next train?', next: 'train' },
+            { text: 'Let me see your merchandise.', barter: true },
+            { text: 'Goodbye.' },
+          ] },
+        zeke: { text: 'PROCESSING PAYMENT... THANK YOU. PASSENGER "MARLOW, EZEKIEL" DEPARTED THIS TERMINAL NINE DAYS AGO. DESTINATION DECLARED: RADIO CITY MUSIC HALL. PASSENGER ASKED ME FOR A "SIGNAL AMPLIFIER." I DO NOT SELL THOSE. PASSENGER CALLED ME "A GLORIFIED TIMETABLE." I HAVE LOGGED THIS.',
+          onEnter() { if (L.pay(20)) { L.setFlag('infobot_zeke'); if (Q.stage('mq02') === 'ask') { L.give('q_holo_zeke_travel', 1); Q.complete('mq02'); } } },
+          responses: [{ text: 'Thanks, Info-Bot.', next: 'hello' }] },
+        map: { text: 'PROCESSING PAYMENT... THANK YOU. UPLOADING "TOURIST MAP OF MANHATTAN, 2076 EDITION" TO YOUR PIP-BOY. PLEASE DISREGARD ALL ATTRACTIONS LISTED AS "OPEN."',
+          onEnter() {
+            if (L.pay(30)) {
+              L.setFlag('infobot_map');
+              for (const id of ['radio_city', 'times_square', 'rockefeller', 'st_patricks', 'empire_state', 'nypl', 'flatiron', 'battery_park', 'brooklyn_bridge', 'macys', 'met']) G.discover(id);
+              L.notify('Map data uploaded: 11 locations added to your Pip-Boy.');
+            }
+          },
+          responses: [{ text: 'Thanks.', next: 'hello' }] },
+        rumor: { text: () => {
+          const r = ['RUMOR #0412: THE SUPER MUTANTS IN THE EMPIRE STATE BUILDING ANSWER TO A "KING." HE IS LARGE. THAT IS ALL THE RUMOR SAYS. HE IS LARGE.',
+            'RUMOR #0977: THE ENCLAVE AT THE UNITED NATIONS WILL NOT FIRE ON ANYONE WEARING A VAULT 120 JUMPSUIT. RELIABILITY: 61%.',
+            'RUMOR #1103: A SNIPER IN THE CHRYSLER BUILDING ONLY SHOOTS ROBOTS. INFO-BOT IS A ROBOT. INFO-BOT HAS STOPPED STANDING NEAR WINDOWS.',
+            'RUMOR #1288: THE MACY\'S DEPARTMENT STORE BLACK FRIDAY SALE IS STILL IN PROGRESS. ATTENDANCE: FERAL.',
+            'RUMOR #1501: THE CHILDREN OF ATOM AT ST. PATRICK\'S PAY WELL FOR ERRANDS. THE ERRANDS ARE RADIOACTIVE.',
+            'RUMOR #1622: THERE IS A MINI NUKE ON THE ROOF OF THE MET. RELIABILITY: 4%. INFO-BOT WANTED YOU TO HAVE HOPE.'];
+          return r[Math.floor(Math.random() * r.length)];
+        }, onEnter() { L.pay(10); }, responses: [{ text: 'Another. (10 caps)', next: 'rumor', cond: () => L.caps() >= 10 }, { text: 'That\'s enough.', next: 'hello' }] },
+        train: { text: 'THE NEXT TRAIN DEPARTS FROM TRACK 23 AT 9:15 A.M. ON OCTOBER 23, 2077. WE APOLOGIZE FOR THE INCONVENIENCE. THE INCONVENIENCE HAS BEEN ONGOING FOR 214 YEARS. PLEASE ENJOY THE MARKET.',
+          responses: [{ text: 'Right.', next: 'hello' }] },
+      },
+    });
+
+    // ---------------- Doc Hollis ----------------
+    L.dialogue('dlg_gc_doc', {
+      start: 'hello',
+      nodes: {
+        hello: { text: () => 'Doc Hollis. Bullets out, stitches in, rads down. ' + (G.player.hp < G.player.maxHp * 0.6 ? 'And by the look of you, I\'d start with the bullets.' : 'What\'s the trouble?'),
+          responses: [
+            { text: 'Patch me up. (30 caps)', next: 'heal', cond: () => G.player.hp < G.player.maxHp, },
+            { text: 'Get rid of my radiation. (40 caps)', next: 'rads', cond: () => G.player.rads > 0 },
+            { text: 'Let me see your medical supplies.', barter: true },
+            { text: 'You look swamped. Want a hand with the patients?', check: { skill: 'medicine', value: 40 }, next: 'triage', failNext: 'triage_fail', cond: () => !L.flag('doc_triage') },
+            { text: 'Forty caps for RadAway? Make it twenty and I\'ll send you every customer I meet.', check: { skill: 'barter', value: 45 }, next: 'haggle', failNext: 'haggle_fail', cond: () => !L.flag('doc_discount') },
+            { text: 'How did you become a doctor out here?', next: 'story' },
+            { text: 'Just passing through.' },
+          ] },
+        heal: { text: () => 'Bite down on this. No, not the scalpel. [A few minutes of unpleasantness.] There. You\'ll live. ' + (L.flag('doc_discount') ? 'Fifteen, colleague rate.' : 'That\'s thirty.'), onEnter() { if (L.pay(L.flag('doc_discount') ? 15 : 30)) { G.player.heal(G.player.maxHp); L.sfx('stimpak'); } }, responses: [{ text: 'Thanks, Doc.' }] },
+        rads: { text: () => 'One bag of RadAway, intravenous, slow drip, while I tell you about my cat. [An hour passes. The cat was named Mister Whiskers. The cat had two heads.] You\'re clean. ' + (L.flag('doc_discount') ? 'Twenty caps.' : 'Forty caps.'), onEnter() { if (L.pay(L.flag('doc_discount') ? 20 : 40)) L.removeRads(); }, responses: [{ text: 'Thanks, Doc.' }] },
+        triage: { text: '[For an hour you work the cots beside him: a caravan guard with buckshot in his thigh, a kid with a mole rat bite going green at the edges, a ghoul who only wants someone to hold his hand. You set a splint the way the vault clinic taught you. Hollis watches, then stops watching.] ...You\'ve got hands, kid. Steady ones. Here — you earned these. And from now on you pay colleague rates.',
+          onEnter() { L.setFlag('doc_triage'); L.setFlag('doc_discount'); L.xp(40, 'Medicine: Triage at Grand Central'); L.karma(50, 'Helped Doc Hollis'); L.give(['stimpak', /^stimpak$/i], 2); },
+          responses: [{ text: 'Any time, Doc.' }] },
+        triage_fail: { text: '[You reach for the bone saw. Hollis gently takes it out of your hand, the way you\'d take scissors from a toddler.] Tell you what. You hold the lamp.',
+          onEnter() { L.setFlag('doc_triage'); }, responses: [{ text: 'Holding the lamp.' }] },
+        haggle: { text: '[He squints at you over his glasses.] Every customer, huh? ...Out here, word of mouth is the only advertising that doesn\'t get shot. Fine. Twenty for RadAway, fifteen for patching. Don\'t tell Rosa; she\'ll want a discount on principle.',
+          onEnter() { L.setFlag('doc_discount'); L.xp(15, 'Barter'); }, responses: [{ text: 'Pleasure, Doc.' }] },
+        haggle_fail: { text: 'Kid, I\'ve bartered with raiders who were actively on fire. Forty caps.', responses: [{ text: 'Worth a try.' }] },
+        story: { text: 'Found a medical textbook in a flooded pharmacy when I was twelve. Read it cover to cover. The water had taken out chapters six through nine, so I\'m excellent with bones and skin but I have to improvise with organs. Nobody\'s complained. Nobody who\'s still around.',
+          responses: [{ text: 'That\'s... reassuring.' }] },
+      },
+    });
+
+    // ---------------- Rosa "Two-Guns" Marquez ----------------
+    L.dialogue('dlg_gc_rosa', {
+      start: 'hello',
+      nodes: {
+        hello: { text: 'Rosa Marquez. They call me Two-Guns because I have two guns. I had three once, but "Three-Guns" sounds like a cereal. You buying or browsing?',
+          responses: [
+            { text: 'I\'m buying.', barter: true },
+            { text: 'I need a signal amplifier for a radio transmitter.', next: 'amp', cond: () => (Q.stage('mq03') === 'amp' || Q.stage('mq03') === 'vinnie') && !L.has('q_signal_amplifier') },
+            { text: 'Any advice for a newcomer?', next: 'advice' },
+            { text: 'Just browsing.' },
+          ] },
+        amp: { text: 'A RobCo broadcast amp? I got one. Pulled it off a dead Enclave eyebot, if you can believe it — they\'ve got little transmitters in their heads. It\'ll cost you. Two hundred and fifty caps.',
+          responses: [
+            { text: 'Deal. (250 caps)', cond: () => L.caps() >= 250, action: () => { if (L.pay(250)) { L.setFlag('rosa_sold_amp'); L.give('q_signal_amplifier', 1); } } },
+            { text: 'Two-fifty for an eyebot\'s brain? How about one-fifty.', check: { skill: 'barter', value: 45 }, next: 'amp_deal', failNext: 'amp_nodeal' },
+            { text: 'It\'s for Radio Free Manhattan. For Vinnie.', check: { special: 'C', value: 6 }, next: 'amp_vinnie', failNext: 'amp_nodeal' },
+            { text: 'I\'ll find one elsewhere.' },
+          ] },
+        amp_deal: { text: '...You drive a hard bargain for somebody who still smells like vault. Fine. One-fifty.',
+          responses: [{ text: 'Deal. (150 caps)', cond: () => L.caps() >= 150, action: () => { if (L.pay(150)) { L.setFlag('rosa_sold_amp'); L.give('q_signal_amplifier', 1); L.xp(10, 'Barter'); } } }, { text: 'I\'ll come back.' }] },
+        amp_vinnie: { text: 'For Vinnie? [Her face softens.] He played my mother\'s favourite song the night she passed. Didn\'t know he was doing it — just did. ...Take it. Seventy-five caps, for the eyebot\'s trouble. Tell him Rosa says hi. Don\'t tell him I cried.',
+          responses: [{ text: 'Deal. (75 caps)', cond: () => L.caps() >= 75, action: () => { if (L.pay(75)) { L.setFlag('rosa_sold_amp'); L.give('q_signal_amplifier', 1); L.xp(10, 'Charisma'); } } }, { text: 'I\'ll come back.' }] },
+        amp_nodeal: { text: 'Two-fifty. The price is the price. The price is always the price. That\'s why they call it the price.', responses: [{ text: 'Deal. (250 caps)', cond: () => L.caps() >= 250, action: () => { if (L.pay(250)) { L.setFlag('rosa_sold_amp'); L.give('q_signal_amplifier', 1); } } }, { text: 'Forget it.' }] },
+        advice: { text: 'Three rules. One: always carry more ammo than you think. Two: super mutants are slow but they don\'t stop. Three: if a ghoul starts running at you, it\'s feral. If it walks up and asks for directions, it\'s a person. Don\'t get those mixed up. People hate that.',
+          responses: [{ text: 'Thanks, Rosa.', next: 'hello' }] },
+      },
+    });
+
+    // ---------------- Market vendors (generic) ----------------
+    L.dialogue('dlg_gc_vendor', {
+      start: 'hello',
+      nodes: {
+        hello: { text: (a) => (a && a.name === 'Aqua Al') ? 'Aqua Al\'s Aqua! Clean water, pumped fresh from somewhere under the Hudson I don\'t like to think about. What\'ll it be?'
+          : 'Scrapper Sue. Everything here fell off something. Some of it fell off something that was on fire. You buying?',
+          responses: [{ text: 'Let\'s trade.', barter: true }, { text: 'Where does all this come from?', next: 'where' }, { text: 'Just looking.' }] },
+        where: { text: (a) => (a && a.name === 'Aqua Al') ? 'Pump under Track 19. Old Zeke fixed it for free last month — good man, talked too much about pipes. Water\'s been clearer since.'
+          : 'Everywhere. Nowhere. Mostly the Chrysler, before the raiders got touchy. Now mostly Macy\'s, which is worse, because of the customers.',
+          responses: [{ text: 'Let\'s trade.', barter: true }, { text: 'Thanks.' }] },
+      },
+    });
+
+    // ---------------- Market guards ----------------
+    L.dialogue('dlg_gc_guard', {
+      start: 'hello',
+      nodes: {
+        hello: { text: () => ['Market\'s safe as long as I\'m standing here. I\'m standing here a lot.', 'Holster that thing in the concourse, friend. Stationmaster\'s rules.', 'You hear about the sniper on 42nd? Keep your head down on the way out.', 'Brooklyn Bridge gang again. Every week it\'s ten more caps.'][Math.floor(Math.random() * 4)],
+          responses: [{ text: 'Stay safe.' }] },
+      },
+    });
+
+    // ---------------- Vinnie Valentine ----------------
+    L.dialogue('dlg_rc_vinnie', {
+      start: () => {
+        const s = Q.stage('mq03');
+        if (s === 'vinnie') return 'meet';
+        // amplifier picked up before the quest reached 'amp' (no itemAdded will come again): straight to delivery
+        if (s === 'amp') { if (L.has('q_signal_amplifier')) { Q.setStage('mq03', 'deliver'); return 'deliver'; } return 'amp_wait'; }
+        if (s === 'deliver') return 'deliver';
+        if (s === 'listen') return 'listen';
+        return L.flag('met_vinnie') ? 'again' : 'meet_early';
+      },
+      nodes: {
+        meet_early: { text: 'Vinnie Valentine, the Voice of the Five Boroughs, the Crooner of the Craters! You\'re in Radio City, pal — only building in Manhattan with better acoustics after the bombs than before. What can Vinnie do for ya?',
+          onEnter() { L.setFlag('met_vinnie'); }, responses: [{ text: 'Just a fan, Vinnie.' }, { text: 'Tell me about the station.', next: 'station' }] },
+        meet: { text: 'Vinnie Valentine, the Voice of the Five Boroughs! And you — blue suit, big eyes, look of a person who\'s been reading holotapes — you\'re Zeke\'s kid. Oh, pal. Sit down. No, don\'t sit there, that\'s the sound board. Sit THERE.',
+          onEnter() { L.setFlag('met_vinnie'); },
+          responses: [
+            { text: 'Where\'s Zeke?', next: 'zeke' },
+            { text: 'How do you know who I am?', next: 'know' },
+          ] },
+        know: { text: 'Zeke showed me a photograph of you every twenty minutes for three days. You were eleven in it, and holding a wrench upside down, but the resemblance holds.', responses: [{ text: 'Where is he, Vinnie?', next: 'zeke' }] },
+        zeke: { text: 'Honest answer? I don\'t know. Zeke came here because we\'d both been hearing the same thing — a military cipher, bouncing off the Statue of Liberty and landing in our receivers like a brick through a window. He wanted to listen in properly. My amplifier ain\'t strong enough. He went to find a better one. Nine days ago.',
+          responses: [
+            { text: 'Then I\'ll find the amplifier.', next: 'where_amp' },
+            { text: 'Could we boost the signal some other way?', check: { skill: 'science', value: 50 }, next: 'science', failNext: 'science_fail' },
+            { text: 'Could I just fix your amplifier?', check: { skill: 'repair', value: 45 }, next: 'repair', failNext: 'science_fail' },
+          ] },
+        where_amp: { text: 'Chrysler Building — the raiders up there stripped a broadcast amp off the old WNYC relay years ago. Zeke was headed there. Or, I hear Rosa Marquez at Grand Central sells anything that fits in a crate, if you\'ve got caps and don\'t ask where it came from.',
+          onEnter() { if (L.has('q_signal_amplifier')) { Q.setStage('mq03', 'deliver'); return 'deliver'; } Q.setStage('mq03', 'amp'); }, responses: [{ text: 'I\'ll be back.' }] },
+        science: { text: '...You want to run the receiver through the Music Hall\'s stage lighting grid? Four thousand bulbs as an antenna array? That\'s — that\'s insane. That\'s beautiful. ROCKETTE! Plug in the lights! ALL the lights!',
+          onEnter() { L.setFlag('mq03_science'); L.xp(40, 'Science: The Rockette Array'); },
+          responses: [{ text: 'Let\'s hear it.', action: () => Q.setStage('mq03', 'listen'), next: 'listen' }] },
+        repair: { text: 'You reseat the tubes, bridge a cracked coil with a bobby pin and a prayer, and — ha! Listen to that hum! That\'s the sound of a transmitter that wants to live, pal.',
+          onEnter() { L.setFlag('mq03_repair'); L.xp(40, 'Repair: Radio Free Manhattan'); },
+          responses: [{ text: 'Let\'s hear it.', action: () => Q.setStage('mq03', 'listen'), next: 'listen' }] },
+        science_fail: { text: 'Pal, I appreciate the enthusiasm, but you just tried to plug the microphone into the coffee pot. We need a real amplifier.', responses: [{ text: 'Where would I find one?', next: 'where_amp' }] },
+        amp_wait: { text: 'Any luck with that amplifier? Chrysler Building raiders or Rosa at Grand Central. Vinnie\'ll keep the coffee warm. The coffee is not coffee.', responses: [{ text: 'Working on it.' }] },
+        deliver: { text: 'Is that — oh, baby. A genuine RobCo broadcast amplifier. Give it here. [He cradles it like a newborn.] ROCKETTE! We\'re going LOUD!',
+          onEnter() { if (L.take('q_signal_amplifier', 1)) { L.setFlag('amp_delivered'); L.xp(40, 'Delivered the amplifier'); } },
+          responses: [{ text: 'Let\'s hear that signal.', action: () => Q.setStage('mq03', 'listen'), next: 'listen' }] },
+        listen: { text: '[Vinnie twists a dozen knobs. Static swells, crackles, then resolves into a clipped military voice. Then, further away — an old man\'s voice you have known your whole life.] ...That\'s him. That\'s Zeke. They\'ve got him on Liberty Island, pal. The Enclave.',
+          onEnter() { if (!L.has('q_holo_intercept')) L.give('q_holo_intercept', 1); L.sfx('hum_electric'); },
+          responses: [{ text: 'Who are the Enclave?', next: 'enclave' }, { text: 'How do I get to Liberty Island?', next: 'how' }] },
+        enclave: { text: 'What\'s left of the pre-war government, pal. Black armour, glowing eyes, very polite right up until they aren\'t. They\'re holed up at the UN and out on Liberty Island. They think they still run the country. The country disagrees, but quietly, from behind cover.',
+          responses: [{ text: 'How do I get to Liberty Island?', next: 'how' }] },
+        how: { text: 'Two ways I can think of. The Brotherhood of Steel at Rockefeller Center — power armour, laser rifles, a real hate-on for the Enclave. Or you walk up to the Enclave themselves at the UN Plaza and ask what they want with a vault kid. From what I just heard, they want you pretty bad. Either way — you got friends on the radio now. Vinnie\'s watching.',
+          responses: [{ text: 'Thanks, Vinnie. For everything.', karma: 2, action: () => Q.complete('mq03') }, { text: 'I\'ll get him back.', action: () => Q.complete('mq03') }] },
+        again: { text: () => ['Hey hey, it\'s the pride of Vault 120! What\'s the news, pal? Give Vinnie something to talk about!', 'You\'re on the air! No, I\'m kidding. Or am I? I am. Probably.', 'Listeners have been calling in about you. Well, "calling" — they shout at the building. Same thing.'][Math.floor(Math.random() * 3)],
+          responses: [{ text: 'Tell me about the station.', next: 'station' }, { text: 'Any news?', next: 'news' }, { text: 'Keep the music playing, Vinnie.' }] },
+        station: { text: 'Radio Free Manhattan! Swing, jazz, a little crooning, news of the day, and whatever the Rockette finds in the basement. We\'re free because nobody pays for it and Manhattan because I refuse to be Radio Free New Jersey.',
+          responses: [{ text: 'Any news?', next: 'news' }, { text: 'Keep it up.' }] },
+        news: { text: () => L.flag('ending_played') ? 'News? PAL. You ARE the news. There\'s a whole new sky out there and it\'s got your fingerprints on it.'
+          : Q.isComplete('mq05') ? 'Word is a certain vault dweller took something shiny off a nine-foot super mutant in the Empire State. Word is, Liberty Island\'s next. Word is, Vinnie\'s nervous.'
+            : 'Caravans say the Brooklyn Bridge tolls are highway robbery. Which, to be fair, is technically what they are.',
+          responses: [{ text: 'Thanks, Vinnie.' }] },
+      },
+    });
+
+    // ---------------- ROCKETTE-7 ----------------
+    L.dialogue('dlg_rc_rockette', {
+      start: 'hello',
+      nodes: {
+        hello: { speaker: 'ROCKETTE-7', text: 'WELCOME TO RADIO CITY MUSIC HALL, WHERE THE SHOW NEVER STOPS! I AM ROCKETTE-7, STAGE MANAGER, LIGHTING TECHNICIAN AND 1/36TH OF A KICK LINE. THE OTHER 35 ARE... ON BREAK.',
+          responses: [
+            { text: 'Can you still dance?', next: 'dance' },
+            { text: 'What happened to the other Rockettes?', next: 'others' },
+            { text: 'Goodbye.' },
+          ] },
+        dance: { text: 'CAN I STILL — ! FIVE, SIX, SEVEN, EIGHT! [Its three arms kick in perfect sequence. A small flame sputters from its thruster. It is, honestly, very good.] THANK YOU. PLEASE TIP YOUR STAGE MANAGER.',
+          responses: [{ text: 'Bravo! (tip 5 caps)', cond: () => L.caps() >= 5, action: () => { if (L.pay(5)) { L.karma(1, 'Tipped a robot'); L.say('rc_rockette', 'A PATRON OF THE ARTS!'); } } }, { text: 'Very impressive.' }] },
+        others: { text: 'THE OTHER THIRTY-FIVE WERE HUMAN. ON OCTOBER 23, 2077 THE MATINEE WAS SOLD OUT. [It pauses for a long moment.] THE SHOW MUST GO ON. SOMEBODY HAS TO KEEP DANCING FOR THEM.',
+          responses: [{ text: 'I\'m sorry.' }, { text: 'Then keep dancing.', karma: 1 }] },
+      },
+    });
+  });
+
+  G.quests.debug.gotoGC = () => { if (!Q.isComplete('mq01')) Q.complete('mq01'); Q.start('mq02'); G.player.teleport(240, 0, -180, 0); };
+})();
+

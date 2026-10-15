@@ -1,0 +1,251 @@
+/* src/rpg/10_items_aid.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — RPG MODULE — AID DATABASE
+ * Medical supplies, chems, drinks and food. All flavour text original.
+ *
+ * effects schema (consumed by G.rpg.applyAid):
+ *   hp               instant heal (medical items scale with Medicine skill)
+ *   hpOverTime       [amount, seconds] — food/drink heal slowly (FO3)
+ *   rads             + adds rads (irradiated food), − removes rads
+ *   radsOverTime     [amount, seconds] (RadAway)
+ *   ap               instant action points
+ *   limbs            heal amount applied to every limb (stimpaks, doctor's bag)
+ *   duration         seconds (world time) for the timed modifiers below
+ *   radResist, dr, dmgMult, critChance, carry, apRegenMult, speedMult, sneak
+ *   special {S:+2...}, skills {guns:+10...}
+ *   addiction        {chance, id, name, withdrawal:{special, skills}}
+ *   cureAddiction    true — Fixer
+ *   after            {name, duration, special} — comedown after the effect ends
+ *   stealth          true — Stealth Boy
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const D = (d) => G.items.define(Object.assign({ type: 'aid' }, d));
+
+  // ---------------------------------------------------------------
+  // MEDICAL
+  // ---------------------------------------------------------------
+  D({ id: 'stimpak', name: 'Stimpak', weight: 0, value: 25, tags: ['medical'], mesh: 'stimpak', sound: 'stimpak',
+    effects: { hp: 30, limbs: 30 },
+    desc: 'A spring-loaded hypodermic of healing stimulants. Jab it anywhere that still hurts. Most of the Wasteland runs on these and prayer, in that order.' });
+  D({ id: 'super_stimpak', name: 'Super Stimpak', weight: 0, value: 75, tags: ['medical'], mesh: 'super_stimpak', sound: 'stimpak',
+    effects: { hp: 100, limbs: 60, after: { name: 'Super Stimpak Comedown', duration: 60, special: { S: -1 } } },
+    desc: 'A heavier syringe with a leather strap and a regulator that ticks like a bomb. Works miracles, then sends the bill to your muscles.' });
+  D({ id: 'radaway', name: 'RadAway', weight: 0, value: 20, tags: ['medical'], mesh: 'radaway', sound: 'radaway',
+    effects: { radsOverTime: [-150, 12] },
+    desc: 'An intravenous chelating solution in a squashy orange bag. It flushes radiation out of the body. Where it flushes it to is a question for another day.' });
+  D({ id: 'rad_x', name: 'Rad-X', weight: 0, value: 20, tags: ['medical'], mesh: 'pills_orange', sound: 'eat',
+    effects: { radResist: 25, duration: 240 },
+    desc: 'Chalky orange pills that coat your cells in something the atom finds unappetizing. Take before a stroll through ground zero.' });
+  D({ id: 'doctors_bag', name: "Doctor's Bag", weight: 1, value: 50, tags: ['medical'], mesh: 'doctors_bag', sound: 'stimpak',
+    effects: { limbs: 100 },
+    desc: 'Splints, gauze, clamps and a small bottle of something that smells like a hospital. Mends every crippled limb.' });
+  D({ id: 'blood_pack', name: 'Blood Pack', weight: 0.5, value: 20, tags: ['medical'], mesh: 'bloodpack', sound: 'drink',
+    effects: { hp: 20, rads: 1 },
+    desc: 'Pre-war plasma, sealed for freshness. The label says "Type: Probably."' });
+  D({ id: 'healing_powder', name: 'Healing Powder', weight: 0.1, value: 20, tags: ['medical'], mesh: 'powder', sound: 'eat', lootWeight: 0.5,
+    effects: { hp: 25, duration: 30, special: { P: -1 } },
+    desc: 'A tribal mix of ground roots and fungus from the Jersey Pine Barrens. Heals wounds, fogs vision.' });
+  D({ id: 'fixer', name: 'Fixer', weight: 0, value: 50, tags: ['medical', 'chem'], mesh: 'pills_white', sound: 'eat',
+    effects: { cureAddiction: true },
+    desc: 'A pharmaceutical grade reset button for a body that has gotten too friendly with chems. Cures all addictions.' });
+  D({ id: 'stealth_boy', name: 'Stealth Boy', weight: 1, value: 100, tags: ['medical', 'tech'], mesh: 'stealth_boy', sound: 'hum_electric',
+    effects: { stealth: true, sneak: 100, duration: 30 },
+    desc: 'A RobCo personal stealth field generator worn on the wrist. Bends light around the user. Side effects may include paranoia and severe paranoia.' });
+
+  // ---------------------------------------------------------------
+  // CHEMS
+  // ---------------------------------------------------------------
+  D({ id: 'med_x', name: 'Med-X', weight: 0, value: 50, tags: ['chem'], mesh: 'medx', sound: 'stimpak',
+    effects: { dr: 25, duration: 240, addiction: { chance: 0.1, id: 'med_x', name: 'Med-X Addiction', withdrawal: { special: { A: -1, P: -1 } } } },
+    desc: 'A morphine derivative in an auto-injector. Numbs pain so thoroughly you may forget you were shot. You were.' });
+  D({ id: 'psycho', name: 'Psycho', weight: 0, value: 40, tags: ['chem'], mesh: 'psycho', sound: 'stimpak',
+    effects: { dmgMult: 0.25, duration: 240, addiction: { chance: 0.1, id: 'psycho', name: 'Psycho Addiction', withdrawal: { special: { I: -1, E: -1 } } } },
+    desc: 'A military combat stimulant that swaps fear for fury. Originally developed for the Army. Recalled by the Army.' });
+  D({ id: 'buffout', name: 'Buffout', weight: 0, value: 20, tags: ['chem'], mesh: 'pills_buffout', sound: 'eat',
+    effects: { duration: 240, special: { S: 2, E: 3 }, addiction: { chance: 0.1, id: 'buffout', name: 'Buffout Addiction', withdrawal: { special: { S: -1, E: -1 } } } },
+    desc: 'Steroid tablets banned from every pre-war sporting league, several of which were founded to ban it.' });
+  D({ id: 'mentats', name: 'Mentats', weight: 0, value: 20, tags: ['chem'], mesh: 'mentats', sound: 'eat',
+    effects: { duration: 240, special: { I: 2, P: 2 }, addiction: { chance: 0.1, id: 'mentats', name: 'Mentats Addiction', withdrawal: { special: { I: -1, P: -1 } } } },
+    desc: 'Grape-flavoured cognitive enhancers in a flip-top tin. Makes you feel like a genius, which is not the same thing.' });
+  D({ id: 'jet', name: 'Jet', weight: 0, value: 20, tags: ['chem'], mesh: 'jet', sound: 'drink',
+    effects: { ap: 15, duration: 60, apRegenMult: 0.4, addiction: { chance: 0.2, id: 'jet', name: 'Jet Addiction', withdrawal: { special: { A: -1 } } } },
+    desc: 'Inhaled fumes from brahmin dung, refined in a Brooklyn basement. Time crawls, your pulse doesn\'t.' });
+  D({ id: 'ultrajet', name: 'Ultrajet', weight: 0, value: 50, tags: ['chem'], mesh: 'jet_ultra', sound: 'drink',
+    effects: { ap: 35, duration: 60, apRegenMult: 0.6, addiction: { chance: 0.2, id: 'jet', name: 'Jet Addiction', withdrawal: { special: { A: -1 } } } },
+    desc: 'Jet, but louder. The canister is warm to the touch and hums faintly.' });
+  D({ id: 'day_tripper', name: 'Day Tripper', weight: 0, value: 25, tags: ['chem'], mesh: 'pills_white', sound: 'eat',
+    effects: { duration: 240, special: { C: 3, L: 2, S: -2 }, addiction: { chance: 0.05, id: 'day_tripper', name: 'Day Tripper Addiction', withdrawal: { special: { C: -1 } } } },
+    desc: 'Mood tablets marketed to pre-war housewives as "a vacation in a pill." Everything is lovely. Everything is fine.' });
+  D({ id: 'rocket', name: 'Rocket', weight: 0, value: 30, tags: ['chem'], mesh: 'jet', sound: 'drink', lootWeight: 0.6,
+    effects: { ap: 25, duration: 90, special: { A: 1 }, addiction: { chance: 0.15, id: 'jet', name: 'Jet Addiction', withdrawal: { special: { A: -1 } } } },
+    desc: 'A Manhattan street remix of Jet, cut with Nuka-Cola syrup. Named for how you feel and how you land.' });
+
+  // ---------------------------------------------------------------
+  // DRINKS
+  // ---------------------------------------------------------------
+  D({ id: 'nuka_cola', name: 'Nuka-Cola', weight: 1, value: 20, tags: ['drink', 'nuka'], mesh: 'bottle_nuka', sound: 'drink_nuka',
+    effects: { hp: 20, rads: 5 },
+    desc: 'The most popular soda in pre-war America, and it hasn\'t gone flat in two hundred years. Nobody knows why. Nobody asks.' });
+  D({ id: 'nuka_cola_ice_cold', name: 'Ice Cold Nuka-Cola', weight: 1, value: 25, tags: ['drink', 'nuka'], mesh: 'bottle_nuka_frost', sound: 'drink_nuka',
+    effects: { hp: 30, rads: 5, ap: 5 },
+    desc: 'A Nuka-Cola chilled to perfection. Condensation beads on the glass like tiny radioactive pearls.' });
+  D({ id: 'nuka_cola_quantum', name: 'Nuka-Cola Quantum', weight: 1, value: 50, tags: ['drink', 'nuka'], mesh: 'bottle_quantum', sound: 'drink_nuka',
+    effects: { hp: 20, ap: 20, rads: 10 },
+    desc: 'Twice the calories, twice the carbohydrates, twice the caffeine and twice the taste. Glows a soft blue thanks to a mild radioactive strontium isotope.' });
+  D({ id: 'nuka_cola_cherry', name: 'Nuka-Cherry', weight: 1, value: 25, tags: ['drink', 'nuka'], mesh: 'bottle_cherry', sound: 'drink_nuka', lootWeight: 0.6,
+    effects: { hp: 25, rads: 5 },
+    desc: 'The limited-edition cherry flavour that the Nuka-Cola Corporation promised would "put the blast back in your glass."' });
+  D({ id: 'sunset_sarsaparilla', name: 'Sunset Sarsaparilla', weight: 1, value: 20, tags: ['drink'], mesh: 'bottle_sarsaparilla', sound: 'drink',
+    effects: { hp: 20, rads: 2 },
+    desc: 'A root beer with a cowboy on the label and a sweetness that tastes like a sunset over a desert you\'ll never see. Check under the cap.' });
+  D({ id: 'purified_water', name: 'Purified Water', weight: 1, value: 20, tags: ['drink'], mesh: 'bottle_water', sound: 'drink',
+    effects: { hp: 20 },
+    desc: 'Clean, clear, rad-free water. In the ruins of New York, it\'s worth more than the Chrysler Building.' });
+  D({ id: 'dirty_water', name: 'Dirty Water', weight: 1, value: 5, tags: ['drink', 'irradiated'], mesh: 'bottle_dirty', sound: 'drink',
+    effects: { hp: 5, rads: 10 },
+    desc: 'Hudson River vintage. Faintly green, faintly fizzy, faintly moving.' });
+  D({ id: 'milk_brahmin', name: 'Brahmin Milk', weight: 1, value: 10, tags: ['drink'], mesh: 'bottle_milk', sound: 'drink', lootWeight: 0.6,
+    effects: { hp: 10, rads: -10 },
+    desc: 'Milk from a two-headed cow. Traders swear it leeches radiation right out of you. Traders swear a lot of things.' });
+  D({ id: 'beer', name: 'Beer', weight: 1, value: 2, tags: ['drink', 'alcohol'], mesh: 'bottle_beer', sound: 'drink',
+    effects: { hp: 5, duration: 120, special: { S: 1, C: 1, I: -1 }, addiction: { chance: 0.05, id: 'alcohol', name: 'Alcohol Addiction', withdrawal: { special: { C: -1, A: -1 } } } },
+    desc: 'A brown bottle of flat, warm lager from a brewery that used to be in the Bronx. Liquid courage, emphasis on liquid.' });
+  D({ id: 'whiskey', name: 'Whiskey', weight: 1, value: 10, tags: ['drink', 'alcohol'], mesh: 'bottle_whiskey', sound: 'drink',
+    effects: { hp: 5, duration: 180, special: { S: 2, C: 1, I: -1 }, addiction: { chance: 0.05, id: 'alcohol', name: 'Alcohol Addiction', withdrawal: { special: { C: -1, A: -1 } } } },
+    desc: 'Pre-war rye aged two centuries longer than the distiller intended. Smooth as a bulldozer.' });
+  D({ id: 'scotch', name: 'Scotch', weight: 1, value: 10, tags: ['drink', 'alcohol'], mesh: 'bottle_scotch', sound: 'drink',
+    effects: { hp: 5, duration: 180, special: { S: 1, C: 2, I: -1 }, addiction: { chance: 0.05, id: 'alcohol', name: 'Alcohol Addiction', withdrawal: { special: { C: -1, A: -1 } } } },
+    desc: 'The good stuff, from a Park Avenue liquor cabinet. Tastes like peat smoke and money.' });
+  D({ id: 'vodka', name: 'Vodka', weight: 1, value: 10, tags: ['drink', 'alcohol'], mesh: 'bottle_vodka', sound: 'drink',
+    effects: { hp: 5, duration: 180, special: { S: 1, C: 1, A: -1 }, addiction: { chance: 0.05, id: 'alcohol', name: 'Alcohol Addiction', withdrawal: { special: { C: -1, A: -1 } } } },
+    desc: 'Clear, strong and cold as a Hudson winter. Doubles as a disinfectant, degreaser and conversation starter.' });
+  D({ id: 'wine', name: 'Wine', weight: 1, value: 10, tags: ['drink', 'alcohol'], mesh: 'bottle_wine', sound: 'drink',
+    effects: { hp: 5, duration: 180, special: { C: 2, P: -1 }, addiction: { chance: 0.05, id: 'alcohol', name: 'Alcohol Addiction', withdrawal: { special: { C: -1, A: -1 } } } },
+    desc: 'A 2076 vintage from the Finger Lakes. The last good year. Well — the last year.' });
+
+  // ---------------------------------------------------------------
+  // PRE-WAR PACKAGED FOOD (irradiated, but shelf-stable forever)
+  // ---------------------------------------------------------------
+  D({ id: 'cram', name: 'Cram', weight: 0.5, value: 5, tags: ['food', 'prewar_food'], mesh: 'tin_cram', sound: 'eat',
+    effects: { hpOverTime: [10, 5], rads: 5 },
+    desc: 'Compressed, spiced meat product in a key-opening tin. Every can contains exactly one kind of meat, per federal law. Nobody knows which.' });
+  D({ id: 'sugar_bombs', name: 'Sugar Bombs', weight: 1, value: 7, tags: ['food', 'prewar_food'], mesh: 'box_sugarbombs', sound: 'eat',
+    effects: { hpOverTime: [15, 5], rads: 5 },
+    desc: 'The explosively delicious breakfast cereal. Part of this complete breakfast. The rest of the breakfast was vaporized.' });
+  D({ id: 'fancy_lads', name: 'Fancy Lads Snack Cakes', weight: 1, value: 7, tags: ['food', 'prewar_food'], mesh: 'box_fancylads', sound: 'eat',
+    effects: { hpOverTime: [12, 5], rads: 5 },
+    desc: 'Cream-filled sponge cakes that were never baked and therefore can never go stale. A triumph of chemistry over nature.' });
+  D({ id: 'blamco_mac', name: 'BlamCo Mac & Cheese', weight: 1, value: 5, tags: ['food', 'prewar_food'], mesh: 'box_blamco', sound: 'eat',
+    effects: { hpOverTime: [10, 5], rads: 5 },
+    desc: 'Powdered cheese product and pasta shapes. Instructions call for milk and butter, which is funny now.' });
+  D({ id: 'pork_n_beans', name: "Pork n' Beans", weight: 1, value: 5, tags: ['food', 'prewar_food'], mesh: 'can_beans', sound: 'eat',
+    effects: { hpOverTime: [15, 5], rads: 5 },
+    desc: 'Beans in a sweet tomato sauce, with a single cube of pork as a gesture of goodwill.' });
+  D({ id: 'instamash', name: 'InstaMash', weight: 1, value: 5, tags: ['food', 'prewar_food'], mesh: 'box_instamash', sound: 'eat',
+    effects: { hpOverTime: [15, 5], rads: 5 },
+    desc: 'Instant mashed potato flakes. Just add water! Clean water, ideally. Any water, realistically.' });
+  D({ id: 'salisbury_steak', name: 'Salisbury Steak', weight: 1, value: 7, tags: ['food', 'prewar_food'], mesh: 'box_tvdinner', sound: 'eat',
+    effects: { hpOverTime: [20, 5], rads: 5 },
+    desc: 'A frozen TV dinner that thawed in October 2077 and has been waiting patiently ever since.' });
+  D({ id: 'potato_crisps', name: 'Potato Crisps', weight: 0.5, value: 4, tags: ['food', 'prewar_food'], mesh: 'bag_crisps', sound: 'eat',
+    effects: { hpOverTime: [6, 3], rads: 3 },
+    desc: 'Extra-crunchy. Two centuries extra.' });
+  D({ id: 'dandy_boy_apples', name: 'Dandy Boy Apples', weight: 1, value: 5, tags: ['food', 'prewar_food'], mesh: 'box_dandy', sound: 'eat',
+    effects: { hpOverTime: [10, 5], rads: 5 },
+    desc: 'Candied apple slices in a smiling box. The mascot\'s smile has not changed in 200 years.' });
+  D({ id: 'yumyum_eggs', name: 'YumYum Deviled Eggs', weight: 1, value: 7, tags: ['food', 'prewar_food'], mesh: 'box_yumyum', sound: 'eat',
+    effects: { hpOverTime: [15, 5], rads: 5 },
+    desc: 'Pre-packaged deviled eggs, which were devilled by the manufacturer and later by the atom.' });
+  D({ id: 'sweet_roll', name: 'Sweet Roll', weight: 0.5, value: 5, tags: ['food', 'prewar_food'], mesh: 'sweet_roll', sound: 'eat',
+    effects: { hpOverTime: [15, 5], rads: 1 },
+    desc: 'A glazed Vault-Tec commissary sweet roll. Guard it closely — somebody always tries to take it.' });
+  D({ id: 'gum_drops', name: 'Gum Drops', weight: 0.1, value: 2, tags: ['food', 'prewar_food'], mesh: 'bag_small', sound: 'eat', lootWeight: 0.6,
+    effects: { hpOverTime: [5, 3], rads: 1 },
+    desc: 'Chewy sugar jewels in a paper twist. Excellent for bribing children and ghouls alike.' });
+  D({ id: 'bubblegum', name: 'Bubblegum', weight: 0, value: 2, tags: ['food', 'prewar_food'], mesh: 'bag_small', sound: 'eat', lootWeight: 0.6,
+    effects: { hpOverTime: [2, 2] },
+    desc: 'Pink, stiff and older than the republic. Still somehow chewable.' });
+  D({ id: 'canned_dog_food', name: 'Canned Dog Food', weight: 1, value: 3, tags: ['food', 'prewar_food'], mesh: 'can_dog', sound: 'eat',
+    effects: { hpOverTime: [5, 5], rads: 5 },
+    desc: 'Beef-flavoured chunks for your best friend. Desperation is also your best friend.' });
+  D({ id: 'noodle_cup', name: 'Noodle Cup', weight: 0.5, value: 6, tags: ['food', 'prewar_food'], mesh: 'noodle_cup', sound: 'eat',
+    effects: { hpOverTime: [12, 5], rads: 2 },
+    desc: 'Dried noodles in a foam cup from a Chinatown bodega. The flavour packet is labelled only "SAVORY."' });
+
+  // ---------------------------------------------------------------
+  // NEW YORK STREET FOOD (post-war originals)
+  // ---------------------------------------------------------------
+  D({ id: 'bodega_pretzel', name: 'Petrified Pretzel', weight: 0.5, value: 4, tags: ['food', 'prewar_food'], mesh: 'pretzel', sound: 'eat',
+    effects: { hpOverTime: [6, 4], rads: 3 },
+    desc: 'A salted street-cart pretzel preserved by the blast into something between bread and granite. Gnaw carefully.' });
+  D({ id: 'coney_dog', name: 'Coney Island Dog', weight: 0.5, value: 8, tags: ['food'], mesh: 'hot_dog', sound: 'eat',
+    effects: { hpOverTime: [18, 6], rads: 4 },
+    desc: 'A "hot dog" from a Grand Central food cart. The vendor insists the name is merely traditional. He will not look you in the eye.' });
+  D({ id: 'mirelurk_chowder', name: 'Manhattan Mirelurk Chowder', weight: 1, value: 20, tags: ['food', 'cooked'], mesh: 'can_chowder', sound: 'eat',
+    effects: { hpOverTime: [35, 8], rads: 2 },
+    desc: 'Red, tomato-based and fiercely defended by the settlers of Battery Park as the only correct chowder. Contains claw.' });
+  D({ id: 'prewar_bagel', name: 'Pre-War Bagel', weight: 0.5, value: 4, tags: ['food', 'prewar_food'], mesh: 'bagel', sound: 'eat',
+    effects: { hpOverTime: [8, 4], rads: 3 },
+    desc: 'An everything bagel. Everything, in this case, now includes strontium-90.' });
+  D({ id: 'egg_cream', name: 'Egg Cream', weight: 1, value: 10, tags: ['drink'], mesh: 'bottle_milk', sound: 'drink', lootWeight: 0.5,
+    effects: { hpOverTime: [15, 5], rads: 2 },
+    desc: 'A Brooklyn soda-fountain classic: chocolate syrup, seltzer and milk. There has never been egg in it. There has never been a reason.' });
+
+  // ---------------------------------------------------------------
+  // WASTELAND MEAT & FORAGE
+  // ---------------------------------------------------------------
+  D({ id: 'iguana_on_a_stick', name: 'Iguana on a Stick', weight: 0.5, value: 6, tags: ['food', 'cooked'], mesh: 'meat_stick', sound: 'eat',
+    effects: { hpOverTime: [18, 5] },
+    desc: 'Roasted lizard on a skewer. There are no iguanas in New York. Do not ask what this is.' });
+  D({ id: 'squirrel_on_a_stick', name: 'Squirrel on a Stick', weight: 0.5, value: 6, tags: ['food', 'cooked'], mesh: 'meat_stick', sound: 'eat',
+    effects: { hpOverTime: [14, 5] },
+    desc: 'The Central Park squirrels survived the war. This one did not survive lunch.' });
+  D({ id: 'radroach_meat', name: 'Radroach Meat', weight: 0.5, value: 3, tags: ['food', 'meat', 'irradiated'], mesh: 'meat', sound: 'eat', meatColor: 0x7a5a3a,
+    effects: { hpOverTime: [5, 4], rads: 5 },
+    desc: 'A chunk of giant cockroach. Crunchy on the outside, creamy on the inside, horrifying throughout.' });
+  D({ id: 'molerat_meat', name: 'Mole Rat Meat', weight: 1, value: 4, tags: ['food', 'meat', 'irradiated'], mesh: 'meat', sound: 'eat', meatColor: 0xa04a3a,
+    effects: { hpOverTime: [10, 5], rads: 5 },
+    desc: 'Tough, stringy and hairy in places. A staple of the subway tunnel diet.' });
+  D({ id: 'bloatfly_meat', name: 'Bloatfly Meat', weight: 0.5, value: 3, tags: ['food', 'meat', 'irradiated'], mesh: 'meat', sound: 'eat', meatColor: 0x9a8a5a,
+    effects: { hpOverTime: [10, 5], rads: 5 },
+    desc: 'A slab of bloatfly larva sac. Wobbles when you walk.' });
+  D({ id: 'mirelurk_meat', name: 'Mirelurk Meat', weight: 1, value: 10, tags: ['food', 'meat', 'irradiated'], mesh: 'meat', sound: 'eat', meatColor: 0xc86a4a,
+    effects: { hpOverTime: [20, 5], rads: 5 },
+    desc: 'Sweet, pale claw meat pried out of a mirelurk shell. Tastes of the harbour, which is not a compliment.' });
+  D({ id: 'mirelurk_cake', name: 'Mirelurk Cakes', weight: 0.5, value: 15, tags: ['food', 'cooked'], mesh: 'cakes', sound: 'eat',
+    effects: { hpOverTime: [40, 8] },
+    desc: 'Pan-fried mirelurk meat patties from a Battery Park cook fire. Honestly? Delicious.' });
+  D({ id: 'dog_meat', name: 'Dog Meat', weight: 1, value: 5, tags: ['food', 'meat', 'irradiated'], mesh: 'meat', sound: 'eat', meatColor: 0x9a3a2a,
+    effects: { hpOverTime: [15, 5], rads: 5 },
+    desc: 'Meat from a feral wasteland dog. You try very hard not to think about the good boys.' });
+  D({ id: 'brahmin_meat', name: 'Brahmin Meat', weight: 1, value: 8, tags: ['food', 'meat'], mesh: 'meat', sound: 'eat', meatColor: 0xb04030,
+    effects: { hpOverTime: [20, 5], rads: 3 },
+    desc: 'Raw two-headed cow. Twice the head, same amount of steak.' });
+  D({ id: 'brahmin_steak', name: 'Brahmin Steak', weight: 1, value: 15, tags: ['food', 'cooked'], mesh: 'steak', sound: 'eat',
+    effects: { hpOverTime: [35, 6] },
+    desc: 'Grilled over a trash-can fire and seasoned with ash. The best steakhouse left on Fifth Avenue.' });
+  D({ id: 'deathclaw_steak', name: 'Deathclaw Steak', weight: 1, value: 60, tags: ['food', 'cooked'], mesh: 'steak', sound: 'eat', lootWeight: 0.2,
+    effects: { hpOverTime: [60, 8], duration: 180, special: { E: 1 } },
+    desc: 'The rarest dish in the city, because the ingredients fight back. Rich, gamy and deeply satisfying.' });
+  D({ id: 'deathclaw_meat', name: 'Deathclaw Meat', weight: 2, value: 40, tags: ['food', 'meat', 'irradiated'], mesh: 'meat', sound: 'eat', meatColor: 0x8a2a20, lootWeight: 0.2,
+    effects: { hpOverTime: [40, 6], rads: 6 },
+    desc: 'A slab of raw deathclaw. Proof of either great skill or great luck.' });
+  D({ id: 'mutant_hound_meat', name: 'Mutant Hound Meat', weight: 1, value: 8, tags: ['food', 'meat', 'irradiated'], mesh: 'meat', sound: 'eat', meatColor: 0x6a8a3a, lootWeight: 0.5,
+    effects: { hpOverTime: [15, 5], rads: 12 },
+    desc: 'Green-tinged meat from one of the super mutants\' hounds. Glows faintly at the edges.' });
+  D({ id: 'brain_fungus', name: 'Brain Fungus', weight: 0.2, value: 4, tags: ['food', 'forage'], mesh: 'fungus', sound: 'eat',
+    effects: { hpOverTime: [4, 3], rads: 5, duration: 60, special: { I: 1 } },
+    desc: 'A wrinkled grey mushroom that grows in the damp of the subway tunnels. Tastes like thinking.' });
+  D({ id: 'glowing_fungus', name: 'Glowing Fungus', weight: 0.2, value: 6, tags: ['food', 'forage', 'irradiated'], mesh: 'fungus_glow', sound: 'eat',
+    effects: { hpOverTime: [10, 3], rads: 15 },
+    desc: 'Luminous caps harvested from the walls of flooded basements. A reading lamp you can eat. Please don\'t.' });
+  D({ id: 'mutfruit', name: 'Mutfruit', weight: 0.2, value: 8, tags: ['food', 'forage'], mesh: 'mutfruit', sound: 'eat',
+    effects: { hpOverTime: [10, 4], rads: 2 },
+    desc: 'A lumpy purple fruit grown on the rooftop gardens of Grand Central. Sweet, seedy, mostly safe.' });
+  D({ id: 'wasteland_omelet', name: 'Wasteland Omelet', weight: 0.5, value: 25, tags: ['food', 'cooked'], mesh: 'cakes', sound: 'eat', lootWeight: 0.4,
+    effects: { hpOverTime: [45, 8], duration: 120, special: { E: 1 } },
+    desc: 'Scrambled mirelurk egg on a hubcap. Hearty enough to walk the length of Broadway on.' });
+})();
+

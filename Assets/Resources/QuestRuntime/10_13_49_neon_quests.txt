@@ -1,0 +1,995 @@
+/* src/quests/49_neon_quests.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 49: THE NEON, QUESTS
+ *   SQ "Drop the Ball"          Mayor Crowe: motor (NYPL) + cable (Robo-Shop)
+ *                               → repair the winch → the first midnight drop in
+ *                               200 years; then a DAILY drop event (crowd
+ *                               gathers, countdown, fireworks, a small buff)
+ *   SQ "Power to the People"    The Neon Power Plant: Sparks' cut cable →
+ *                               the saboteur (Kip Lasko) → Slag's 2 AM raid on
+ *                               the west gate (scripted safe-zone exception);
+ *                               optional fuel run (fission batteries)
+ *   SQ "The Show Must Go On"    The Neon Opry: audition (CHA / Speech / Repair
+ *                               stagehand), Velvet's stolen wig, opening night
+ *   SQ "Neon Nights"            join the Neon Guard: three bounties on the
+ *                               Mayor's board → Sergeant; the Captain buys
+ *                               raider tags and bounty fingers
+ *   SQ "Skin Deep"              the Smoothskin Club: get past Big Sal
+ *                               (Speech / the right joke / ghoul wear / bribe)
+ *   SQ "The Neon Express" 1-3   Eustace Byrd's escort contracts (Grand Central,
+ *                               Radio City, Carnegie Hall) with ambushes
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const THREE = window.THREE;
+  const L = G.quests.lib;
+  const Q = G.quests;
+  const N = () => L.neonTown;
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  const TS = { x: -40, z: -262 };
+  const IXM = () => (G.LAYOUT ? G.LAYOUT.INTERIOR_X_MIN : 2500);
+  const absH = () => (Math.max(1, G.time.day || 1) - 1) * 24 + (G.time.hour || 0);
+  const nearNeon = (r) => G.player && G.player.pos.x < IXM() && Math.hypot(G.player.pos.x - TS.x, G.player.pos.z - TS.z) < (r || 150);
+  function mk(names, fb, label) { const s = N().spot(names, fb); return s ? { x: s.x, z: s.z, y: s.y, label } : null; }
+  const npcM = (id, label) => ({ npc: id, label });
+
+  // ------------------------------------------------------------------
+  // Items
+  // ------------------------------------------------------------------
+  L.hook('init', function () {
+    const Qi = (d) => L.defineItem(Object.assign({ type: 'misc', weight: 0, value: 0, quest: true, noLoot: true }, d));
+    Qi({ id: 'q_neon_winch_motor', name: 'Book-Lift Winch Motor', weight: 8, mesh: 'toolbox', desc: 'A 1930s elevator winch motor pulled out of the New York Public Library\'s book lift. Heavy, greasy, and — incredibly — it still turns.' });
+    Qi({ id: 'q_neon_cable', name: 'Spool of Steel Cable', weight: 4, mesh: 'toolbox', desc: 'Forty metres of braided steel elevator cable, re-spooled by Sprocket. "Rated for one Ball. Do NOT use for bungee."' });
+    L.defineItem({ id: 'q_neon_sab_note', type: 'note', name: 'Crumpled Note (Power Plant)', title: 'Found in the Big Buzz breaker room', weight: 0, value: 0, noLoot: true,
+      text: 'Cut the main at 2. West gate. They come when it\'s dark.\nHalf now, half after.\nBurn this.\n\n— K.L.\n\n[The note has not been burned. There is a greasy thumbprint and the stamp of the NEON DEPOT on the back.]' });
+    L.defineItem({ id: 'q_neon_pay_note', type: 'note', name: 'Slag\'s Promise', title: 'Scrawled on a Port Authority bus schedule', weight: 0, value: 0, noLoot: true,
+      text: 'Kip —\nLights out at 2, west gate open, and you get your 300 back plus a cut of the Neon. You don\'t, and I tell Lucky Lou where you sleep.\n— Slag, Terminal Boys' });
+    Qi({ id: 'q_neon_wig', name: 'Velvet\'s Wig', weight: 1, mesh: 'teddy', desc: 'An enormous platinum-blonde pre-war wig, lacquered into a shape not found in nature. Smells of hairspray, whiskey, and fame.' });
+    L.defineItem({ id: 'q_neon_beret', type: 'apparel', slot: 'head', name: 'Neon Guard Sergeant\'s Beret', weight: 0, value: 80, dr: 2, special: { C: 1 }, skills: { guns: 5 },
+      desc: 'A red beret with a hand-soldered neon-tube badge that still glows faintly. Captain Kincaid pinned it on you herself. +1 CHA, +5 Guns.' });
+    Qi({ id: 'q_neon_club_card', name: 'Smoothskin Club Membership Card', value: 25, mesh: 'paper', quest: false,
+      desc: '"HONORARY GHOUL. Bearer is permitted in the Smoothskin Club despite being disgustingly healthy." Signed by Big Sal, with a thumbprint that is mostly thumb.' });
+    L.defineItem({ id: 'q_neon_program', type: 'note', name: 'Neon Revue Programme', title: 'THE NEON REVUE — OPENING NIGHT', weight: 0, value: 10, noLoot: true,
+      text: 'LIONEL FAIRWEATHER presents\nTHE NEON REVUE\n"Two Hundred Years of Broadway (Give or Take)"\n\nstarring VELVET MALONEY\nwith {NAME}\n\nAct I: "The Lights Never Go Out"\nAct II: "Mind the Face, Darling"\nFinale: "Shine On, Radioactive Moon"\n\nNo refunds. No heckling (NICKY). Management is not responsible for falling scenery, falling actors, or falling faces.' });
+  });
+
+  // ==================================================================
+  // DROP THE BALL
+  // ==================================================================
+  function ballSpots() {
+    const T = N();
+    const top = T.has(['ball_top']);
+    const ots = T.has(['one_times_square']);
+    const base = T.spot(['ball_base'], { near: ['one_times_square', 'entrance_south'], dx: 0, dz: -4 });
+    let hi = null, lo = null;
+    if (top) { hi = { x: top.x, y: top.y, z: top.z }; const b = T.has(['ball_bottom']); lo = b ? { x: b.x, y: b.y, z: b.z } : { x: top.x, y: top.y - 11, z: top.z }; }
+    else if (ots) { hi = { x: ots.x, y: ots.y + 12.5, z: ots.z }; lo = { x: ots.x, y: ots.y + 1.8, z: ots.z }; }
+    return { base, hi, lo };
+  }
+  // (a metre off the anchor: Wexler's T-45 manual can sit on the same NYPL 'loot1' spot, and two items on one
+  //  point hide each other from the interaction focus)
+  function motorSpot() { const p = L.anchor('nypl', ['loot2', 'loot1', 'loot', 'stacks', 'boss', 'entrance'], { x: 70, z: -160 }); return p ? L.freeSpot(p.x + 1.1, p.z + 0.4, p.y, { maxR: 3, radius: 0.25 }) : p; }
+  const BALL = { seq: null, gatherOn: false, sprite: null, lastDay: -1, mesh: null };
+  /**
+   * Stopgap Ball (used only while landmarks_a has no times_square.setBallDrop): a quests-owned faceted
+   * crystal ball — red / blue / white / gold panels, unlit so it blooms — that rides the mast down.
+   * It is built when a drop starts and disposed when the fireworks end (1 draw call, 19 s a night).
+   */
+  function ballMesh() {
+    if (BALL.mesh) return BALL.mesh;
+    const geo = new THREE.IcosahedronGeometry(1.85, 2).toNonIndexed();
+    const n = geo.attributes.position.count, col = new Float32Array(n * 3);
+    const PAL = [[1, 1, 1], [1, 0.32, 0.3], [0.38, 0.62, 1], [1, 0.84, 0.36], [0.86, 0.94, 1], [1, 1, 1]];
+    for (let f = 0; f < n / 3; f++) {
+      const c = PAL[(f * 7 + (f >> 2)) % PAL.length], k = 0.62 + ((f * 13) % 7) / 16;
+      for (let v = 0; v < 3; v++) { const i = (f * 3 + v) * 3; col[i] = c[0] * k; col[i + 1] = c[1] * k; col[i + 2] = c[2] * k; }
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true }));
+    m.name = 'neon_ball_stopgap'; m.castShadow = false; m.receiveShadow = false;
+    G.scene.add(m);
+    BALL.mesh = m;
+    return m;
+  }
+  function dropBallMesh() {
+    const m = BALL.mesh; BALL.mesh = null;
+    if (!m) return;
+    try { if (m.parent) m.parent.remove(m); m.geometry.dispose(); m.material.dispose(); } catch (e) { /* ignore */ }
+  }
+  function ballFixed() { return !!L.flag('neon_ball_fixed'); }
+  function landmarkBall(t) {
+    try { const ts = !G.isStub('landmarks') && G.landmarks.times_square; if (ts && typeof ts.setBallDrop === 'function') { ts.setBallDrop(t); return true; } } catch (e) { /* ignore */ }
+    return false;
+  }
+  function crowdNear(r) { return N().recs().filter((rec) => rec.a && !rec.a.dead && rec.a.inScene && !rec.def.guard && G.player && Math.hypot(rec.a.pos.x - G.player.pos.x, rec.a.pos.z - G.player.pos.z) < (r || 45)); }
+  function shout(text, n) { const c = crowdNear(50); for (let i = 0; i < Math.min(n || 3, c.length); i++) { const a = pick(c).a; if (!a.talking) a.say(text, 1.1); } }
+  function firework(sp) {
+    const col = pick([0xff5050, 0x50a0ff, 0xffe070, 0x70ff90, 0xff70e0, 0xffffff]);
+    const p = new THREE.Vector3(sp.x + (Math.random() - 0.5) * 40, sp.y + 18 + Math.random() * 22, sp.z + (Math.random() - 0.5) * 40);
+    if (!G.isStub('fx')) {
+      try { if (G.fx.flash) G.fx.flash(p, col, 2.5, 0.5); } catch (e) { /* ignore */ }
+      try { if (G.fx.sparks) for (let k = 0; k < 3; k++) G.fx.sparks(p.clone().add(new THREE.Vector3((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3))); } catch (e) { /* ignore */ }
+    }
+    L.sfx('explosion', { pos: p, volume: 0.22, pitch: 1.9 + Math.random() * 0.5 });
+  }
+  function startDrop() {
+    const S = ballSpots();
+    if (!S.hi) return;
+    BALL.seq = { t: 0, n: 10, S, fireT: 0 };
+    shout('Here it comes!', 2);
+    L.notify('The Times Square Ball is dropping!');
+  }
+  function tickDrop(dt) {
+    const q = BALL.seq; if (!q) return;
+    q.t += dt;
+    const S = q.S;
+    const k = Math.min(1, q.t / 10);
+    const y = S.hi.y + (S.lo.y - S.hi.y) * k;
+    const pos = new THREE.Vector3(S.hi.x + (S.lo.x - S.hi.x) * k, y, S.hi.z + (S.lo.z - S.hi.z) * k);
+    if (!landmarkBall(k)) {
+      // stopgap: our own crystal Ball rides the mast down (the landmark's ball mesh is static)
+      const m = ballMesh();
+      m.position.copy(pos); m.rotation.y += dt * 0.6;
+      const pulse = 1 + Math.sin(q.t * 9) * 0.05 * (1 - k); m.scale.setScalar(pulse);
+      if (!BALL.sprite && !G.isStub('fx') && G.fx.glowSprite) { try { BALL.sprite = G.fx.glowSprite(pos.clone(), 0xfff2d0, 6); } catch (e) { BALL.sprite = null; } }
+      if (BALL.sprite && BALL.sprite.position) BALL.sprite.position.copy(pos);
+      if (k < 1 && Math.random() < dt * 5 && !G.isStub('fx') && G.fx.sparks) try { G.fx.sparks(pos.clone().add(new THREE.Vector3(0, 1.9, 0))); } catch (e) { /* ignore */ }
+    }
+    // countdown: one number a second
+    const n = 10 - Math.floor(q.t);
+    if (n < q.n && n >= 1) { q.n = n; shout(String(n) + '!', 4); L.sfx('ui_click', { volume: 0.4 }); }
+    if (q.t >= 10 && !q.cheered) {
+      q.cheered = true;
+      shout(pick(['HAPPY NEW YEAR!', 'IT DROPPED! IT ACTUALLY DROPPED!', 'Happy New Year, Neon!', 'Two hundred years! TWO HUNDRED YEARS!']), 8);
+      if (!G.isStub('fx') && G.fx.flash) try { G.fx.flash(pos, 0xffffff, 4, 1.2); } catch (e) { /* ignore */ }
+      if (G.player && Math.hypot(G.player.pos.x - S.lo.x, G.player.pos.z - S.lo.z) < 140 && !G.isStub('rpg') && G.rpg.addEffect) {
+        try { G.rpg.addEffect({ id: 'neon_new_year', name: 'Neon New Year', kind: 'buff', duration: 1200, mods: { special: { C: 1, L: 1 } }, desc: 'CHA +1, LCK +1' }); } catch (e) { /* ignore */ }
+        L.notify('Neon New Year: CHA +1, LCK +1.');
+      }
+      L.incFlag('neon_ball_drops');
+      if (Q.stage('sq_neon_ball') === 'midnight') L.later(3, () => { Q.complete('sq_neon_ball'); L.news('The Times Square Ball dropped at midnight for the first time since 2077. Ghouls, smoothskins and at least one brahmin were seen weeping in the streets of the Neon.'); });
+    }
+    if (q.t >= 10) { q.fireT -= dt; if (q.fireT <= 0) { q.fireT = 0.35 + Math.random() * 0.5; firework(S.lo); } }
+    if (q.t > 19) {
+      BALL.seq = null;
+      if (BALL.sprite) { try { if (BALL.sprite.parent) BALL.sprite.parent.remove(BALL.sprite); } catch (e) { /* ignore */ } BALL.sprite = null; }
+      dropBallMesh();
+      landmarkBall(0);   // back to the top for tomorrow night
+    }
+  }
+  function gatherSpotFor(rec) {
+    if (!rec._gather) {
+      const S = ballSpots();
+      const c = N().has(['plaza_centre', 'screen_view', 'center']) || { x: TS.x, y: 0, z: TS.z };
+      const ref = S.base || c;
+      const ang = Math.random() * Math.PI * 2, r = 4 + Math.random() * 9;
+      const s = L.freeSpot((ref.x + c.x) / 2 + Math.cos(ang) * r, (ref.z + c.z) / 2 + Math.sin(ang) * r, ref.y || 0, { maxR: 6 });
+      const face = S.hi ? Math.atan2(-(S.hi.x - s.x), -(S.hi.z - s.z)) : 0;
+      rec._gather = { x: s.x, y: s.y, z: s.z, yaw: face };
+    }
+    return rec._gather;
+  }
+  function ballTick(dt) {
+    if (!ballFixed()) return;
+    const h = G.time.hour;
+    const want = (h >= 23.6 || h < 0.25) && nearNeon(220);
+    if (want !== BALL.gatherOn) {
+      BALL.gatherOn = want;
+      N().setGather(want ? { who: (rec) => !rec.def.guard && ['folk', 'hawker', 'singer', 'merchant', 'director', 'dealer'].indexOf(rec.def.role) >= 0 && !(rec.a.pos.x >= IXM()), at: gatherSpotFor } : null);
+      if (!want) for (const r of N().recs()) delete r._gather;
+    }
+    // the drop: 23:55 game time (10 real seconds ≈ the last 5 game minutes)
+    const midnightDay = h >= 12 ? G.time.day + 1 : G.time.day;
+    if (!BALL.seq && h >= 23.915 && L.flag('neon_ball_last') !== midnightDay && nearNeon(170)) { L.setFlag('neon_ball_last', midnightDay); startDrop(); }
+  }
+  function installBall(how) {
+    L.setFlag('neon_ball_fixed', how);
+    L.take('q_neon_winch_motor', 1); L.take('q_neon_cable', 1);
+    Q.setStage('sq_neon_ball', 'midnight');
+    L.sfx('terminal_success');
+  }
+
+  // ==================================================================
+  // POWER TO THE PEOPLE
+  // ==================================================================
+  const RAID = { actors: [], spawned: false };
+  function powerPanelSpot() { return N().spot(['power_generator', 'power_panel', 'power_engineer'], { near: ['stage', 'totem', 'center'], dx: -5.5, dz: -3 }); }
+  function kipSpot() { return N().spot(['caravan_park_2', 'depot_door', 'caravan_master'], { near: ['entrance_south', 'subway'], dx: -3, dz: 4 }); }
+  function spawnKip() {
+    if (L.flag('kip_gone') || L.isDead('neon_kip')) return null;
+    const p = kipSpot(); if (!p) return null;
+    return L.spawnNPC({ id: 'neon_kip', type: 'human', ghoul: true, name: 'Kip Lasko', outfit: 'wastelander', gender: 'm', hat: 'cap', hatColor: 0x3a3a3a, faction: 'ghouls', ai: 'wander',
+      pos: { x: p.x, y: p.y, z: p.z }, home: { x: p.x, z: p.z, r: 3 }, level: 5, weapon: 'switchblade', dialogue: 'dlg_neon_kip', voice: 'settler',
+      inventory: [['caps', 45], ['q_neon_pay_note', 1]], barks: { idle: ['…', 'Heavy crate. Heavy crate.', 'Nobody saw nothing.'], greet: ['What? I\'m working.', 'You need something moved? Move it yourself.'] } });
+  }
+  function raidOrigin() {
+    const gw = N().has(['gate_w']) || N().has(['guard3']) || { x: -92, y: 0, z: -280 };
+    // from the south-west (the Terminal Boys come up from the Port Authority), clear of MSG and the Lyceum
+    return L.freeSpot(gw.x - 38, gw.z + 22, 0, { maxR: 10 });
+  }
+  function spawnRaid() {
+    if (RAID.spawned) return;
+    RAID.spawned = true; RAID.actors = [];
+    const o = raidOrigin(); if (!o) return;
+    const gw = N().has(['gate_w']) || N().has(['guard3']) || { x: -92, z: -280 };
+    const c = N().has(['plaza_centre', 'center']) || TS;
+    const lvl = Math.max(4, L.level() + 1);
+    const path = [{ x: gw.x, z: gw.z }, { x: c.x, z: c.z }];
+    const W = ['assault_rifle', 'hunting_rifle', 'sawed_off_shotgun', 'smg_10mm', 'pipe_rifle', 'pistol_10mm', 'combat_shotgun'];
+    for (let i = 0; i < 7; i++) {
+      const boss = i === 0;
+      const a = L.spawnNPC({ id: 'neon_raid' + i, type: 'raider', faction: 'raiders', name: boss ? 'Slag' : 'Terminal Boy', level: boss ? lvl + 3 : lvl, hostile: true,
+        pos: { x: o.x + (Math.random() - 0.5) * 8, y: o.y, z: o.z + (Math.random() - 0.5) * 8 }, ai: 'patrol', patrol: path, weapon: boss ? 'combat_shotgun' : W[i % W.length],
+        voice: 'raider', noRespawn: true, hp: boss ? 260 : undefined, inventory: boss ? [['caps', 120], ['stimpak', 2]] : [['caps', 12]],
+        barks: boss ? { alert: ['Lights out, deadheads!', 'The Neon\'s OURS tonight!'], combat: ['Burn it! Burn it all!', 'Where\'s my lights, Kip?!'] } : undefined });
+      if (a) { a.safeExempt = true; a.questRaid = true; RAID.actors.push(a); }
+    }
+    const capt = L.npc('neon_capt');
+    if (capt && !capt.dead) capt.say('Here they come! West gate — everybody on the wall!', 4);
+    L.notify('Raiders are storming the west gate!');
+    // lights out, if the saboteur's cut was never spliced
+    if (!L.flag('power_spliced')) blackoutStart();
+  }
+  /**
+   * The black-out. landmarks_a's times_square.setPower(k) dims the square's neon when it exists; until then
+   * (and on top of it) quests stages the failure itself: transformers blow in a chain across the billboard
+   * walls (flash-pool pops + spark showers), the cut feed at the breaker cabinet keeps arcing, the Oracle's
+   * and the notice board's lamps die, and the crowd panics. Power comes back when the raid is beaten.
+   */
+  const BLACK = { on: false, t: 0, pops: [], popT: 0, arcT: 0 };
+  function landmarkPower(k) {
+    try { const ts = !G.isStub('landmarks') && G.landmarks.times_square; if (ts && typeof ts.setPower === 'function') { ts.setPower(k); return true; } } catch (e) { /* ignore */ }
+    return false;
+  }
+  function billboardPoints() {
+    const c = N().has(['plaza_centre', 'center']) || { x: TS.x, y: 0, z: TS.z };
+    const out = [];
+    for (let i = 0; i < 10; i++) { const a = i * 2.39996 + 0.4, r = 30 + (i % 3) * 7; out.push(new THREE.Vector3(c.x + Math.cos(a) * r, 11 + (i * 7) % 14, c.z + Math.sin(a) * r)); }
+    return out;
+  }
+  function servicesLamps(on) { try { const S = L.neonServices; if (S && typeof S.lamps === 'function') S.lamps(on); } catch (e) { /* ignore */ } }
+  function blackoutStart() {
+    if (BLACK.on) return;
+    BLACK.on = true; BLACK.t = 0; BLACK.popT = 0; BLACK.arcT = 0; BLACK.pops = billboardPoints();
+    BLACK.landmark = landmarkPower(0.15);
+    servicesLamps(false);
+    L.sfx('explosion', { volume: 0.35, pitch: 0.45 });
+    L.notify('The lights of the Neon go out.');
+    L.later(0.8, () => shout(pick(['The lights! THE LIGHTS!', 'Who turned off the Neon?!', 'Stay in the square! Stay together!']), 5));
+  }
+  function blackoutEnd(silent) {
+    if (!BLACK.on) return;
+    BLACK.on = false;
+    landmarkPower(1);
+    servicesLamps(true);
+    if (!silent) { L.sfx('terminal_success', { volume: 0.5 }); L.later(0.5, () => shout(pick(['Lights! We got lights!', 'THERE she is!', 'The Neon\'s back!']), 5)); }
+  }
+  function blackoutTick(dt) {
+    if (!BLACK.on || !nearNeon(220) || G.isStub('fx')) return;
+    BLACK.t += dt;
+    // the first seconds: a chain of blown transformers across the billboards
+    if (BLACK.pops.length && BLACK.t > 0.3) {
+      BLACK.popT -= dt;
+      if (BLACK.popT <= 0) {
+        BLACK.popT = 0.28 + Math.random() * 0.3;
+        const p = BLACK.pops.shift();
+        try { if (G.fx.flash) G.fx.flash(p, 0xbfe4ff, 3.2, 0.18); } catch (e) { /* ignore */ }
+        try { if (G.fx.sparks) { G.fx.sparks(p); G.fx.sparks(p.clone().add(new THREE.Vector3(0, -1.2, 0))); } } catch (e) { /* ignore */ }
+        L.sfx('explosion', { pos: p, volume: 0.18, pitch: 2.2 + Math.random() * 0.4 });
+      }
+    }
+    // then: the cut feed arcs every few seconds
+    BLACK.arcT -= dt;
+    if (BLACK.arcT <= 0) {
+      BLACK.arcT = 1.5 + Math.random() * 2.5;
+      const pp = powerPanelSpot();
+      if (pp) {
+        const p = new THREE.Vector3(pp.x, (pp.y || 0) + 1.9, pp.z);
+        try { if (G.fx.sparks) G.fx.sparks(p); } catch (e) { /* ignore */ }
+        if (Math.random() < 0.5) try { if (G.fx.flash) G.fx.flash(p, 0xa8d8ff, 1.6, 0.1); } catch (e) { /* ignore */ }
+      }
+    }
+  }
+  /** Stand-in breaker cabinet + conduit riser (only while no power_generator / power_panel anchor is built). */
+  function buildCabinet(p) {
+    const parts = [
+      [new THREE.BoxGeometry(1.3, 1.9, 0.55), 0x4a5048, 0, 0.95, 0], [new THREE.BoxGeometry(1.36, 0.08, 0.62), 0x2e322c, 0, 1.94, 0],
+      [new THREE.BoxGeometry(1.1, 1.5, 0.03), 0x5d665a, 0, 1.0, 0.29], [new THREE.BoxGeometry(0.16, 0.16, 0.05), 0xd8c070, -0.3, 1.5, 0.31],
+      [new THREE.BoxGeometry(0.16, 0.16, 0.05), 0xd8c070, 0.3, 1.5, 0.31], [new THREE.BoxGeometry(0.7, 0.05, 0.05), 0x1c1c1c, 0, 1.2, 0.31],
+      [new THREE.BoxGeometry(0.7, 0.05, 0.05), 0x1c1c1c, 0, 1.0, 0.31], [new THREE.BoxGeometry(0.7, 0.05, 0.05), 0x1c1c1c, 0, 0.8, 0.31],
+      [new THREE.BoxGeometry(0.34, 0.22, 0.02), 0xc8b020, 0, 0.45, 0.31], [new THREE.BoxGeometry(0.12, 9.5, 0.12), 0x2a2a26, -0.45, 6.7, -0.1],
+      [new THREE.BoxGeometry(0.09, 9.5, 0.09), 0x1a1a18, 0.45, 6.7, -0.1], [new THREE.BoxGeometry(0.5, 0.35, 0.3), 0x3a3e38, 0, 2.15, 0],
+    ];
+    const geos = parts.map(([g, c, x, y, z]) => {
+      g.translate(x, y, z); const col = new THREE.Color(c), n = g.attributes.position.count, a = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) { a[i * 3] = col.r; a[i * 3 + 1] = col.g; a[i * 3 + 2] = col.b; }
+      g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g.index ? g.toNonIndexed() : g;
+    });
+    const merged = G.util && G.util.mergeGeometries ? G.util.mergeGeometries(geos) : null;
+    if (!merged) return null;
+    const m = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0.35 }));
+    m.name = 'neon_breaker_cabinet'; m.position.set(p.x, p.y || 0, p.z); m.rotation.y = p.yaw || 0; m.castShadow = true;
+    G.scene.add(m);
+    try { G.world.addCollider(p.x, p.z, 1.4, 0.6, p.y || 0, (p.y || 0) + 2.3, p.yaw || 0, { tag: 'prop', walkable: false, surface: 'metal' }); } catch (e) { /* ignore */ }
+    if (G.world.addLOD) G.world.addLOD(m, 110);
+    return m;
+  }
+  function raidTick() {
+    if (Q.stage('sq_neon_power') !== 'defend') return;
+    const h = G.time.hour;
+    if (!RAID.spawned) { if (h >= 1.95 && h < 5 && nearNeon(170)) spawnRaid(); return; }
+    const alive = RAID.actors.filter((a) => a && !a.dead && !a.removed);
+    if (!alive.length) {
+      RAID.spawned = false;
+      blackoutEnd(false);
+      L.setFlag('neon_raid_beaten');
+      Q.setStage('sq_neon_power', 'report');
+      const capt = L.npc('neon_capt'); if (capt && !capt.dead) capt.say('That\'s the last of them! Hold the gate! …Good work, everyone. GOOD work.', 5);
+    }
+  }
+  function kipKnown(how) { if (!L.flag('kip_known')) { L.setFlag('kip_known', how); if (Q.stage('sq_neon_power') === 'culprit') Q.setStage('sq_neon_power', 'confront'); } }
+  function kipResolved(how) {
+    L.setFlag('kip_outcome', how);
+    if (how === 'arrested' || how === 'fled') { L.later(4, () => { L.setFlag('kip_gone'); L.removeNPC('neon_kip'); }); }
+    const st = Q.stage('sq_neon_power');
+    if (st === 'confront' || st === 'culprit') Q.setStage('sq_neon_power', 'defend');
+  }
+
+  // ==================================================================
+  // THE SHOW MUST GO ON
+  // ==================================================================
+  function stageSpot() { return N().spot(['opry_stage', 'singer', 'stage'], { near: ['stage'], dx: 0, dz: 1 }); }
+  function showTick() {
+    if (!Q.isActive('sq_neon_opry') || Q.stage('sq_neon_opry') !== 'show' || L.flag('opry_show_running')) return;   // (the stage stays 'show' after completion)
+    const h = G.time.hour;
+    if (h < 19.75 || h >= 23.5) return;
+    const s = stageSpot(); if (!s || !G.player) return;
+    if (Math.hypot(G.player.pos.x - s.x, G.player.pos.z - s.z) > 9 || Math.abs(G.player.pos.y - s.y) > 4) return;
+    if (G.state !== 'play') return;
+    L.setFlag('opry_show_running', true);
+    const dir = L.npc('neon_director');
+    L.startDialogue('dlg_neon_opry_show', dir && !dir.dead && Math.hypot(dir.pos.x - G.player.pos.x, dir.pos.z - G.player.pos.z) < 14 ? 'neon_director' : null);
+  }
+  function applause(n) { const c = crowdNear(40); for (let i = 0; i < Math.min(n, c.length); i++) { const a = pick(c).a; L.later(Math.random() * 1.5, () => a.say(pick(['Bravo!', 'Encore!', '*wet clapping*', 'Woo!', 'That\'s my smoothskin!', 'Brava! Bravo! Whatever!']), 2.5)); } }
+  function boo(n) { const c = crowdNear(40); for (let i = 0; i < Math.min(n, c.length); i++) { const a = pick(c).a; L.later(Math.random() * 1.5, () => a.say(pick(['Boooo!', 'I\'ve heard better from a Protectron!', 'Get the hook!', 'My face is falling off and I\'m STILL embarrassed for you!']), 2.5)); } }
+
+  // ==================================================================
+  // NEON NIGHTS — the bounties
+  // ==================================================================
+  const BOUNTIES = [
+    { id: 'nb_librarian', stage: 'b1', karma: 0, name: 'The Night Librarian', type: 'glowing_one', faction: 'feral_ghouls', loc: 'nypl', anchors: ['boss', 'spawn1', 'entrance'], fb: { x: 80, z: -168 },
+      minions: [['feral_ghoul', 3]], pay: 150, text: 'WANTED: "THE NIGHT LIBRARIAN" — a Glowing One nesting on the steps of the Public Library with its pack. It glows. It shushes. Put it down. 150 CAPS. — Capt. M. Kincaid' },
+    { id: 'nb_hinges', stage: 'b2', karma: 50, name: 'Rusty Hinges', type: 'raider', faction: 'raiders', loc: 'port_authority', anchors: ['entrance', 'boss'], fb: { x: -150, z: -196 },
+      minions: [['raider', 3]], pay: 200, weapon: 'assault_rifle', text: 'WANTED: RUSTY HINGES, boss of the Terminal Boys, camped outside the Port Authority bus terminal. Robbery, murder, and "unlicensed dentistry". 200 CAPS. — Capt. M. Kincaid' },
+    { id: 'nb_gristle', stage: 'b3', karma: 25, name: 'Gristle', type: 'super_mutant', faction: 'super_mutants', loc: null, anchors: [], fb: { x: -40, z: -128 },
+      minions: [['super_mutant', 2]], pay: 300, weapon: 'minigun', text: 'WANTED: "GRISTLE", super mutant war-chief, with a war party on Seventh Avenue below Herald Square. He wears a crown of teeth. Some of them are ours. 300 CAPS. — Capt. M. Kincaid' },
+  ];
+  function bountyPos(b) {
+    if (b.loc) { const p = L.anchor(b.loc, b.anchors, b.fb); if (p) return p; }
+    return L.freeSpot(b.fb.x, b.fb.z, 0, { maxR: 16 });
+  }
+  function spawnBounty(b) {
+    if (L.flag('bounty_done_' + b.id) || L.isDead(b.id)) return;
+    const p = bountyPos(b); if (!p) return;
+    const lvl = Math.max(4, L.level() + (b.stage === 'b3' ? 3 : 1));
+    const boss = L.spawnNPC({ id: b.id, type: b.type, faction: b.faction, name: b.name, level: lvl + 2, pos: { x: p.x, y: p.y, z: p.z }, ai: 'guard', home: { x: p.x, z: p.z, r: 6 },
+      hostile: true, weapon: b.weapon, hp: b.type === 'super_mutant' ? 420 : b.type === 'glowing_one' ? 260 : 220, noRespawn: true, inventory: [['caps', 40 + lvl * 5]] });
+    if (boss) boss.bountyTarget = b.id;
+    let k = 0;
+    for (const [type, n] of b.minions) for (let i = 0; i < n; i++) {
+      const s = L.freeSpot(p.x + (Math.random() - 0.5) * 10, p.z + (Math.random() - 0.5) * 10, p.y, { maxR: 6 });
+      L.spawnNPC({ id: b.id + '_m' + (k++), type, faction: b.faction, level: lvl, pos: { x: s.x, y: s.y, z: s.z }, ai: 'guard', home: { x: s.x, z: s.z, r: 8 }, hostile: true, noRespawn: true });
+    }
+  }
+  function currentBounty() { const st = Q.stage('sq_neon_guard'); return BOUNTIES.find((b) => b.stage === st) || null; }
+
+  // ==================================================================
+  // THE NEON EXPRESS — escort contracts
+  // ==================================================================
+  const RUNS = [
+    { q: 'sq_neon_express1', dest: 'grand_central', name: 'Grand Central Market', pay: 150, driver: 'Wagoneer Hank Lowry', cargo: 'forty crates of Nuka-Cola and one very nervous brahmin' },
+    { q: 'sq_neon_express2', dest: 'radio_city', name: 'Radio City', pay: 175, driver: 'Wagoneer Rosa Ybarra', cargo: 'replacement tubes for Vinnie\'s transmitter' },
+    { q: 'sq_neon_express3', dest: 'carnegie_hall', name: 'Carnegie Hall', pay: 225, driver: 'Wagoneer "Deacon" Boyle', cargo: 'medicine for the Carnegie settlement', karma: 50 },
+  ];
+  const EXP = { run: null, driver: null, brahmin: null, ambushed: false, done: false, waitT: 0, pts: [], idx: 0, doneT: 0 };
+  function expressRoute(dest) {
+    const start = N().spot(['caravan_arrive', 'caravan_park_1', 'depot_door'], { near: ['entrance_south', 'subway'], dx: 0, dz: 6 });
+    const loc = G.LAYOUT.getLocation(dest);
+    if (!start || !loc) return null;
+    const Ly = G.LAYOUT;
+    // L-shaped street route: along the avenue to the destination's street, then along the street
+    const zS = loc.z, xA = -40;
+    const pts = [{ x: start.x, z: start.z }];
+    const corner1 = { x: xA, z: start.z }, corner2 = { x: xA, z: zS }, end = { x: loc.x, z: loc.z };
+    const onRoad = (p) => Ly.isRoad(p.x, p.z);
+    if (onRoad(corner1)) pts.push(corner1);
+    pts.push(onRoad(corner2) ? corner2 : { x: xA, z: zS });
+    // pull the end point a little out of the settlement footprint onto the street
+    const dx = end.x - corner2.x, dz = end.z - corner2.z, d = Math.hypot(dx, dz) || 1;
+    const stop = L.freeSpot(end.x - dx / d * Math.min(12, d * 0.3), end.z - dz / d * Math.min(12, d * 0.3), 0, { maxR: 12 });
+    pts.push({ x: stop.x, z: stop.z });
+    return { start, pts };
+  }
+  /**
+   * resume = the saved progress {q, idx, x, z, amb, n} (flag neon_exp_state, written every 2 s while
+   * the wagon rolls): after a load the driver + brahmin reappear where the save left them, on the
+   * same leg of the route, instead of restarting from the Depot.
+   */
+  function startExpress(run, resume) {
+    const r = expressRoute(run.dest); if (!r) { L.notify('The wagon isn\'t ready. Try again later.'); return false; }
+    if (!resume) L.incFlag('neon_exp_n');
+    EXP.run = run; EXP.pts = r.pts; EXP.idx = 1; EXP.ambushed = false; EXP.done = false; EXP.waitT = 0; EXP.doneT = 0; EXP.saveT = 0;
+    EXP.driverId = 'neon_exp_driver' + (resume && resume.n !== undefined ? resume.n : (Number(L.flag('neon_exp_n')) || 0));
+    let at = r.start;
+    if (resume) {
+      EXP.idx = Math.max(1, Math.min(r.pts.length - 1, resume.idx || 1));
+      EXP.ambushed = !!resume.amb;
+      const f = L.freeSpot(resume.x, resume.z, 0, { maxR: 10 });
+      if (f && !f.forced) at = f;
+    }
+    EXP.driver = L.spawnNPC({ id: EXP.driverId, type: 'human', faction: 'settlers', name: run.driver, outfit: 'merchant', gender: run.q === 'sq_neon_express2' ? 'f' : 'm', hat: 'cowboy', hatColor: 0x4a3420,
+      pos: { x: at.x, y: at.y || 0, z: at.z }, ai: 'patrol', patrol: [EXP.pts[EXP.idx]], hp: 220, level: 6, weapon: 'pistol_10mm', voice: 'merchant', noRespawn: true,
+      barks: { idle: ['Steady, girl. Steady.', 'Keep your eyes on the rooftops.', 'Nice and slow.'], combat: ['Protect the wagon!', 'Ambush! AMBUSH!'] } });
+    const bp = L.freeSpot(at.x + 2, at.z + 2, at.y, { maxR: 5 });
+    try { if (!G.isStub('ambient') && G.ambient.brahmin && EXP.driver) EXP.brahmin = G.ambient.brahmin({ pos: { x: bp.x, y: bp.y, z: bp.z }, variant: 1, pack: true, ai: 'follow', follow: EXP.driver, name: 'Neon Express Brahmin' }); } catch (e) { EXP.brahmin = null; }
+    if (EXP.driver) EXP.driver.say(resume ? 'There you are, partner. ' + run.name + ' ain\'t getting any closer by itself.' : 'Alright, partner. ' + run.name + ', nice and easy. Stay close.', 4);
+    if (EXP.driver) saveExpress();
+    return !!EXP.driver;
+  }
+  function saveExpress() {
+    const d = EXP.driver; if (!EXP.run || !d || !d.pos) return;
+    L.setFlag('neon_exp_state', { q: EXP.run.q, idx: EXP.idx, x: +d.pos.x.toFixed(1), z: +d.pos.z.toFixed(1), amb: EXP.ambushed, n: Number(EXP.driverId.replace(/\D+/g, '')) || 0 });
+  }
+  function ambush() {
+    if (EXP.ambushed || !EXP.driver) return;
+    EXP.ambushed = true;
+    const d = EXP.driver, nx = EXP.pts[Math.min(EXP.idx, EXP.pts.length - 1)];
+    const dx = nx.x - d.pos.x, dz = nx.z - d.pos.z, dl = Math.hypot(dx, dz) || 1;
+    const ax = d.pos.x + dx / dl * 28, az = d.pos.z + dz / dl * 28;
+    const lvl = Math.max(3, L.level());
+    const n = 3 + (EXP.run.q === 'sq_neon_express3' ? 2 : EXP.run.q === 'sq_neon_express2' ? 1 : 0);
+    for (let i = 0; i < n; i++) {
+      const s = L.freeSpot(ax + (Math.random() - 0.5) * 10, az + (Math.random() - 0.5) * 10, 0, { maxR: 8 });
+      L.spawnNPC({ id: 'neon_exp_raider' + RUNS.indexOf(EXP.run) + '_' + (Number(L.flag('neon_exp_n')) || 0) + '_' + i, type: 'raider', faction: 'raiders', level: lvl, hostile: true,
+        pos: { x: s.x, y: s.y, z: s.z }, ai: 'patrol', patrol: [{ x: d.pos.x, z: d.pos.z }, { x: ax, z: az }], noRespawn: true, voice: 'raider' });
+    }
+    d.say('Raiders! Protect the wagon!', 3);
+  }
+  function expressTick(dt) {
+    const run = EXP.run; if (!run) return;
+    const d = EXP.driver;
+    if (!Q.isActive(run.q)) { cleanupExpress(); return; }
+    if (!d || d.removed) { cleanupExpress(); return; }
+    if (d.dead) { Q.fail(run.q); L.notify('The Neon Express driver is dead. Contract failed.'); cleanupExpress(); return; }
+    EXP.saveT = (EXP.saveT || 0) + dt; if (EXP.saveT > 2 && !EXP.done) { EXP.saveT = 0; saveExpress(); }
+    if (EXP.done) { EXP.doneT += dt; if (EXP.doneT > 40 || (G.player && Math.hypot(G.player.pos.x - d.pos.x, G.player.pos.z - d.pos.z) > 90)) cleanupExpress(); return; }
+    const P = G.player.pos;
+    const far = Math.hypot(P.x - d.pos.x, P.z - d.pos.z);
+    const tgt = EXP.pts[EXP.idx];
+    if (d.inCombat || d.state === 'combat' || d.state === 'flee' || d.state === 'cower') return;
+    // wait for the escort
+    if (far > 35) { if (d.aiMode !== 'static') { d.aiMode = 'static'; d.say(pick(['Hey! Where\'d you go? I\'m not moving without you.', 'Partner? PARTNER?']), 3); } return; }
+    if (d.aiMode !== 'patrol' || !d.patrol || d.patrol[0] !== tgt) { d.aiMode = 'patrol'; d.patrol = [tgt]; d.patrolIdx = 0; }
+    if (Math.hypot(d.pos.x - tgt.x, d.pos.z - tgt.z) < 3.5) {
+      if (EXP.idx < EXP.pts.length - 1) EXP.idx++;
+      else {
+        EXP.done = true; d.aiMode = 'static';
+        d.say('We made it! ' + run.name + '! Eustace\'ll have your caps — here, take your cut now.', 5);
+        Q.complete(run.q);
+      }
+    }
+    // ambush at about half way
+    if (!EXP.ambushed && EXP.idx >= Math.max(1, Math.floor(EXP.pts.length / 2)) && Math.random() < dt * 0.25) ambush();
+  }
+  function cleanupExpress() {
+    if (EXP.driverId) L.removeNPC(EXP.driverId);
+    if (EXP.brahmin && !EXP.brahmin.removed && !G.isStub('actors')) try { G.actors.remove(EXP.brahmin); } catch (e) { /* ignore */ }
+    EXP.run = null; EXP.driver = null; EXP.brahmin = null;
+    L.setFlag('neon_exp_state', null);
+  }
+
+  // ==================================================================
+  // Quests
+  // ==================================================================
+  L.hook('init', function () {
+    L.quest({
+      id: 'sq_neon_ball', name: 'Drop the Ball', giver: 'Mayor Lucius Crowe', location: 'The Neon (Times Square)',
+      desc: 'The Times Square Ball has been stuck on its mast since the night of the bombs. Mayor Crowe believes that if it drops again at midnight, the Neon becomes a real city. It needs a new winch motor and cable.',
+      stages: [
+        { id: 'parts', text: () => 'Find parts for the Ball\'s winch: an elevator motor from the Public Library' + (L.has('q_neon_winch_motor') ? ' [done]' : '') + ' and a spool of steel cable from Sprocket\'s Robo-Shop' + (L.has('q_neon_cable') ? ' [done]' : '') + '.',
+          markers: () => [!L.has('q_neon_winch_motor') && (L.pickups.neon_motor ? { x: L.pickups.neon_motor.pos.x, z: L.pickups.neon_motor.pos.z, label: 'Book-Lift Motor' } : { x: 80, z: -162, label: 'NY Public Library' }),
+            !L.has('q_neon_cable') && npcM('neon_sprocket', 'Sprocket')].filter(Boolean) },
+        { id: 'install', text: 'Repair the Ball\'s winch at the base of One Times Square.', markers: () => { const b = ballSpots().base; return b ? [{ x: b.x, z: b.z, label: 'Ball Winch' }] : []; } },
+        { id: 'midnight', text: 'Be in Times Square at midnight for the first Ball drop in two hundred years.', markers: () => { const b = ballSpots().base; return b ? [{ x: b.x, z: b.z, label: 'The Ball' }] : []; } },
+      ],
+      rewards: { xp: 400, caps: 250, karma: 50 },
+    });
+    L.quest({
+      id: 'sq_neon_power', name: 'Power to the People', giver: 'Sparks Malloy', location: 'The Neon Power Plant',
+      desc: 'The Neon\'s lights have been failing at the same hour every night. Sparks Malloy, the chief engineer, doesn\'t believe in coincidences.',
+      stages: [
+        { id: 'inspect', text: 'Inspect the main breaker panel of the Big Buzz.', markers: () => { const p = powerPanelSpot(); return p ? [{ x: p.x, z: p.z, label: 'Breaker Panel' }] : []; } },
+        { id: 'fuel', text: '(Optional) Bring Sparks three fission batteries for the backup bank.', sideObjective: true, optional: true,
+          showIf: () => ['culprit', 'confront', 'defend'].indexOf(Q.stage('sq_neon_power')) >= 0 && !L.flag('power_fuel'), doneIf: () => !!L.flag('power_fuel'), markers: () => [npcM('neon_sparks', 'Sparks Malloy')] },
+        { id: 'culprit', text: 'Find out who "K.L." is. Someone in the Neon may know — try the Captain of the Guard, or Lucky Lou at the Rad Room.', markers: () => [npcM('neon_capt', 'Captain Kincaid'), npcM('neon_dealer', 'Lucky Lou')] },
+        { id: 'confront', text: 'Confront Kip Lasko at the Caravan Depot.', markers: () => [npcM('neon_kip', 'Kip Lasko')] },
+        { id: 'defend', text: 'Warn Captain Kincaid, then defend the west gate against Slag\'s raiders at 2:00 in the morning.', markers: () => { const g = N().spot(['gate_w'], { near: ['guard3'], dx: 3, dz: 0 }); return [npcM('neon_capt', 'Captain Kincaid')].concat(g ? [{ x: g.x, z: g.z, label: 'West Gate' }] : []); } },
+        { id: 'report', text: 'Report to Sparks Malloy.', markers: () => [npcM('neon_sparks', 'Sparks Malloy')] },
+      ],
+      rewards: { xp: 450, caps: 300 },
+    });
+    L.quest({
+      id: 'sq_neon_opry', name: 'The Show Must Go On', giver: 'Lionel Fairweather', location: 'The Neon Opry',
+      desc: 'The Neon Opry\'s leading man walked off in the middle of a number and kept walking. Lionel Fairweather needs a replacement for opening night — any replacement.',
+      stages: [
+        { id: 'audition', text: 'Audition for Lionel Fairweather at the Neon Opry.', markers: () => [npcM('neon_director', 'Lionel Fairweather')] },
+        { id: 'wig', text: 'Velvet Maloney\'s wig has been stolen. Find it before opening night.', markers: () => (L.flag('wig_thief_known') ? [npcM('neon_nicky', 'Nicky Two-Thumbs')] : [npcM('neon_velvet', 'Velvet Maloney')]) },
+        { id: 'show', text: 'Be on the Opry stage between 8 and 11 at night for opening night.', markers: () => { const s = stageSpot(); return s ? [{ x: s.x, z: s.z, label: 'The Opry Stage' }] : []; } },
+      ],
+      rewards: { xp: 350 },
+    });
+    L.quest({
+      id: 'sq_neon_guard', name: 'Neon Nights', giver: 'Captain Mercy Kincaid', location: 'The Neon (Times Square)',
+      desc: 'Captain Kincaid of the Neon Guard is short on shooters. Three names on the Mayor\'s notice board, three bounties, and a promotion for whoever brings back proof.',
+      stages: BOUNTIES.map((b, i) => [
+        { id: b.stage, text: 'Bounty ' + (i + 1) + '/3: kill ' + b.name + '.', markers: () => { const a = L.npc(b.id); if (a && !a.dead) return [{ x: a.pos.x, z: a.pos.z, label: b.name }]; const p = bountyPos(b); return p ? [{ x: p.x, z: p.z, label: b.name }] : []; } },
+        { id: 'r' + (i + 1), text: 'Report to Captain Kincaid at the north gate.', markers: () => [npcM('neon_capt', 'Captain Kincaid')] },
+      ]).flat(),
+      rewards: { xp: 500 },
+    });
+    L.quest({
+      id: 'sq_neon_club', name: 'Skin Deep', giver: 'Big Sal', location: 'The Smoothskin Club',
+      desc: 'The Smoothskin Club is the most exclusive venue in the Neon: humans are not allowed. Naturally, you want in.',
+      stages: [
+        { id: 'in', text: 'Get past Big Sal at the door of the Smoothskin Club.', markers: () => [npcM('neon_sal', 'Big Sal')] },
+        { id: 'meet', text: 'Catch Smiley Pete\'s act inside the Smoothskin Club.', markers: () => (clubInterior() ? [npcM('neon_smiley', 'Smiley Pete')] : []) },
+      ],
+      rewards: { xp: 200 },
+    });
+    RUNS.forEach((r, i) => L.quest({
+      id: r.q, name: 'The Neon Express' + (i ? ' (' + ['I', 'II', 'III'][i] + ')' : ''), giver: 'Eustace Byrd', location: 'Caravan Depot',
+      desc: 'Eustace Byrd needs an escort for the Neon Express: ' + r.cargo + ', bound for ' + r.name + '. Raiders hit the Express about half the time. Eustace considers that good odds.',
+      stages: [{ id: 'go', text: 'Escort ' + r.driver + ' safely to ' + r.name + '.', markers: () => (EXP.driver && !EXP.driver.dead ? [{ x: EXP.driver.pos.x, z: EXP.driver.pos.z, label: r.driver }] : [npcM('neon_wagon', 'Eustace Byrd')]) }],
+      rewards: { xp: 150 + i * 50, caps: r.pay, karma: r.karma || 0 },
+    }));
+  });
+
+  // ------------------------------------------------------------------
+  // Jobs on the Mayor's notice board (48_ shows them)
+  // ------------------------------------------------------------------
+  L.neonJobs = function () {
+    const J = [];
+    const b = currentBounty() || (!Q.isStarted('sq_neon_guard') ? BOUNTIES[0] : null);
+    J.push({ title: 'SHOOTERS WANTED — NEON GUARD', text: 'The Neon Guard is hiring. Bounties posted weekly. Apply to Capt. M. Kincaid, north gate. Bring your own gun. Bring your own body bag.',
+      cond: () => !Q.isStarted('sq_neon_guard'), act: () => { Q.start('sq_neon_guard'); L.setFlag('neon_guard_member'); spawnBounty(BOUNTIES[0]); L.notify('The first bounty is on the board: ' + BOUNTIES[0].name + '.'); } });
+    if (b && Q.isActive('sq_neon_guard')) J.push({ title: 'WANTED: ' + b.name.toUpperCase(), text: b.text, cond: () => true });
+    J.push({ title: 'BY ORDER OF THE MAYOR: THE BALL', text: 'A reward of 250 CAPS to any citizen who repairs the winch of the Times Square Ball. See Mayor L. Crowe. "Make the Neon a city again!"',
+      cond: () => !Q.isComplete('sq_neon_ball'), act: () => { if (!Q.isStarted('sq_neon_ball')) Q.start('sq_neon_ball'); }, done: () => Q.isStarted('sq_neon_ball') });
+    J.push({ title: 'HELP WANTED: POWER PLANT', text: 'Night-shift hand wanted at the Big Buzz. Must not be afraid of the dark, electricity, or Sparks. ' + (N().place('power') ? 'Ask below the theatre.' : 'Ask at the breaker cabinet by the stage.'),
+      cond: () => !Q.isComplete('sq_neon_power'), act: () => { if (!Q.isStarted('sq_neon_power')) Q.start('sq_neon_power'); }, done: () => Q.isStarted('sq_neon_power') });
+    J.push({ title: 'CASTING CALL — THE NEON OPRY', text: 'LEADING PLAYER wanted for the Neon Revue. Must sing, dance, or be willing to stand in the light. Smoothskins considered (reluctantly). — L. Fairweather',
+      cond: () => !Q.isComplete('sq_neon_opry'), act: () => { if (!Q.isStarted('sq_neon_opry')) Q.start('sq_neon_opry'); }, done: () => Q.isStarted('sq_neon_opry') });
+    J.push({ title: 'CARAVAN GUARDS — NEON EXPRESS', text: 'Escorts wanted for the Neon Express. Good pay, fresh air, raiders. See E. Byrd at the Depot.', cond: () => RUNS.some((r) => !Q.isComplete(r.q)) });
+    return J;
+  };
+
+  // ------------------------------------------------------------------
+  // Dialogues
+  // ------------------------------------------------------------------
+  L.hook('register', function () {
+    // ---- Mayor Crowe gets the Ball ----
+    const crowe = L.DIALOGUES.get('dlg_neon_crowe');
+    if (crowe && crowe.nodes && crowe.nodes.again) {
+      const add = [
+        { _neonBall: true, text: 'Tell me about the Ball.', cond: () => !Q.isStarted('sq_neon_ball'), next: 'ball' },
+        { _neonBall: true, text: 'About the Ball…', cond: () => Q.isActive('sq_neon_ball'), next: 'ball_prog' },
+      ];
+      for (const nid of ['again', 'first']) { const n = crowe.nodes[nid]; if (n && Array.isArray(n.responses) && !n.responses.some((r) => r._neonBall)) n.responses.splice(Math.max(0, n.responses.length - 1), 0, ...add); }
+      crowe.nodes.ball = { text: 'The Ball! Up there — see it? Stuck on its mast since the night the sky caught fire. Every New Year\'s Eve, before, a million people watched it fall. Now it just… hangs. Like the rest of us. If that Ball drops again, friend, the Neon isn\'t a shanty town any more. It\'s a CITY. We\'d need a winch motor — the old book lift at the Public Library has one — and forty metres of cable. Sprocket can spin you cable.',
+        responses: [{ text: 'I\'ll get your Ball dropping.', action: () => Q.start('sq_neon_ball') }, { text: 'What\'s in it for me?', next: 'ball_pay' }, { text: 'Maybe later.' }] };
+      crowe.nodes.ball_pay = { text: 'Two hundred and fifty caps from the treasury — that\'s my other hat — and the eternal gratitude of the Neon. Also, at midnight, you get to watch the Ball drop. You can\'t put a price on that. I tried. Council said no.', responses: [{ text: 'Deal.', action: () => Q.start('sq_neon_ball') }, { text: 'I\'ll think about it.' }] };
+      crowe.nodes.ball_prog = { text: () => (Q.stage('sq_neon_ball') === 'midnight' ? 'Midnight, citizen! Be in the square at midnight! I\'ve had my good hat pressed.' : Q.stage('sq_neon_ball') === 'install' ? 'You have the parts? Then to the base of One Times Square, quick, before I start crying. Ghouls crying is not a pretty thing. Very… sticky.' : 'The motor\'s in the Library, the cable\'s at Sprocket\'s. Don\'t let the Library\'s residents shush you to death.'),
+        responses: [{ text: 'On it.' }] };
+    }
+    // ---- Sprocket spins cable ----
+    const spr = L.DIALOGUES.get('dlg_neon_sprocket');
+    if (spr && spr.nodes && spr.nodes.hello && !spr.nodes.hello.responses.some((r) => r._neonCable)) {
+      spr.nodes.hello.responses.splice(1, 0, { _neonCable: true, text: 'I need forty metres of steel cable. For the Ball.', cond: () => Q.stage('sq_neon_ball') === 'parts' && !L.has('q_neon_cable'), next: 'cable' });
+      spr.nodes.cable = { text: 'For the BALL? Oh, you beautiful lunatic. I\'ve been saving a spool of elevator cable for two hundred years for exactly this. Sixty caps, and that\'s the patriot discount.',
+        responses: [{ text: 'Here. (60 caps)', cond: () => L.caps() >= 60, action: () => { if (L.pay(60)) { L.give('q_neon_cable', 1); ballPartsCheck(); } } },
+          { text: '[Speech 40] It\'s for the whole Neon. Surely the patriot discount is bigger.', check: { skill: 'speech', value: 40 }, next: 'cable_free', failNext: 'cable_no' }, { text: 'Later.', next: 'hello' }] };
+      spr.nodes.cable_free = { text: 'Ugh. Fine! Take it! For the Neon! If it snaps, you never got it from me.', onEnter() { L.give('q_neon_cable', 1); ballPartsCheck(); }, responses: [{ text: 'Thanks, Sprocket.' }] };
+      spr.nodes.cable_no = { text: 'The whole Neon can chip in, then. Sixty caps.', responses: [{ text: 'Fine. (60 caps)', cond: () => L.caps() >= 60, action: () => { if (L.pay(60)) { L.give('q_neon_cable', 1); ballPartsCheck(); } } }, { text: 'Later.' }] };
+    }
+    // ---- The Ball's winch (actor-less) ----
+    L.dialogue('dlg_neon_winch', {
+      start: () => (L.has('q_neon_winch_motor') && L.has('q_neon_cable') ? 'fix' : 'look'),
+      nodes: {
+        look: { text: '[A rusted winch house at the foot of the mast. The motor mount is empty and the old cable hangs in a frayed, sad loop. You\'ll need a winch motor and new cable.]', responses: [{ text: '[Leave.]' }] },
+        fix: { text: '[You lay out the book-lift motor and the spool of cable. The mount is corroded, the wiring is older than your grandparents\' grandparents, and the mast is thirty metres up.]',
+          responses: [
+            { text: '[Repair 50] Bolt in the motor and re-reeve the cable yourself.', check: { skill: 'repair', value: 50 }, next: 'done', failNext: 'fail', action: () => installBall('repair') },
+            { text: '[Science 55] Wire the motor to the Neon\'s grid through a timer relay.', check: { skill: 'science', value: 55 }, next: 'done_sci', failNext: 'fail', action: () => installBall('science') },
+            { text: 'Pay Sparks Malloy\'s crew to install it. (100 caps)', cond: () => L.caps() >= 100, action: () => { if (L.pay(100)) installBall('paid'); }, next: 'done_paid' },
+            { text: '[Leave.]' }] },
+        fail: { text: '[The mount bolts sheer off in your hand. You\'re going to need help with this.]', responses: [{ text: 'Pay Sparks\'s crew instead. (100 caps)', cond: () => L.caps() >= 100, action: () => { if (L.pay(100)) installBall('paid'); }, next: 'done_paid' }, { text: '[Leave.]' }] },
+        done: { text: '[The motor coughs, catches, and hums. High above, the Ball shivers on its mast for the first time in two centuries. A ghoul in the crowd drops his noodles.]', onEnter() { L.xp(60, 'Repair: the Ball winch'); }, responses: [{ text: '[Midnight, then.]' }] },
+        done_sci: { text: '[A relay clacks. The Neon\'s grid feeds the winch through a timer: at midnight, every night, the Ball will drop. Sparks is going to be furious you didn\'t ask.]', onEnter() { L.xp(60, 'Science: the Ball winch'); }, responses: [{ text: '[Midnight, then.]' }] },
+        done_paid: { text: '[Sparks\'s crew swarms the mast with ropes and swearing. An hour later the winch hums. "Don\'t touch it," they tell you. "Don\'t even look at it."]', responses: [{ text: '[Midnight, then.]' }] },
+      },
+    });
+
+    // ---- Sparks Malloy ----
+    L.dialogue('dlg_neon_sparks', N().sleepy({
+      start: () => (Q.isActive('sq_neon_power') && Q.stage('sq_neon_power') === 'report' ? 'report' : 'hello'),   // (stage stays 'report' once complete)
+      nodes: {
+        hello: { text: () => (Q.isComplete('sq_neon_power') ? 'Lights are steady. Kip\'s gone, Slag\'s gone, and the Big Buzz is purring. I owe you one. Well — I owe you several.' : pick(['Sparks Malloy, chief engineer. You\'re standing on the Big Buzz. Well, above it. It\'s under the stage. Everything\'s under the stage.', 'Don\'t touch anything that hums. Or glows. Or hums AND glows.'])),
+          responses: [
+            { text: 'Your lights keep going out.', cond: () => !Q.isStarted('sq_neon_power'), next: 'job' },
+            { text: 'I\'ve got three fission batteries for the backup bank.', cond: () => Q.isActive('sq_neon_power') && !L.flag('power_fuel') && L.has('fission_battery', 3), next: 'fuel' },
+            { text: 'What exactly is the Big Buzz?', next: 'buzz' },
+            { text: 'See you, Sparks.' }] },
+        job: { text: 'Three nights running! Two in the morning, on the dot, the whole west side goes dark. Generators are fine. Fuel\'s fine. Somebody\'s pulling my breakers, and I can\'t leave the board long enough to catch \'em. Take a look at the main panel for me?',
+          responses: [{ text: 'I\'ll take a look.', action: () => Q.start('sq_neon_power') }, { text: 'Not my problem.' }] },
+        buzz: { text: 'Pre-war theatre generator, two fusion-rigged turbines, one very old diesel, and six hundred metres of cable up the billboards. She\'s the only thing between the Neon and the dark. Without her, the ferals come back into the square. So — don\'t touch her.', responses: [{ text: 'Got it.', next: 'hello' }] },
+        fuel: { text: 'Three cells! Look at them. Beautiful. That\'s a week of backup if the main goes. Here — it\'s not much, but it\'s what the Council gives me.', onEnter() { L.take('fission_battery', 3); L.giveCaps(120); L.setFlag('power_fuel'); L.xp(50, 'Fuel run'); }, responses: [{ text: 'Glad to help.', next: 'hello' }] },
+        report: { text: () => 'It\'s over? Slag\'s crew is dead at the west gate? ' + (L.flag('kip_outcome') === 'arrested' ? 'And Kip in the Captain\'s lock-up. ' : L.flag('kip_outcome') === 'fled' ? 'And Kip ran off. Good riddance. ' : L.flag('kip_outcome') === 'dead' ? 'And Kip… well. Kip made his choice. ' : '') + 'The Neon\'s got power, and it\'s got it because of you. Here — Council pay, and my thanks.',
+          onEnter() { Q.complete('sq_neon_power'); if (L.flag('kip_outcome') !== 'fled') L.karma(100, 'Saved the Neon\'s lights'); L.news('Raiders who tried to storm the Neon in the dark found the lights on and the guards waiting. The Neon\'s chief engineer credits "a smoothskin with a gun and a nose for trouble."'); },
+          responses: [{ text: 'Keep the lights on, Sparks.' }] },
+      },
+    }));
+    L.dialogue('dlg_neon_panel', {
+      start: () => (Q.stage('sq_neon_power') === 'inspect' ? 'look' : 'fine'),
+      nodes: {
+        fine: { text: '[The Big Buzz\'s main breaker panel: a wall of Bakelite switches, jury-rigged fuses and cables thick as your arm. Everything hums. Nothing is on fire.]', responses: [{ text: '[Leave.]' }] },
+        look: { text: '[Behind the panel, the main feed to the west side has been cut — neatly, with bolt cutters, then twisted back together so it only fails under load. Tucked behind the conduit is a crumpled note.]',
+          onEnter() { if (!L.has('q_neon_sab_note')) L.give('q_neon_sab_note', 1); },
+          responses: [
+            { text: '[Repair 30] Splice the cut properly.', check: { skill: 'repair', value: 30 }, next: 'spliced', failNext: 'nosplice' },
+            { text: '[Take the note and tell Sparks.]', action: () => { if (Q.stage('sq_neon_power') === 'inspect') Q.setStage('sq_neon_power', 'culprit'); } }] },
+        spliced: { text: '[You strip the ends, splice and tape the feed. The west side won\'t go dark again — not by accident. Whoever did this will have to try something else.]', onEnter() { L.setFlag('power_spliced'); L.xp(40, 'Repair: the Big Buzz'); if (Q.stage('sq_neon_power') === 'inspect') Q.setStage('sq_neon_power', 'culprit'); }, responses: [{ text: '[Read the note.]' }] },
+        nosplice: { text: '[You burn your fingers and nearly your eyebrows. Better leave the splice to Sparks.]', onEnter() { if (Q.stage('sq_neon_power') === 'inspect') Q.setStage('sq_neon_power', 'culprit'); }, responses: [{ text: '[Take the note.]' }] },
+      },
+    });
+    L.dialogue('dlg_neon_kip', {
+      start: () => (Q.stage('sq_neon_power') === 'confront' || (Q.stage('sq_neon_power') === 'culprit' && L.has('q_neon_sab_note')) ? 'confront' : 'hello'),
+      nodes: {
+        hello: { text: pick(['What? I\'m working.', 'You need something moved, move it yourself.']), responses: [{ text: 'Never mind.' }] },
+        confront: { text: '[He sees the note in your hand and goes a shade greyer, which on a ghoul is saying something.] I… that ain\'t mine. Lotsa people are K.L. Kevin… Lefkowitz. Karl… Lamb.',
+          responses: [
+            { text: '[Speech 50] Kip. The Guard is going to find out anyway. Tell me now, and I\'ll speak for you.', check: { skill: 'speech', value: 50 }, next: 'confess', failNext: 'deny' },
+            { text: '[Strength 7] [Grab him by the collar.] Talk.', check: { special: 'S', value: 7 }, next: 'confess' },
+            { text: 'Lucky Lou says you owe him three hundred caps.', cond: () => L.flag('kip_known') === 'lou', next: 'confess' },
+            { text: 'Nice try. You\'re coming with me to the Captain.', next: 'deny' }] },
+        deny: { text: 'I ain\'t going nowhere with you! [He pulls a switchblade.] Stay back! STAY BACK!', onEnter() { const a = L.npc('neon_kip'); if (a) { a.setHostile(true); a.safeExempt = true; } }, responses: [{ text: '[Fight.]' }] },
+        confess: { text: 'Okay! OKAY! It\'s Slag. Slag and the Terminal Boys, from the Port Authority. I owed Lou three hundred and Slag paid it — said all I had to do was kill the lights at two, open the west gate, and he\'d… he\'d take the market. Tonight. Tonight at two. Please. They said nobody\'d get hurt.',
+          responses: [
+            { text: 'You\'re going to tell that to Captain Kincaid.', karma: 50, action: () => kipResolved('arrested'), next: 'arrest' },
+            { text: 'Run. And don\'t ever come back to the Neon.', next: 'flee' },
+            { text: 'How much is it worth to you to walk away?', next: 'bribe' }] },
+        arrest: { text: '[Kip slumps.] Yeah. Yeah, okay. [Two guards appear at your shoulder — the Captain\'s been watching. They march him off.] Two o\'clock. West gate. Don\'t let \'em in.', responses: [{ text: '[Leave.]' }] },
+        flee: { text: 'Thank you. THANK you. I\'m gone. You never saw me.', onEnter() { kipResolved('fled'); const a = L.npc('neon_kip'); if (a) { const g = N().has(['gate_s', 'entrance_south']); if (g) a.moveTo(g.x, g.z + 30); } }, responses: [{ text: '[Leave.]' }] },
+        bribe: { text: 'I… I got a hundred caps. That\'s everything. Everything! Take it!', responses: [{ text: 'Deal. Now run.', karma: -100, action: () => { L.giveCaps(100); kipResolved('fled'); } }, { text: 'Keep your caps. You\'re going to the Captain.', karma: 50, action: () => kipResolved('arrested'), next: 'arrest' }] },
+      },
+    });
+
+    // ---- Captain Mercy Kincaid ----
+    const tags = () => L.count('raider_tags'), fingers = () => L.count('bounty_finger');
+    const CAPT = { paid: 0 };
+    L.dialogue('dlg_neon_capt', {
+      start: () => (L.flag('met_kincaid') ? 'hello' : 'first'),
+      nodes: {
+        first: { text: 'Hold it. [She looks you over the way a butcher looks at a brahmin.] Smoothskin. Vault suit. Big eyes. Welcome to the Neon — I\'m Captain Mercy Kincaid, and the Neon Guard is me and everybody holding a gun in this square. No toll for the living. The dead pay double.',
+          onEnter() { L.setFlag('met_kincaid'); }, responses: [{ text: 'The dead pay double?', next: 'toll' }, { text: 'What are the rules?', next: 'rules' }, { text: 'Understood, Captain.', next: 'hello' }] },
+        toll: { text: 'Ferals. Raiders. Anything that walks in here dead or wanting you dead. They pay in lead. Twice. [Something that might be a smile.] You\'re fine. You got a face like a person.', responses: [{ text: 'And the rules?', next: 'rules' }, { text: 'Good to know.', next: 'hello' }] },
+        rules: { text: 'No shooting inside the gates. No stealing from the stalls. No starting fights with residents — they\'re old and they\'ve got nothing to lose. Holster your weapon when you\'re near my people and we\'ll never have a problem.', responses: [{ text: 'Understood.', next: 'hello' }] },
+        hello: { text: () => (L.flag('neon_guard_sergeant') ? 'Sergeant. Walls are quiet. What do you need?' : L.flag('neon_guard_member') ? 'Guardsman. Report.' : pick(['Smoothskin. Behaving?', 'Captain Kincaid. Make it quick, I\'ve got four gates and six guards.'])),
+          responses: [
+            { text: 'I hear you\'re hiring.', cond: () => !Q.isStarted('sq_neon_guard'), next: 'hire' },
+            { text: () => { const b = currentBounty(); return 'About the bounty on ' + (b ? b.name : '…') + '.'; }, cond: () => !!currentBounty(), next: 'bounty' },
+            { text: 'The job\'s done.', cond: () => Q.isActive('sq_neon_guard') && /^r[123]$/.test(Q.stage('sq_neon_guard') || ''), next: 'paid' },
+            { text: () => 'I have raider tags for you. (' + tags() + ' × 5 caps)', cond: () => !!L.flag('neon_guard_member') && tags() > 0, action: () => { const n = tags(); L.take('raider_tags', n); L.giveCaps(n * 5); return 'thanks'; } },
+            { text: () => 'I have bounty fingers. (' + fingers() + ' × 20 caps)', cond: () => fingers() > 0, action: () => { const n = fingers(); L.take('bounty_finger', n); L.giveCaps(n * 20); return 'thanks'; } },
+            { text: 'Kip Lasko cut the power. Slag\'s raiders hit the west gate at two.', cond: () => Q.stage('sq_neon_power') === 'defend' && !L.flag('capt_warned'), next: 'warn' },
+            { text: 'I\'m ready for the raid. [Wait until 1:50 AM]', cond: () => Q.stage('sq_neon_power') === 'defend' && !!L.flag('capt_warned') && !(G.time.hour >= 1.8 && G.time.hour < 5), action: () => waitForRaid() },
+            { text: 'Anything I should know about "K.L."?', cond: () => Q.stage('sq_neon_power') === 'culprit', next: 'kl' },
+            { text: 'What are the rules again?', next: 'rules' },
+            { text: 'Carry on, Captain.' }] },
+        thanks: { text: 'Good. Every one of these is one less problem at my gates.', responses: [{ text: 'Anything else?', next: 'hello' }, { text: 'Later.' }] },
+        hire: { text: 'Hiring? I\'m BEGGING. Three bounties on the Mayor\'s board, all within a day\'s walk. Bring them down, you get paid, you get a place on the wall. Do all three and I\'ll make you a Sergeant — I\'m short one, the last one got eaten. Interested?',
+          responses: [{ text: 'Sign me up.', action: () => { Q.start('sq_neon_guard'); L.setFlag('neon_guard_member'); spawnBounty(BOUNTIES[0]); }, next: 'sworn' }, { text: 'Not right now.', next: 'hello' }] },
+        sworn: { text: () => 'Then raise your right hand. …The other right. Do you swear to guard the Neon, its people, its lights and its terrible noodles? Good enough. First name on the board: ' + BOUNTIES[0].name + ', on the Public Library steps. Don\'t get shushed.', responses: [{ text: 'On my way.' }] },
+        bounty: { text: () => { const b = currentBounty(); return b ? b.text.replace(/^WANTED: /, '') : '…'; }, responses: [{ text: 'Consider it done.' }] },
+        paid: { text: () => { const i = CAPT.paid; const b = BOUNTIES[i]; return i < 2 ? b.name + ' is dead? Good. That\'s ' + b.pay + ' caps. Next name on the board is ' + BOUNTIES[i + 1].name + '. ' + BOUNTIES[i + 1].text.split('—')[0].replace(/^WANTED: /, '') : 'Gristle. The Gristle. [She takes a long breath.] You know how many of my people that thing ate? Sergeant. Kneel. …Stand up, I was joking about kneeling. Here — your beret. Wear it where the ferals can see it.'; },
+          onEnter() {
+            const i = CAPT.paid = Math.max(0, Math.min(2, Number((Q.stage('sq_neon_guard') || 'r1').slice(1)) - 1)); const b = BOUNTIES[i];
+            L.giveCaps(b.pay); L.setFlag('bounty_done_' + b.id);
+            if (b.karma) L.karma(b.karma, 'Neon Guard bounty: ' + b.name);
+            if (i < 2) { Q.setStage('sq_neon_guard', BOUNTIES[i + 1].stage); spawnBounty(BOUNTIES[i + 1]); }
+            else { L.give('q_neon_beret', 1); L.setFlag('neon_guard_sergeant'); Q.complete('sq_neon_guard'); L.news('The Neon Guard has a new Sergeant: a smoothskin from out of town who took down a super mutant war-chief called Gristle on Seventh Avenue. The Captain calls it "adequate."'); }
+          }, responses: [{ text: 'Thank you, Captain.' }] },
+        warn: { text: 'Two in the morning. West gate. [Her jaw works.] Kip. I bought that kid a drink on his first day. …Alright. I\'ll double the west wall. You — if you want to earn your keep, be at that gate at two.', onEnter() { L.setFlag('capt_warned'); }, responses: [{ text: 'I\'ll be there.', next: 'hello' }] },
+        kl: { text: 'K.L.? [She pulls a duty roster from her coat.] …Kip Lasko signed out a night pass for the west gate every night this week. Depot porter. Twitchy. I\'d start there.', onEnter() { kipKnown('capt'); }, responses: [{ text: 'Thanks, Captain.' }] },
+      },
+    });
+
+    // ---- Lucky Lou knows about Kip (inject into the dealer's rumours) ----
+    const lou = L.DIALOGUES.get('dlg_neon_dealer');
+    if (lou && lou.nodes && lou.nodes.hello && !lou.nodes.hello.responses.some((r) => r._kip)) {
+      lou.nodes.hello.responses.splice(4, 0, { _kip: true, text: 'Anybody around here go by "K.L."?', cond: () => Q.stage('sq_neon_power') === 'culprit', next: 'kip' });
+      lou.nodes.kip = { text: 'K.L.? Kip Lasko. Depot porter. Owes me three hundred caps — well, owed. Paid it off last week in one lump. Porter don\'t make three hundred in a year. Made me think somebody else is paying Kip\'s debts. Somebody who wants something.', onEnter() { kipKnown('lou'); }, responses: [{ text: 'Thanks, Lou.', next: 'hello' }] };
+    }
+
+    // ---- Lionel Fairweather & the Opry ----
+    L.dialogue('dlg_neon_director', N().sleepy({
+      start: () => (Q.stage('sq_neon_opry') === 'wig' && L.has('q_neon_wig') ? 'wigback' : 'hello'),
+      nodes: {
+        hello: { text: () => (L.flag('opry_star') ? 'My star! My STAR! The Opry has never been fuller. The Opry has never been this full of LIVING people. Well — one.' : Q.stage('sq_neon_opry') === 'show' ? 'Opening night, darling! Eight o\'clock! Be on that stage or I will personally die. Again.' : Q.stage('sq_neon_opry') === 'wig' ? 'Velvet won\'t go on without her wig. She says she\'s "naked up there." She\'s always naked up there — it\'s the radiation. Find that wig!' : pick(['Lionel Fairweather, artistic director of the Neon Opry. The only theatre in New York with a running show AND a running audience.', 'Art never dies, darling. It just smells a bit.'])),
+          responses: [
+            { text: 'I hear you need a leading player.', cond: () => !Q.isStarted('sq_neon_opry') || Q.stage('sq_neon_opry') === 'audition', next: 'audition' },
+            { text: 'What happened to your last lead?', cond: () => !L.flag('opry_star'), next: 'lead' },
+            { text: 'Goodbye, Lionel.' }] },
+        lead: { text: 'Mister Dalton Crane. Forty years in the role. Middle of "Shine On, Radioactive Moon," he looks at the audience, says "I can\'t do this anymore," and walks off the stage, out the stage door, and — last we heard — into the Hudson. Artists.', responses: [{ text: 'I could take his place.', next: 'audition' }, { text: 'Tragic.', next: 'hello' }] },
+        audition: { text: 'You?! A smoothskin? Well — beggars can\'t be choosers, and I\'m a beggar with a theatre. Show me something. Anything. Please.',
+          onEnter() { if (!Q.isStarted('sq_neon_opry')) Q.start('sq_neon_opry'); },
+          responses: [
+            { text: '[Charisma 6] [Sing a few bars of an old Vault-Tec jingle.]', check: { special: 'C', value: 6 }, next: 'aud_sing', failNext: 'aud_fail', retry: true },
+            { text: '[Speech 45] [Deliver a dramatic monologue about your vault\'s cafeteria.]', check: { skill: 'speech', value: 45 }, next: 'aud_speak', failNext: 'aud_fail', retry: true },
+            { text: '[Repair 35] Your spotlight\'s dying. I could be your stagehand instead.', check: { skill: 'repair', value: 35 }, next: 'aud_hand', failNext: 'aud_fail', retry: true },
+            { text: 'Let me prepare. I\'ll be back.' }] },
+        aud_sing: { text: '[Lionel dabs at an eye socket.] That was… that was the worst thing I have ever heard, and I have heard a Glowing One sing Puccini. The audience will ADORE you. You\'re hired!', onEnter() { opryCast('lead'); }, responses: [{ text: 'When do I start?', next: 'cast' }] },
+        aud_speak: { text: '"…and the Salisbury steak, oh, the Salisbury steak, it looked at me, and I at it, and we both knew…" [Lionel is openly weeping.] Stop. STOP. You\'re hired. You\'re a genius. You\'re a monster.', onEnter() { opryCast('lead'); }, responses: [{ text: 'When do I start?', next: 'cast' }] },
+        aud_hand: { text: '[You re-seat the spotlight\'s carbon arc and the stage floods with white light. Lionel gasps.] Light! LIGHT! Oh, you marvellous mechanic. You\'re our new stagehand — and our new walk-on, because frankly we need bodies.', onEnter() { opryCast('hand'); }, responses: [{ text: 'When do I start?', next: 'cast' }] },
+        aud_fail: { text: '[Silence. Somewhere in the back, Nicky Two-Thumbs is laughing so hard he\'s wheezing.] …Right. Well. Come back when you\'ve… practised. At anything.', responses: [{ text: 'I\'ll be back.' }] },
+        cast: { text: 'Opening night is the moment Velvet gets her wig back. Somebody STOLE it — right off the dummy head in her dressing room. She won\'t go on without it. Find the wig, and then be on that stage at eight o\'clock.', responses: [{ text: 'I\'ll find it.' }] },
+        wigback: { text: 'The WIG! You found the wig! [He clutches it like a newborn.] Velvet! VELVET! We have a show! Eight o\'clock, darling, eight o\'clock!', onEnter() { L.take('q_neon_wig', 1); L.setFlag('opry_wig_back'); Q.setStage('sq_neon_opry', 'show'); }, responses: [{ text: 'See you on stage.' }] },
+      },
+    }));
+    L.dialogue('dlg_neon_velvet', N().sleepy({
+      start: 'hello',
+      nodes: {
+        hello: { text: () => (Q.stage('sq_neon_opry') === 'wig' ? 'Don\'t look at me! I\'m NAKED! [She is fully clothed. She means the wig.] Someone stole my wig. Someone who LAUGHS too much. Someone with too many THUMBS.' : L.flag('opry_star') ? 'Darling! My co-star! Two hundred years and I\'ve never had a leading player who smelled of soap. It\'s refreshing. It\'s disgusting. Kiss kiss.' : pick(['Velvet Maloney. Yes, THE Velvet Maloney. Well — one of them.', 'Autographs after the show, darling.'])),
+          onEnter() { if (Q.stage('sq_neon_opry') === 'wig') L.setFlag('wig_thief_known'); },
+          responses: [{ text: 'How long have you been performing?', next: 'career' }, { text: 'Break a leg.' }] },
+        career: { text: 'Since before the bombs, darling. I was in the chorus of "Atomic Sweethearts" at the Winter Garden. Opening night was October 23rd, 2077. We never got to the second act. [She stares at nothing.] I\'ve been doing the second act ever since.', responses: [{ text: 'Break a leg.' }] },
+      },
+    }));
+    L.dialogue('dlg_neon_opry_show', {
+      start: 'curtain',
+      nodes: {
+        curtain: { speaker: 'Lionel Fairweather', text: '[The house lights dim. The spotlight finds you. Two hundred ghoul faces — and some of their faces are only partly there — stare up at you. Lionel hisses from the wings:] Your line, darling! YOUR LINE!',
+          responses: [
+            { text: '"Ladies and gentlemen and… others! Welcome to the Neon!"', action: () => { L.incFlag('opry_score', 2); applause(3); }, next: 'act2' },
+            { text: '[Charisma 7] [Ad-lib] "I was told there\'d be a smaller crowd. And more skin."', check: { special: 'C', value: 7 }, action: () => { L.incFlag('opry_score', 3); applause(5); }, next: 'act2', failNext: 'act2_bad' },
+            { text: '"Uh… hi."', action: () => { boo(2); }, next: 'act2' }] },
+        act2_bad: { text: '[The joke dies somewhere around the third row. Nicky Two-Thumbs boos. Velvet sweeps on stage to save the scene.]', responses: [{ text: '[Carry on.]', next: 'act2' }] },
+        act2: { speaker: 'Velvet Maloney', text: '[Velvet takes your arm and leads into the duet — "Mind the Face, Darling." It\'s your verse.]',
+          responses: [
+            { text: '[Sing it straight, from the heart.]', action: () => { L.incFlag('opry_score', L.special('C') >= 5 ? 2 : 1); applause(3); }, next: 'finale' },
+            { text: '[Speech 50] [Turn it into a comedy number.]', check: { skill: 'speech', value: 50 }, action: () => { L.incFlag('opry_score', 3); applause(6); }, next: 'finale', failNext: 'finale' },
+            { text: '[Dance instead. Badly. With conviction.]', action: () => { L.incFlag('opry_score', L.special('A') >= 6 ? 2 : 1); applause(2); }, next: 'finale' }] },
+        finale: { speaker: 'Lionel Fairweather', text: () => ((Number(L.flag('opry_score')) || 0) >= 5 ? '[The finale: "Shine On, Radioactive Moon." The whole company joins you. By the last note, the audience is on its feet — some of them on somebody else\'s feet. The applause shakes dust out of the rafters.]' : '[The finale: "Shine On, Radioactive Moon." You mostly remember the words. The audience claps politely — for ghouls, which means a wet, uneven patter and one enthusiastic brahmin.]'),
+          responses: [{ text: '[Take a bow.]', action: () => opryFinish() }] },
+      },
+    });
+
+    // ---- Nicky and the wig (the shared townsfolk tree gets a line for him) ----
+    const folk = L.DIALOGUES.get('dlg_neon_folk');
+    if (folk && folk.nodes && folk.nodes.hello && !folk.nodes.hello.responses.some((r) => r._wig)) {
+      folk.nodes.hello.responses.splice(0, 0, { _wig: true, text: 'Velvet\'s wig. I know you took it, Nicky.', cond: (a) => !!a && a.id === 'neon_nicky' && Q.stage('sq_neon_opry') === 'wig' && !L.has('q_neon_wig') && !L.flag('opry_wig_back'), next: 'wig' });
+      folk.nodes.wig = { text: 'Me?! Take the WIG? [His two thumbs twitch.] …Okay, it was funny, okay? She sings flat and she\'s got a wig like a Vertibird landing pad. What\'s it worth to you?',
+        responses: [
+          { text: '[Speech 40] If Velvet doesn\'t sing, there\'s no show for you to heckle.', check: { skill: 'speech', value: 40 }, next: 'wig_ok', failNext: 'wig_pay' },
+          { text: '[Strength 6] [Pin him to the wall.] Give me the wig or you\'ll be heckling through a straw.', check: { special: 'S', value: 6 }, karma: -15, next: 'wig_scared', failNext: 'wig_pay' },
+          { text: 'Thirty caps. Final offer.', cond: () => L.caps() >= 30, action: () => { if (L.pay(30)) { L.give('q_neon_wig', 1); } }, next: 'wig_sold' },
+          { text: 'Never mind.' }] };
+      folk.nodes.wig_ok = { text: '…Huh. No show, no heckling. No heckling, no Nicky. You\'re right, you\'re RIGHT. [He pulls the enormous wig out of his coat.] Here. Tell her it was a critic.', onEnter() { L.give('q_neon_wig', 1); }, responses: [{ text: 'Thanks, Nicky.' }] };
+      folk.nodes.wig_scared = { text: '[His feet leave the ground. Both thumbs go up — the universal sign of surrender.] OKAY! Okay! Jeez! [The wig is shoved into your chest.] It\'s a JOKE, pal. It\'s COMEDY. Nobody in this town can take a joke anymore…',
+        onEnter() { L.give('q_neon_wig', 1); L.setFlag('nicky_roughed'); }, responses: [{ text: '[Let him down.]' }] };
+      folk.nodes.wig_pay = { text: 'Nice speech. Thirty caps.', responses: [{ text: 'Fine. (30 caps)', cond: () => L.caps() >= 30, action: () => { if (L.pay(30)) L.give('q_neon_wig', 1); }, next: 'wig_sold' }, { text: 'Forget it.' }] };
+      folk.nodes.wig_sold = { text: 'Pleasure doing business. [The wig emerges from his coat like a startled animal.]', responses: [{ text: '[Leave.]' }] };
+    }
+
+    // ---- Big Sal and the Smoothskin Club (replaces 45's tree; same opening lines) ----
+    // ---- The Subway Speakeasy (Whisper only spawns once the interior stream builds speakeasy_bar; nothing points here before) ----
+    L.dialogue('dlg_neon_whisper', N().sleepy({
+      start: () => (N().place('speakeasy') ? (L.flag('met_whisper') ? 'hello' : 'first') : 'closed'),
+      nodes: {
+        closed: { text: '[A chained gate across the stairs. Somebody has painted "NO" on it. Twice.]', responses: [{ text: '[Leave.]' }] },
+        first: { text: '[A thin ghoul polishing a glass that will never be clean. He speaks without moving his lips.] You found the stairs. Most folks walk right past. That\'s the idea. I\'m Whisper. What you drink down here, you didn\'t drink. What you hear, you didn\'t hear.',
+          onEnter() { L.setFlag('met_whisper'); }, responses: [{ text: 'What do you pour?', barter: true }, { text: 'Why hide a bar under a town that loves bars?', next: 'why' }, { text: 'I was never here.' }] },
+        hello: { text: () => pick(['…', 'Usual? You don\'t have a usual. Sit.', 'Keep your voice down. The trains are sleeping.']),
+          responses: [{ text: 'Pour me something.', barter: true }, { text: 'Hear anything?', next: 'hear' }, { text: 'Why hide a bar under a town that loves bars?', next: 'why' }, { text: 'Goodbye.' }] },
+        why: { text: 'Upstairs, the Mayor taxes the drink, the Captain counts the drunks, and Sal decides who\'s pretty enough. Down here nobody counts anybody. Crowe knows. Crowe drinks here Thursdays. Crowe doesn\'t know that I know.',
+          responses: [{ text: 'Your secret\'s safe.', next: 'hello' }] },
+        hear: { text: () => pick([
+          'Terminal Boys have been walking the Port Authority ramps at night. Counting our guards. Somebody should count them back.',
+          'There\'s a service door behind the Rad Room\'s jukebox. Goes nowhere. Or somewhere. I stopped asking in 2150.',
+          'Lucky Lou marks his cards with his thumbnail. Only the aces. Only when he\'s losing.',
+          'Doc Broadway gives away medicine to anybody who can\'t pay. Then he tells everyone he doesn\'t. Let him.']),
+          responses: [{ text: 'Thanks.', next: 'hello' }] },
+      },
+    }));
+    L.dialogue('dlg_neon_sal', {
+      start: () => (clubOk() ? 'member' : 'hello'),
+      nodes: {
+        hello: { text: () => pick(['Smoothskin Club. Members only. Members are ghouls. You are not a ghoul. You see the problem.', 'You got a face like a person. That\'s the problem, pal. Club\'s for folks with faces like ME.', 'No ferals, no raiders, no smoothskins. You\'re one of those. Probably the last one.']),
+          onEnter() { if (!Q.isStarted('sq_neon_club')) Q.start('sq_neon_club'); },
+          responses: [
+            { text: '[Speech 50] Sal. A club with no guests is just a room full of ghouls. Let me in and give them something to talk about.', check: { skill: 'speech', value: 50 }, next: 'in', failNext: 'no' },
+            { text: 'Want to hear a joke?', next: 'joke' },
+            { text: 'How about now? [Wearing ghoul wear]', cond: () => L.equipped('ghoul_wear'), next: 'outfit' },
+            { text: 'Would a hundred and fifty caps make me a ghoul?', cond: () => L.caps() >= 150, next: 'bribe' },
+            { text: 'Seen anything strange lately?', next: 'strange' },
+            { text: 'Never mind.' }] },
+        no: { text: 'Heh. Nice try. You talk pretty for a pink thing. Still no.', responses: [{ text: 'Fine.' }] },
+        joke: { text: 'A joke. [He folds his arms, which takes a while.] Alright. Make me laugh. You get one shot.',
+          responses: [
+            { text: '"Why don\'t ghouls ever get sunburned? Because they already peeled."', next: 'joke_bad' },
+            { text: '"A smoothskin walks into a bar. The ghouls say: why the long face? He says: at least I\'ve still GOT one."', next: 'in' },
+            { text: '"What do you call a ghoul in a tuxedo? Dead sharp."', next: 'joke_bad' }] },
+        joke_bad: { text: '[Silence. A bit of his ear flakes off in the wind.] I heard that one in 2090. It wasn\'t funny then, either.', responses: [{ text: 'Tough crowd.' }] },
+        outfit: { text: '[Sal looks you up and down. Then down and up.] You look like a ghoul who lost a bet with a better-looking ghoul. …Ha! Alright. ALRIGHT. Go on in, you ugly son of a gun.', responses: [{ text: 'Thanks, Sal.', action: () => clubAdmit('outfit') }] },
+        bribe: { text: 'A hundred and fifty caps? [He counts them twice.] …Congratulations. You\'re a ghoul. Honorary. Don\'t let it go to your head. Your head\'s ugly enough.', responses: [{ text: 'Thanks, Sal.', action: () => { if (L.pay(150)) clubAdmit('bribe'); } }] },
+        in: { text: '[Sal laughs — a wet, rattling, glorious sound — and something comes loose from his lip.] Aw, hell. Alright, smoothskin. You\'re in. Honorary ghoul. Here — your card. Lose it and I eat you.',
+          onEnter() { clubAdmit('talk'); }, responses: [{ text: 'Thanks, Sal.' }] },
+        member: { text: () => (clubInterior() ? pick(['Evening, honorary ghoul. Smiley\'s on at ten. Laugh or he cries.', 'Go on in. Wipe your feet. Actually, wipe your face, you\'re too pink.', 'Member. Welcome back.'])
+          : pick(['Evening, honorary ghoul. Club\'s shut while the roof\'s being patched — members drink on the house tab at the Rad Room till we reopen.', 'Member. Card still works at every stall in the square. Club\'s closed for repairs. Don\'t ask, it involves a Deathclaw and a skylight.'])), responses: [{ text: 'Seen anything strange lately?', next: 'strange' }, { text: 'Thanks, Sal.' }] },
+        strange: { text: 'Black helmets. Eyebots floating over the square at night, playing marching music. And a big green guy in a traffic-light crown hanging off the Empire State yelling about a queen. So — normal Tuesday.', responses: [{ text: 'Right.' }] },
+      },
+    });
+    L.dialogue('dlg_neon_smiley', {
+      start: 'hello',
+      nodes: {
+        hello: { text: () => pick(['A SMOOTHSKIN! In MY club! Folks, look, it\'s like a peeled potato that learned to walk! Give it up for the potato!', 'Good evening, good evening! I\'d say break a leg, but in here they just fall off!', 'You know what the difference is between a ghoul and a smoothskin? About two hundred years and one very bad day!']),
+          onEnter() { if (Q.stage('sq_neon_club') === 'meet') { L.later(1, () => Q.complete('sq_neon_club')); } },
+          responses: [{ text: '[Laugh.]', next: 'laugh' }, { text: '[Heckle him.]', next: 'heckle' }, { text: '[Leave.]' }] },
+        laugh: { text: 'SEE? The potato gets it! Folks, I love this potato. Drinks on the potato!', responses: [{ text: 'Wait — what?', next: 'hello' }, { text: '[Leave.]' }] },
+        heckle: { text: 'Oh-ho! It HECKLES! Buddy, I was heckled by the atom bomb. You\'re gonna have to do better than that. Nicky! Nicky, show him how it\'s done!', responses: [{ text: '[Leave with dignity.]' }] },
+      },
+    });
+
+    // ---- Eustace Byrd (caravan master) ----
+    L.dialogue('dlg_neon_wagon', {
+      start: 'hello',
+      nodes: {
+        hello: { text: () => (EXP.run && !EXP.done ? 'What are you doing here? Your wagon\'s rolling — go!' : pick(['Eustace Byrd, wagonmaster of the Neon Depot. Looking for work or looking for trouble? We pay for one of those.', 'Brahmin don\'t load themselves, friend. What do you need?'])),
+          responses: [
+            { text: 'You need an escort?', cond: () => !EXP.run && !!nextRun(), next: 'job' },
+            { text: 'When do the caravans come in?', next: 'sched' },
+            { text: 'Tell me about the Depot.', next: 'depot' },
+            { text: 'Goodbye.' }] },
+        job: { text: () => { const r = nextRun(); return 'The Neon Express — ' + r.cargo + ', bound for ' + r.name + '. ' + r.driver + ' drives. You walk alongside and keep the raiders off. ' + r.pay + ' caps on arrival. The Terminal Boys hit about every other run, so bring a real gun.'; },
+          responses: [{ text: 'I\'ll take it. Let\'s roll.', action: () => { const r = nextRun(); if (r) { if (Q.isFailed(r.q)) L.STATE.delete(r.q); /* a lost wagon can be re-run (a fresh driver id each time) */ Q.start(r.q); if (!startExpress(r)) Q.fail(r.q); } } }, { text: 'Not right now.', next: 'hello' }] },
+        sched: { text: 'Freight caravan rolls in from the south gate every morning around eight, trades at the Depot through the afternoon, and heads out at four. Crazy Eddie Moss stops by on his loop, too. You want brahmin, we got brahmin. You want brahmin that don\'t kick — that\'s extra.', responses: [{ text: 'Thanks.', next: 'hello' }] },
+        depot: { text: 'Used to be the bus terminal\'s overflow lot. Now it\'s the only place south of the Park where a caravan can sleep with both heads on. The Captain keeps the walls, I keep the wagons. Neon eats because of us, and don\'t let Crowe tell you different.', responses: [{ text: 'Got it.', next: 'hello' }] },
+      },
+    });
+  });
+
+  function nextRun() { return RUNS.find((r) => !Q.isComplete(r.q) && !Q.isActive(r.q)) || null; }
+  function ballPartsCheck() { if (Q.stage('sq_neon_ball') === 'parts' && L.has('q_neon_winch_motor') && L.has('q_neon_cable')) Q.setStage('sq_neon_ball', 'install'); }
+  function opryCast(role) { L.setFlag('opry_role', role); if (Q.stage('sq_neon_opry') === 'audition') Q.setStage('sq_neon_opry', L.flag('opry_wig_back') ? 'show' : 'wig'); }
+  // walked out of the show (Esc) before the bow: the curtain can go up again a little later (was stuck until a load)
+  G.events.on('dialogueEnd', (actor, id) => {
+    if (id === 'dlg_neon_opry_show' && Q.isActive('sq_neon_opry') && L.flag('opry_show_running')) L.later(20, () => { if (Q.isActive('sq_neon_opry')) L.setFlag('opry_show_running', false); });
+  });
+  function opryFinish() {
+    L.setFlag('opry_show_running', false);
+    const sc = Number(L.flag('opry_score')) || 0;
+    L.setFlag('opry_star', true);
+    L.giveCaps(L.flag('opry_role') === 'hand' ? 120 : sc >= 5 ? 300 : 200);
+    L.give('q_neon_program', 1);
+    Q.complete('sq_neon_opry');
+    if (sc >= 5) L.news('Tonight\'s Neon Revue brought the house down — reportedly in a good way. The critics (Nicky Two-Thumbs) called the new smoothskin lead "not the worst thing I\'ve seen, and I\'ve seen a Behemoth."');
+  }
+  function clubOk() { return !!L.flag('club_member'); }
+  /** The club INTERIOR (neon_interiors cell: club_host / club_stage anchors + the street door) — Smiley Pete's act needs it. */
+  function clubInterior() { return !!(N().place('club') && N().place('club_door')); }
+  function clubAdmit(how) {
+    if (L.flag('club_member')) return;
+    L.setFlag('club_member', how); L.give('q_neon_club_card', 1);
+    if (Q.stage('sq_neon_club') === 'in') {
+      if (clubInterior() && L.alive('neon_smiley')) Q.setStage('sq_neon_club', 'meet');
+      else { L.setFlag('club_card_only'); Q.complete('sq_neon_club'); L.later(1.5, () => L.notify('Honorary ghoul: the Neon\'s market traders now give you the ghoul price.')); }
+    }
+    // honorary ghouls get the ghoul price at the market
+    for (const id of ['neon_tillie', 'neon_brass', 'neon_mags', 'neon_joe', 'neon_candy', 'neon_willie']) { const a = L.npc(id); if (a && a.merchant) a.merchant.markup = Math.min(a.merchant.markup || 1, 0.93); }
+  }
+  function waitForRaid() {
+    G.fadeTransition(() => {
+      const h = G.time.hour, dh = ((1.83 - h) + 24) % 24;
+      if (!G.isStub('rpg') && G.rpg.wait) { try { G.rpg.wait(dh); } catch (e) { G.time.hour = 1.83; } } else G.time.hour = 1.83;
+      L.notify('You wait with the guards on the west wall…');
+    }, 1.2);
+  }
+
+  // ------------------------------------------------------------------
+  // World: the Ball winch, the breaker panel, the club door, Smiley
+  // ------------------------------------------------------------------
+  L.hook('world', function () {
+    const S = ballSpots();
+    if (S.base) G.world.addInteractable({ pos: L.V3(S.base.x, (S.base.y || 0) + 1.1, S.base.z), radius: 1.2, label: 'Ball Winch', verb: 'Examine', priority: 0.7,
+      enabled: () => Q.stage('sq_neon_ball') === 'install' || Q.stage('sq_neon_ball') === 'parts', onInteract() { L.startDialogue('dlg_neon_winch', null); } });
+    const pp = powerPanelSpot();
+    if (pp && !N().has(['power_generator', 'power_panel'])) {
+      const c = N().has(['plaza_centre', 'center']);
+      try { buildCabinet({ x: pp.x, y: pp.y, z: pp.z, yaw: c ? Math.atan2(c.x - pp.x, c.z - pp.z) : 0 }); } catch (e) { G.reportError('quests:neon cabinet', e); }
+    }
+    if (pp) G.world.addInteractable({ pos: L.V3(pp.x, (pp.y || 0) + 1.2, pp.z), radius: 1, label: 'Main Breaker Panel', verb: 'Inspect', priority: 0.7,
+      enabled: () => Q.isStarted('sq_neon_power'), onInteract() { L.startDialogue('dlg_neon_panel', null); } });
+    // The club door (interior stream): only honorary ghouls get through
+    const cd = N().has(['club_door']);
+    if (cd) {
+      for (const d of L.doors()) {
+        const p = d.def && d.def.pos, t = d.def && d.def.target; if (!p || !t || d._neonClub) continue;
+        if (p.x >= IXM() || Math.hypot(p.x - cd.x, p.z - cd.z) > 5 || t.x < IXM()) continue;
+        d._neonClub = true;
+        const prev = d.enabled;
+        d.enabled = () => clubOk() && (!prev || prev());
+        G.world.addInteractable({ pos: p, radius: d.radius || 1.2, label: 'Smoothskin Club (talk to Sal)', verb: 'Enter', priority: 0.5, enabled: () => !clubOk(),
+          onInteract() { L.say('neon_sal', pick(['Whoa, whoa. Members only, pink.', 'Where do you think YOU\'RE going?']), 3); L.sfx('door_locked'); } });
+      }
+    }
+  });
+  L.hook('spawn', function () {
+    // motor pickup in the library (once)
+    if (!Q.isComplete('sq_neon_ball') && !L.flag('neon_ball_fixed') && !L.has('q_neon_winch_motor')) { const m = motorSpot(); if (m) L.pickup('neon_motor', 'q_neon_winch_motor', 1, m); }
+    // Big Sal moves to the club door once the club exists (45 spawns him at the older anchors)
+    const sal = L.npc('neon_sal'); const cb = N().spot(['club_bouncer', 'club_door'], null, { requireAnchor: true });
+    if (sal && cb && !sal.dead) { sal.pos.set(cb.x, cb.y, cb.z); sal.home = { x: cb.x, z: cb.z, r: 1.5 }; if (isFinite(cb.yaw)) { sal.yaw = cb.yaw; sal.homeYaw = cb.yaw; } }
+    // Smiley Pete (only inside the club)
+    const sm = clubInterior() ? N().spot(['club_host', 'club_stage'], null, { requireAnchor: true }) : null;
+    if (Q.stage('sq_neon_club') === 'meet' && (!sm || L.isDead('neon_smiley'))) { L.setFlag('club_card_only'); Q.complete('sq_neon_club'); }
+    if (sm) L.spawnNPC({ id: 'neon_smiley', type: 'human', ghoul: true, name: 'Smiley Pete', outfit: 'merchant', gender: 'm', hat: 'bowler', hatColor: 0x222222, faction: 'ghouls', ai: 'static',
+      pos: { x: sm.x, y: sm.y, z: sm.z }, yaw: sm.yaw || 0, home: { x: sm.x, z: sm.z, r: 1 }, dialogue: 'dlg_neon_smiley', voice: 'settler', level: 4,
+      barks: { idle: ['Is this thing on? Is ANYTHING on?', 'I killed last night. Well, the radiation did. I just told the jokes.'], greet: ['Hey, the potato\'s back!'] } });
+    // Kip exists while the power plot is live
+    const ps = Q.stage('sq_neon_power');
+    if (ps === 'culprit' || ps === 'confront') spawnKip();
+    // bounties in progress
+    const b = currentBounty(); if (b) spawnBounty(b);
+    RAID.spawned = false; RAID.actors = [];
+    L.setFlag('opry_show_running', false);
+    // an escort in progress resumes where the save left it (flag neon_exp_state); old saves restart at the Depot
+    for (const r of RUNS) if (Q.isActive(r.q) && !EXP.run) {
+      const st = L.flag('neon_exp_state');
+      if (!startExpress(r, st && st.q === r.q ? st : null)) Q.fail(r.q);
+      break;
+    }
+  });
+  L.hook('reset', function () { BALL.seq = null; BALL.gatherOn = false; dropBallMesh(); blackoutEnd(true); if (BALL.sprite) { try { if (BALL.sprite.parent) BALL.sprite.parent.remove(BALL.sprite); } catch (e) { /* ignore */ } BALL.sprite = null; } RAID.actors = []; RAID.spawned = false; EXP.run = null; EXP.driver = null; EXP.brahmin = null; });
+  G.events.on('questUpdated', (q) => { if (q && q.id === 'sq_neon_power' && Q.stage('sq_neon_power') === 'culprit') spawnKip(); });
+  G.events.on('itemAdded', (id) => {
+    if (id === 'q_neon_winch_motor' || id === 'q_neon_cable') { if (!Q.isStarted('sq_neon_ball') && id === 'q_neon_winch_motor') Q.start('sq_neon_ball'); ballPartsCheck(); }
+    if (id === 'q_neon_pay_note' && Q.stage('sq_neon_power') === 'culprit') kipKnown('note');
+  });
+  G.events.on('actorKilled', (a) => {
+    if (!a) return;
+    const b = BOUNTIES.find((x) => x.id === a.id);
+    if (b && Q.stage('sq_neon_guard') === b.stage) { Q.setStage('sq_neon_guard', 'r' + (BOUNTIES.indexOf(b) + 1)); L.notify(b.name + ' is dead. Report to Captain Kincaid.'); }
+    // Sprocket is the only source of the Ball's cable: if she dies first, the spool is on her (lootable)
+    if (a.id === 'neon_sprocket' && !Q.isComplete('sq_neon_ball') && !L.flag('neon_ball_fixed') && !L.has('q_neon_cable') && Array.isArray(a.inventory)) a.inventory.push(['q_neon_cable', 1]);
+    if (a.id === 'neon_smiley' && Q.isActive('sq_neon_club') && Q.stage('sq_neon_club') === 'meet') { L.setFlag('club_card_only'); Q.complete('sq_neon_club'); }
+    if (a.id === 'neon_kip' && (Q.stage('sq_neon_power') === 'confront' || Q.stage('sq_neon_power') === 'culprit')) { L.setFlag('kip_gone'); kipResolved('dead'); if (Q.stage('sq_neon_power') === 'culprit') Q.setStage('sq_neon_power', 'defend'); }
+  });
+
+  let t4 = 0;
+  L.hook('update', function (dt) {
+    if (dt <= 0) return;
+    if (BALL.seq) { try { tickDrop(dt); } catch (e) { G.reportError('quests:neon ball', e); BALL.seq = null; } }
+    try { expressTick(dt); } catch (e) { G.reportError('quests:neon express', e); cleanupExpress(); }
+    t4 += dt; if (t4 < 0.5) return; t4 = 0;
+    try { ballTick(); } catch (e) { G.reportError('quests:neon ballTick', e); }
+    try { raidTick(); } catch (e) { G.reportError('quests:neon raid', e); }
+    try { blackoutTick(0.5); } catch (e) { G.reportError('quests:neon blackout', e); BLACK.on = false; }
+    try { showTick(); } catch (e) { G.reportError('quests:neon show', e); }
+  });
+
+  // Debug (dev console)
+  Q.debug.neonBall = () => { L.setFlag('neon_ball_fixed', 'debug'); G.time.hour = 23.9; };
+  Q.debug.neonRaid = () => { if (!Q.isStarted('sq_neon_power')) Q.start('sq_neon_power'); Q.setStage('sq_neon_power', 'defend'); G.time.hour = 1.97; };
+  L.neonQuests = { startDrop, spawnRaid, spawnBounty, BOUNTIES, RUNS, startExpress, EXP, clubAdmit, ballSpots };
+})();
+

@@ -1,0 +1,1510 @@
+/* src/combat/20_ai.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — COMBAT: AI
+ * Owned by: combat.
+ *
+ * Perception (sight cone + LOS + sneak/Perception/light/movement, hearing),
+ * the per-actor state machine
+ *     dormant → idle(wander|guard|patrol|sit|merchant|static) ⇄ move / follow
+ *            → search (investigate) → combat → flee / cower → dead
+ * and one combat behaviour per archetype:
+ *   humanoid (ranged: cover-seeking, strafing, bursts, reloads, grenades, flee
+ *   at low HP; melee: rush & swing), mutant (advancing gunner/brute),
+ *   behemoth (slow ground-slam boss), ghoul (zig-zag sprint + lunge; Glowing
+ *   One radiation burst heals ferals), deathclaw (roar, charge, swipe with
+ *   knockback), swarm (radroach scuttle, mole rat burrow), dog (lunge),
+ *   flyer (bloatfly hover & spit), robot (protectron eye lasers), handy
+ *   (Mister Gutsy flamer + saw), eyebot (orbit & zap), mirelurk (charge,
+ *   shell-turtle when hurt), queen (acid spit volleys + slam).
+ * Steering: G.world.moveCircle + feeler raycasts + stuck detection detours.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const THREE = window.THREE;
+  const C = G.__cmb;
+  const U = G.util;
+
+  const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3(), _d = new THREE.Vector3();
+  const _e = new THREE.Vector3(), _f = new THREE.Vector3();
+  const now = () => G.time.elapsed;
+
+  // ------------------------------------------------------------------
+  // Init per actor
+  // ------------------------------------------------------------------
+  C.initAI = function (a, def) {
+    a.aiMode = def.ai || 'wander';
+    a.speed = 0; a.vel = new THREE.Vector3();
+    a.nextPerceive = now() + Math.random() * 0.4;
+    a.nextThink = now() + Math.random() * 2;
+    a.attackCd = 0; a.burstLeft = 0; a.reloadT = 0; a.aimT = 0;
+    a.lastSeenT = -99; a.canSeeTarget = false;
+    a.stuckT = 0; a.detourT = 0; a.detour = null; a.feelT = 0; a.avoid = null;
+    a.lastPos = new THREE.Vector3().copy(a.pos);
+    a.coverPos = null; a.coverT = 0; a.strafeDir = Math.random() < 0.5 ? -1 : 1; a.strafeT = 0;
+    a.grenadeCd = now() + 6 + Math.random() * 8;
+    a.fledOnce = false;
+    a.holdPos = !!def.holdPos;
+    a.homeYaw = a.yaw;
+    if (a.aiMode === 'follow') a.follow('player');
+    // Feral ghouls sometimes lie dormant among the corpses (they get up when you come close)
+    if (def._dormantOk && a.td.dormantChance && Math.random() < a.td.dormantChance) { a.setState('dormant'); a.anim('dead'); }
+    else a.anim('idle');
+    if (a.aiMode === 'sit') a.anim('sit');
+  };
+
+  // ------------------------------------------------------------------
+  // Perception
+  // ------------------------------------------------------------------
+  /** How visible the player is right now (before distance/cone). */
+  function playerVisibility() {
+    const P = G.player;
+    let v;
+    if (P.sneaking) {
+      const sneak = C.skill('sneak', 15);
+      v = Math.max(0.08, 1 - sneak / 125) * (P.moveSpeed > 0.4 ? 1.25 : 0.5);
+      if (C.hasPerk('ninja') || C.hasPerk('silent_running')) v *= 0.85;
+    } else v = P.sprinting ? 4.5 : 3.5;
+    // Light: night and darkness help; the Pip-Boy light gives you away
+    const interior = G.LAYOUT.isInterior(P.pos.x);
+    let dark = false;
+    try { dark = !interior && !G.isStub('atmos') && G.atmos.isNight && G.atmos.isNight(); } catch (e) { dark = false; }
+    if (!dark && !interior && G.isStub('atmos')) { const h = G.time.hour; dark = h < 5.5 || h > 20.5; }
+    if (dark) v *= 0.55;
+    if (interior) v *= 0.8;
+    if (P.lightOn) v *= 1.7;
+    return v;
+  }
+  C.playerVisibility = playerVisibility;
+
+  /** Enemy actors (not player) visible to a, nearest first (cheap: distance + LOS for nearest few). */
+  function scanActorEnemies(a) {
+    let best = null, bd = a.sight * 0.8;
+    for (const o of C.list) {
+      if (o === a || o.dead || !o.inScene || o.state === 'dormant' || o.burrowed) continue;
+      const d = Math.hypot(o.pos.x - a.pos.x, o.pos.z - a.pos.z);
+      if (d >= bd) continue;
+      if (!a.isEnemy(o)) continue;
+      // Leash (integration): NPCs defending a home spot don't start faction fights far from it — keeps the
+      // Chrysler raiders and the Grand Central guards from wiping each other out before the player arrives.
+      if (a.home && a.following !== 'player' && Math.hypot(o.pos.x - a.home.x, o.pos.z - a.home.z) > (a.home.r || 8) + 16) continue;
+      if (d > 4 && !inCone(a, o.pos, a.state === 'combat' ? 2.2 : 1.3)) continue;
+      if (!G.world.lineOfSight(a.eyePos(_a), o.centerPos(_b))) continue;
+      best = o; bd = d;
+    }
+    return best;
+  }
+  /** Posted (holdPos) shooters lean over their ledge/parapet: sight lines and shots start ~2 m out
+   *  toward the target so the perch's own floor/parapet doesn't block steep downward views. */
+  C.leanOrigin = function (a, origin, toward) {
+    if (!a.holdPos) return origin;
+    const dx = toward.x - origin.x, dz = toward.z - origin.z, h = Math.hypot(dx, dz);
+    if (h < 3) return origin;
+    const k = Math.min(2.2, h * 0.3) / h;
+    origin.x += dx * k; origin.z += dz * k;
+    return origin;
+  };
+  function inCone(a, p, halfAngle) {
+    const dx = p.x - a.pos.x, dz = p.z - a.pos.z; const d = Math.hypot(dx, dz) || 1;
+    const fx = -Math.sin(a.yaw), fz = -Math.cos(a.yaw);
+    return (dx * fx + dz * fz) / d > Math.cos(halfAngle);
+  }
+
+  function perceive(a, dtp) {
+    const P = G.player;
+    const wantsPlayer = a.isEnemy('player');
+    const d = a.distToPlayer();
+    const inInterior = G.LAYOUT.isInterior(a.pos.x) === G.LAYOUT.isInterior(P.pos.x);
+    let sees = false;
+    if (P.alive && inInterior && d < a.sight * 1.2 && Math.abs(P.pos.y - a.pos.y) < (a.holdPos ? 150 : 40)) {
+      const combatish = a.state === 'combat' || a.state === 'search';
+      // posted snipers scan a wide arc from their perch
+      const cone = d < 3 ? 3.2 : a.holdPos ? (combatish ? 2.6 : 1.8) : (combatish ? 1.9 : 1.2);
+      if (inCone(a, P.pos, cone)) {
+        _b.set(P.pos.x, P.pos.y + (P.sneaking ? 0.9 : 1.3), P.pos.z);
+        sees = G.world.lineOfSight(C.leanOrigin(a, a.eyePos(_a), _b), _b);
+      }
+    }
+    // Close-range hearing/feel: an un-sneaking player right behind you gets noticed
+    const hearR = (P.sneaking ? 1.5 : 4 + a.perception * 0.8) * (P.moveSpeed > 0.5 ? 1.4 : 1);
+    const heard = !sees && P.alive && inInterior && d < hearR && Math.abs(P.pos.y - a.pos.y) < 4;
+    a.seesPlayer = sees;
+    if (sees) {
+      a.lastPlayerSeen = now();
+      if (wantsPlayer && a.target === 'player') { a.lastSeenT = now(); a.lastKnown = a.lastKnown || new THREE.Vector3(); a.lastKnown.copy(P.pos); }
+    }
+    // Awareness of the player (detection meter)
+    if (wantsPlayer && a.state !== 'combat') {
+      // Trespass garrison (UN Plaza before MQ04): warnings instead of opening fire (40_population)
+      const hold = !!(a.warden && C.wardenHold && C.wardenHold(a));
+      if (sees) {
+        const perF = 0.55 + a.perception * 0.09;
+        const distF = Math.pow(C.clamp(1 - d / (a.sight * perF), 0, 1), 0.8) * 2;
+        let rate = playerVisibility() * perF * distF;
+        const moving = P.moveSpeed > 0.4;
+        // A still figure is much harder to pick out (sneaking already folds movement in)
+        if (!P.sneaking && !moving) rate *= 0.5;
+        if (a.state === 'search') rate *= 1.6;
+        if (a.headCrippled) rate *= 0.5;
+        // Reaction window ([CAUTION]): beyond 8 m nobody snaps onto you instantly
+        if (d > 8) rate = Math.min(rate, noticeCap(a, moving));
+        // …but right in their face, or while their friends are already shooting at you, it's instant
+        if ((!P.sneaking && d < 4.5) || allyFightingPlayer(a)) rate = Math.max(rate, 12);
+        a.awareness += rate * dtp;
+        a.cautionAt = (a.cautionAt || new THREE.Vector3()).copy(P.pos);
+      } else if (heard) {
+        a.awareness += (P.sneaking ? 0.35 : 1.2) * (1 - d / hearR) * dtp + 0.05;
+        if (a.awareness > 0.5 && a.state !== 'search') { a.faceTowards(P.pos.x, P.pos.z); }
+      } else a.awareness = Math.max(0, a.awareness - 0.12 * dtp);
+      if (hold) {
+        a.awareness = Math.min(a.awareness, 0.6);
+        C.wardenSaw(a, sees);
+      } else if (a.awareness >= 1) {
+        a.cautionUntil = 0;
+        C.enterCombat(a, 'player'); // (emits playerDetected)
+      } else if (sees && a.awareness > 0.5 && (a.state === 'idle' || a.state === 'move')) {
+        // Half-noticed: stop, turn toward the shape, "Huh?" — the player's window to duck out of sight
+        if (!(a.cautionUntil > now())) {
+          if (!a._cautionBarkT || now() - a._cautionBarkT > 8) {
+            a._cautionBarkT = now();
+            if (a.voice && !a.isCreature) a.say(C.cautionBark(a.voice), 2.2);
+            else if (a.td.sounds && a.td.sounds.idle) C.sfx(a.td.sounds.idle, { pos: a.pos, volume: 0.6, pitch: 1.15 });
+          }
+        }
+        a.cautionUntil = now() + 1.6;
+      } else if (!sees && a.awareness > 0.4 && (a.state === 'idle' || a.state === 'move')) {
+        // Lost sight of it (or only heard it): go and look where it was
+        const lk = heard || !a.cautionAt ? P.pos : a.cautionAt;
+        a.cautionUntil = 0;
+        a.lastKnown = (a.lastKnown || new THREE.Vector3()).copy(lk);
+        C.startSearch(a, lk);
+      }
+    }
+    // Other enemies (opportunistic faction fights) — less often
+    if (a.state !== 'combat' || (a.target !== 'player' && (!a.target || a.target.dead))) {
+      if (!a._nextActorScan || now() > a._nextActorScan) {
+        a._nextActorScan = now() + 0.8 + Math.random() * 0.6;
+        const o = scanActorEnemies(a);
+        if (o) C.enterCombat(a, o);
+      }
+    }
+    // In combat: can we see our target?
+    if (a.state === 'combat' && a.target) {
+      if (a.target === 'player') a.canSeeTarget = sees;
+      else {
+        const t = a.target;
+        a.canSeeTarget = !t.dead && G.world.lineOfSight(a.eyePos(_a), t.centerPos(_b));
+        if (a.canSeeTarget) { a.lastSeenT = now(); a.lastKnown = (a.lastKnown || new THREE.Vector3()).copy(t.pos); }
+      }
+    }
+  }
+
+  /** Max awareness gain per second beyond 8 m: movement, light and the Pip-Boy light matter. */
+  function noticeCap(a, moving) {
+    const P = G.player;
+    let cap = 1.2 * (moving ? (P.sprinting ? 1.35 : 1) : 0.5);
+    const interior = G.LAYOUT.isInterior(P.pos.x);
+    let dark = false;
+    try { dark = !interior && !G.isStub('atmos') && G.atmos.isNight && G.atmos.isNight(); } catch (e) { dark = false; }
+    if (!dark && !interior && G.isStub('atmos')) { const h = G.time.hour; dark = h < 5.5 || h > 20.5; }
+    if (dark) cap *= 0.6;
+    if (interior) cap *= 0.85;
+    if (P.lightOn) cap *= 1.5;
+    if (a.state === 'search') cap *= 1.5;
+    return cap;
+  }
+  /** A friend within 35 m is already fighting the player (and can see them) → instant detection. */
+  function allyFightingPlayer(a) {
+    if (!C.anyCombat) return false;
+    for (const o of C.list) {
+      if (o === a || o.dead || !o.inCombat || o.target !== 'player' || !o.canSeeTarget) continue;
+      if (o.faction !== a.faction && G.combat.relation(o.faction, a.faction) !== 'ally') continue;
+      if (Math.hypot(o.pos.x - a.pos.x, o.pos.z - a.pos.z) < 35) return true;
+    }
+    return false;
+  }
+  C.noticeCap = noticeCap;
+
+  /** Hearing: something loud happened at pos. source = 'player' | actor. */
+  C.noise = function (pos, radius, source, kind) {
+    for (const a of C.list) {
+      if (a.dead || !a.inScene || a === source) continue;
+      const d = Math.hypot(a.pos.x - pos.x, a.pos.z - pos.z);
+      if (d > radius) continue;
+      if (a.state === 'dormant') { if (d < radius * 0.6) C.wake(a); continue; }
+      if (a.state === 'combat') continue;
+      const enemy = source === 'player' ? a.isEnemy('player') : (source && a.isEnemy(source));
+      // Merchants / posted quest NPCs stay at their stall: they cower instead of wandering off to investigate
+      if (enemy && (a.ai === 'merchant' || a.ai === 'static' || a.ai === 'sit') && !(source === 'player' && a.isEnemy('player'))) {
+        if ((kind === 'gun' || kind === 'explosion') && a.td.human && d < 30) { a.setState('cower'); }
+        continue;
+      }
+      if (enemy && source === 'player' && a.warden && C.wardenHold && C.wardenHold(a)) { C.wardenNoise(a, kind, pos); continue; }
+      if (enemy) {
+        const strength = kind === 'step' ? 0.3 : kind === 'explosion' ? 1.0 : 0.6;
+        a.awareness = Math.max(a.awareness, Math.min(0.95, a.awareness + strength * (1 - d / radius) + 0.25));
+        const jitter = kind === 'step' ? 2 : 6;
+        C.startSearch(a, { x: pos.x + (Math.random() - 0.5) * jitter, z: pos.z + (Math.random() - 0.5) * jitter, y: pos.y || 0 });
+      } else if (source && source !== 'player' && source.target && G.combat.relation(a.faction, source.faction) === 'ally' && kind === 'gun') {
+        // Allies hear their friend shooting → join the fight
+        if (!a.isCreature || a.faction === source.faction) C.enterCombat(a, source.target, 0.4 + Math.random() * 0.8);
+      } else if (kind === 'gun' || kind === 'explosion') {
+        // Civilians near gunfire cower
+        if (!a.weapon && !a.natural && a.td.human && d < 30 && !a.isEnemy('player')) { a.setState('cower'); a.bark('cower', 0.3); }
+        else if (a.td.human && !a.weapon && d < 30) { a.setState('cower'); }
+      }
+    }
+  };
+
+  C.wake = function (a) {
+    if (a.state !== 'dormant') return;
+    a.setState('idle'); a.anim('idle'); a.oneShot('hit');
+    a.awareness = 0.9;
+    C.sfx(a.td.sounds && a.td.sounds.alert || 'ghoul_scream', { pos: a.pos, volume: 0.9 });
+    if (a.isEnemy('player')) C.enterCombat(a, 'player', 0.5);
+  };
+
+  C.startSearch = function (a, p) {
+    if (a.state === 'combat' || a.state === 'flee' || a.dead) return;
+    a.lastKnown = (a.lastKnown || new THREE.Vector3()).set(p.x, p.y || 0, p.z);
+    if (a.state !== 'search') { a.setState('search'); a.bark('search', 0.6); }
+    a.searchT = 10 + Math.random() * 6;
+  };
+
+  /** Enter combat against target ('player' | actor), with optional reaction delay. */
+  C.enterCombat = function (a, target, delay) {
+    if (a.dead || !target) return;
+    if (target !== 'player' && target.dead) return;
+    // Trespass garrison holding fire (warnings first) — only provocation / the timer turns them
+    if (target === 'player' && a.warden && C.wardenHold && C.wardenHold(a)) return;
+    a.cautionUntil = 0;
+    if (a.state === 'dormant') { a.setState('idle'); a.anim('idle'); }
+    const wasCombat = a.state === 'combat';
+    const prevTarget = a.target;
+    a.target = target;
+    if (a.state === 'flee' && a.stateT < 6) return;
+    a.setState('combat');
+    a.inCombat = true;
+    a.aimT = now() + (delay || 0) + 0.25 + Math.random() * 0.35;
+    a.lastSeenT = now();
+    a.lastKnown = (a.lastKnown || new THREE.Vector3()).copy(target === 'player' ? G.player.pos : target.pos);
+    if (target === 'player') {
+      a.awareness = 1; a.detectedPlayer = true;
+      // every time an actor turns on the player (HUD [DANGER], combat music, quests)
+      if (!wasCombat || prevTarget !== 'player') G.events.emit('playerDetected', a, { sneaking: !!G.player.sneaking });
+    }
+    if (!wasCombat || prevTarget !== target) {
+      if (!wasCombat) {
+        a.bark('alert', 0.85);
+        if (a.type === 'deathclaw') { a.roarT = now() + 0.9; a.oneShot('attack_melee'); }
+        if (a.type === 'super_mutant_behemoth') { a.roarT = now() + 1.2; G.player.shake(0.25, 0.6); }
+      }
+      // Group aggro: friends nearby join in
+      if (!a._groupAggroT || now() - a._groupAggroT > 2) {
+        a._groupAggroT = now();
+        for (const o of C.list) {
+          if (o === a || o.dead || !o.inScene || o.state === 'combat' || o.state === 'flee') continue;
+          if (o.faction !== a.faction && G.combat.relation(o.faction, a.faction) !== 'ally') continue;
+          if (target === 'player' && !o.isEnemy('player')) continue;
+          if (target !== 'player' && !o.isEnemy(target)) continue;
+          const d = Math.hypot(o.pos.x - a.pos.x, o.pos.z - a.pos.z);
+          if (d < 28) C.enterCombat(o, target, 0.4 + d * 0.04 + Math.random() * 0.5);
+        }
+      }
+    }
+  };
+  C.leaveCombat = function (a, toState) {
+    a.inCombat = false; a.target = null; a.coverPos = null; a.burstLeft = 0; a.ducked = false; a._flankUntil = 0;
+    a.setState(toState || 'idle');
+    try { if (a.char.lookAt) a.char.lookAt(null); } catch (e) { /* ignore */ }
+    if (toState !== 'knocked') C.calmEssential(a);
+  };
+  /**
+   * FO3/NV: an ESSENTIAL character the player attacked (friendly before, `wasFriendly`) can never die, so staying
+   * hostile for good would lock every quest that needs to talk to them. Once the fight ends (target lost, or they
+   * get back up after being knocked out) they calm down and are talkable again. Quest-scripted hostility never
+   * sets `wasFriendly`, so it is left alone.
+   */
+  C.calmEssential = function (a) {
+    if (!a || a.dead || !a.essential || !a.wasFriendly || a.hostOverride !== true) return;
+    a.wasFriendly = false;
+    a.setHostile(false);
+  };
+
+  // ------------------------------------------------------------------
+  // Steering & locomotion
+  // ------------------------------------------------------------------
+  const _dir = new THREE.Vector3();
+  function blockedAhead(a, dx, dz, dist) {
+    _a.set(a.pos.x, a.pos.y + Math.min(0.8, a.height * 0.5), a.pos.z);
+    _dir.set(dx, 0, dz);
+    const h = G.world.raycast(_a, _dir, dist + a.radius, { ignoreTags: ['actor'] });
+    if (h && h.dist < dist + a.radius) {
+      // a low step we can walk up onto doesn't count
+      if (h.collider && h.collider.maxY <= a.pos.y + 0.55) return false;
+      return true;
+    }
+    // water or a ledge ahead (bridge decks, rooftops, piers)
+    if (!a.hover) {
+      const px = a.pos.x + dx * (dist + a.radius), pz = a.pos.z + dz * (dist + a.radius);
+      let gh = G.world.groundHeight(px, pz, a.pos.y + 0.6, 0.2);
+      if (a.td.amphibious) gh = Math.max(gh, G.world.waterLevel - 0.9);
+      if (gh < a.pos.y - 2.5) return true;
+      if (!a.td.amphibious && gh < G.world.waterLevel - 0.3) return true;
+    }
+    return false;
+  }
+  /** Move actor toward direction (dx,dz normalised) at speed for dt, with avoidance. */
+  C.steer = function (a, dx, dz, speed, dt) {
+    if (a.legsCrippled) speed *= 0.55;
+    if (a.slowT && a.slowT > now()) speed *= 0.4;
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-4 || speed <= 0) { a.speed = 0; return; }
+    a._wantMoveT = now(); // (35_reactions watchdog: "trying to walk")
+    dx /= len; dz /= len;
+    // Detour while stuck
+    if (a.detourT > 0) { a.detourT -= dt; dx = a.detour.x; dz = a.detour.z; }
+    else {
+      // Feelers (throttled)
+      a.feelT -= dt;
+      if (a.feelT <= 0) {
+        a.feelT = 0.25 + Math.random() * 0.1;
+        a.avoid = null;
+        const look = Math.min(2.6, 0.8 + speed * 0.35);
+        if (blockedAhead(a, dx, dz, look)) {
+          const base = Math.atan2(dx, dz);
+          const side = a.strafeDir || 1;
+          for (const off of [0.5, -0.5, 1.0, -1.0, 1.5, -1.5, 2.2, -2.2]) {
+            const ang = base + off * side;
+            const ex = Math.sin(ang), ez = Math.cos(ang);
+            if (!blockedAhead(a, ex, ez, look)) { a.avoid = { x: ex, z: ez, t: 0.6 }; break; }
+          }
+        }
+      }
+      if (a.avoid) { a.avoid.t -= dt; if (a.avoid.t <= 0) a.avoid = null; else { dx = dx * 0.25 + a.avoid.x * 0.75; dz = dz * 0.25 + a.avoid.z * 0.75; const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l; } }
+    }
+    const stepX = dx * speed * dt, stepZ = dz * speed * dt;
+    const r = G.world.moveCircle(a.pos, Math.min(a.radius, 0.9), a.height, stepX, stepZ);
+    let nx = r.x, nz = r.z;
+    // Don't walk into deep water (unless amphibious/hovering) or off a ledge (bridge deck, roof)
+    if (!a.hover && (nx !== a.pos.x || nz !== a.pos.z)) {
+      let ngh = G.world.groundHeight(nx, nz, a.pos.y + 0.6, 0.2);
+      if (a.td.amphibious) ngh = Math.max(ngh, G.world.waterLevel - 0.9);
+      if (ngh < a.pos.y - 2.5 || (!a.td.amphibious && ngh < G.world.waterLevel - 0.3)) { nx = a.pos.x; nz = a.pos.z; }
+    }
+    const moved = Math.hypot(nx - a.pos.x, nz - a.pos.z);
+    a.pos.x = nx; a.pos.z = nz;
+    a.speed = dt > 0 ? moved / dt : 0;
+    // Stuck detection
+    const expected = speed * dt;
+    if (expected > 0.001) {
+      if (moved < expected * 0.3) a.stuckT += dt; else a.stuckT = Math.max(0, a.stuckT - dt * 2);
+      if (a.stuckT > 0.8 && a.detourT <= 0) {
+        a.stuckT = 0;
+        const s = Math.random() < 0.5 ? 1 : -1;
+        const ang = Math.atan2(dx, dz) + s * (1.2 + Math.random() * 0.9);
+        a.detour = { x: Math.sin(ang), z: Math.cos(ang) }; a.detourT = 0.7 + Math.random() * 0.9;
+        a.strafeDir = -a.strafeDir;
+      }
+    }
+    // Face the movement direction unless aiming at something
+    if (!a.faceTarget) {
+      const want = Math.atan2(-dx, -dz);
+      a.yaw += C.clamp(U.angleDiff(a.yaw, want), -8 * dt, 8 * dt);
+      a.applyYaw();
+    }
+  };
+  function steerTo(a, x, z, speed, dt, stopDist) {
+    const dx = x - a.pos.x, dz = z - a.pos.z; const d = Math.hypot(dx, dz);
+    if (d <= (stopDist || 0.4)) { a.speed = 0; return true; }
+    C.steer(a, dx, dz, Math.min(speed, d / Math.max(dt, 1e-3)), dt);
+    return false;
+  }
+  // ------------------------------------------------------------------
+  // Local navigation: lazy 1 m occupancy grid (per 64×64 m tile) + incremental A*
+  //  - Tiles cache, per 1 m cell, the terrain height and the colliders touching the cell
+  //    (padded); walkability is evaluated on the fly relative to the height we arrive at
+  //    (so stairs, ramps, bridge decks and interiors with several floors all work):
+  //    blocked if a collider spans [h+step, h+actorHeight] at the cell centre or at the
+  //    half-way point from the parent cell (thin walls), a drop > 2.2 m, or deep water.
+  //  - Searches are incremental: at most NAV_NODES expansions per frame over all actors,
+  //    tile builds are budgeted too, and each search is capped (best partial path wins).
+  //  - Used when the goal isn't in a clear straight line, or steering got stuck; the feelers
+  //    in C.steer still handle local avoidance (other actors, small props) along the path.
+  // ------------------------------------------------------------------
+  const NAV = (C.nav = { tiles: new Map(), frame: -1, budget: 0, builds: 0, stats: { searches: 0, found: 0, failed: 0, nodes: 0, tiles: 0 } });
+  const NAV_TS = 64, NAV_PAD = 0.3, NAV_STEP = 0.55, NAV_DROP = 2.2, NAV_TTL = 45, NAV_MAX_TILES = 40;
+  const NAV_NODES = 360, NAV_MAX_NODES = 2200, NAV_BUILDS = 1, NAV_W = 1.35;
+  const navKey = (ix, iz) => (ix + 30000) * 60000 + (iz + 30000);
+  function navFrame() {
+    const f = G.time.frame !== undefined ? G.time.frame : Math.floor(now() * 60);
+    if (NAV.frame !== f) { NAV.frame = f; NAV.budget = NAV_NODES; NAV.builds = NAV_BUILDS; }
+  }
+  C.navReset = function () { NAV.tiles.clear(); };
+  function navBuildTile(tx, tz) {
+    const x0 = tx * NAV_TS, z0 = tz * NAV_TS, N = NAV_TS * NAV_TS;
+    const terr = new Float32Array(N), lists = new Array(N);
+    for (let iz = 0; iz < NAV_TS; iz++) for (let ix = 0; ix < NAV_TS; ix++) terr[iz * NAV_TS + ix] = G.world.terrainHeight(x0 + ix + 0.5, z0 + iz + 0.5);
+    const cs = G.world.query(x0 - 1, z0 - 1, x0 + NAV_TS + 1, z0 + NAV_TS + 1);
+    for (const c of cs) {
+      if (c.tag === 'actor') continue;
+      const bb = c.bb; if (!bb) continue;
+      const ix0 = Math.max(0, Math.floor(bb.x0 - NAV_PAD - x0)), ix1 = Math.min(NAV_TS - 1, Math.floor(bb.x1 + NAV_PAD - x0));
+      const iz0 = Math.max(0, Math.floor(bb.z0 - NAV_PAD - z0)), iz1 = Math.min(NAV_TS - 1, Math.floor(bb.z1 + NAV_PAD - z0));
+      for (let iz = iz0; iz <= iz1; iz++) for (let ix = ix0; ix <= ix1; ix++) { const i = iz * NAV_TS + ix; (lists[i] || (lists[i] = [])).push(c); }
+    }
+    NAV.stats.tiles++;
+    return { tx, tz, x0, z0, terr, lists, built: now(), used: now() };
+  }
+  /** Tile containing world cell (ix, iz); builds it when the per-frame budget allows (null = not yet). */
+  function navTileFor(ix, iz) {
+    const tx = Math.floor(ix / NAV_TS), tz = Math.floor(iz / NAV_TS), k = tx * 100000 + tz;
+    let t = NAV.tiles.get(k);
+    const T = now();
+    if (t && T - t.built > NAV_TTL && NAV.builds > 0) t = null;   // colliders may have changed (doors, quest props)
+    if (t) { t.used = T; return t; }
+    if (NAV.builds <= 0) return null;
+    NAV.builds--;
+    t = navBuildTile(tx, tz);
+    NAV.tiles.set(k, t);
+    if (NAV.tiles.size > NAV_MAX_TILES) {
+      let ok = null, ou = 1e9;
+      for (const [kk, tt] of NAV.tiles) if (tt.used < ou && tt !== t) { ou = tt.used; ok = kk; }
+      if (ok !== null) NAV.tiles.delete(ok);
+    }
+    return t;
+  }
+  function navTileHas(ix, iz) { return NAV.tiles.get(Math.floor(ix / NAV_TS) * 100000 + Math.floor(iz / NAV_TS)) || null; }
+  /** Walkable ground at (x,z) reachable from height yRef (step up ≤ NAV_STEP). */
+  function navGround(t, x, z, yRef, terrain) {
+    const ix = Math.floor(x) - t.x0, iz = Math.floor(z) - t.z0;
+    const i = iz * NAV_TS + ix;
+    let best = terrain !== undefined ? terrain : t.terr[i];
+    const L = t.lists[i];
+    if (L) for (let k = 0; k < L.length; k++) { const c = L[k]; if (c.walkable && c.maxY > best && c.maxY <= yRef + NAV_STEP && G.world.pointInCollider(c, x, z, 0.05)) best = c.maxY; }
+    return best;
+  }
+  function navBlocked(t, x, z, h, clear) {
+    const ix = Math.floor(x) - t.x0, iz = Math.floor(z) - t.z0;
+    const L = t.lists[iz * NAV_TS + ix]; if (!L) return false;
+    for (let k = 0; k < L.length; k++) { const c = L[k]; if (c.maxY > h + NAV_STEP && c.minY < h + clear && G.world.pointInCollider(c, x, z, NAV_PAD)) return true; }
+    return false;
+  }
+  /** Step from (x,z,h) to the centre of cell (cix,ciz): arrival height, or NaN if impassable. */
+  function navStep(S, x, z, h, cix, ciz) {
+    const cx = cix + 0.5, cz = ciz + 0.5, mx = (x + cx) * 0.5, mz = (z + cz) * 0.5;
+    const tm = navTileHas(Math.floor(mx), Math.floor(mz)), tc = navTileHas(cix, ciz);
+    if (!tm || !tc) return NaN;
+    // terrain at the half-way point: mean of the two cached cell samples (terrain is smooth; water edges stay impassable)
+    const ti = (Math.floor(z) - tc.z0) * NAV_TS + (Math.floor(x) - tc.x0);
+    const tParent = ti >= 0 && ti < NAV_TS * NAV_TS && Math.floor(x) - tc.x0 >= 0 && Math.floor(x) - tc.x0 < NAV_TS ? tc.terr[ti] : G.world.terrainHeight(x, z);
+    const tChild = tc.terr[(ciz - tc.z0) * NAV_TS + (cix - tc.x0)];
+    const hm = navGround(tm, mx, mz, h, (tParent + tChild) * 0.5);
+    if (hm < h - NAV_DROP || navBlocked(tm, mx, mz, hm, S.clear)) return NaN;
+    const hc = navGround(tc, cx, cz, hm);
+    if (hc < hm - NAV_DROP) return NaN;
+    if (!S.amph && hc < G.world.waterLevel - 0.3) return NaN;
+    if (navBlocked(tc, cx, cz, hc, S.clear)) return NaN;
+    return hc;
+  }
+  // binary heap (keys + f)
+  function heapPush(S, k, f) {
+    const hk = S.hk, hf = S.hf; let i = hk.length; hk.push(k); hf.push(f);
+    while (i > 0) { const p = (i - 1) >> 1; if (hf[p] <= f) break; hk[i] = hk[p]; hf[i] = hf[p]; i = p; }
+    hk[i] = k; hf[i] = f;
+  }
+  function heapPop(S) {
+    const hk = S.hk, hf = S.hf; const top = hk[0]; const lk = hk.pop(), lf = hf.pop();
+    const n = hk.length;
+    if (n) {
+      let i = 0;
+      for (;;) { let c = 2 * i + 1; if (c >= n) break; if (c + 1 < n && hf[c + 1] < hf[c]) c++; if (hf[c] >= lf) break; hk[i] = hk[c]; hf[i] = hf[c]; i = c; }
+      hk[i] = lk; hf[i] = lf;
+    }
+    return top;
+  }
+  const NAV_DIRS = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, 1.4142], [1, -1, 1.4142], [-1, 1, 1.4142], [-1, -1, 1.4142]];
+  function navStart(a, gx, gz) {
+    const six = Math.floor(a.pos.x), siz = Math.floor(a.pos.z);
+    const S = { six, siz, gx, gz, gix: Math.floor(gx), giz: Math.floor(gz), g: new Map(), h: new Map(), par: new Map(), closed: new Set(), hk: [], hf: [],
+      nodes: 0, bestK: 0, bestH: 1e9, clear: C.clamp(a.height || 1.8, 0.6, 2.4), amph: !!a.td.amphibious, sx: a.pos.x, sz: a.pos.z,
+      maxR: C.clamp(Math.hypot(gx - a.pos.x, gz - a.pos.z) * 1.8 + 24, 40, 130), path: null, t0: now() };
+    const k = navKey(six, siz);
+    S.g.set(k, 0); S.h.set(k, a.pos.y); S.par.set(k, -1);
+    heapPush(S, k, 0);
+    S.bestK = k; S.bestH = Math.hypot(gx - a.pos.x, gz - a.pos.z);
+    NAV.stats.searches++;
+    return S;
+  }
+  /** Run a search for up to the remaining per-frame budget: 'found' | 'fail' | 'pending'. */
+  function navRun(S) {
+    navFrame();
+    while (NAV.budget > 0) {
+      if (!S.hk.length || S.nodes >= NAV_MAX_NODES) return navFinish(S, false);
+      const k = S.hk[0];
+      if (S.closed.has(k)) { heapPop(S); continue; }
+      const ix = Math.floor(k / 60000) - 30000, iz = (k % 60000) - 30000;
+      // make sure the tiles around this cell exist (budgeted builds; resume next frame otherwise)
+      if (!navTileFor(ix - 1, iz - 1) || !navTileFor(ix + 1, iz - 1) || !navTileFor(ix - 1, iz + 1) || !navTileFor(ix + 1, iz + 1)) return 'pending';
+      heapPop(S);
+      S.closed.add(k); S.nodes++; NAV.budget--; NAV.stats.nodes++;
+      const x = ix + 0.5, z = iz + 0.5;
+      const dgoal = Math.hypot(S.gx - x, S.gz - z);
+      if (dgoal < S.bestH) { S.bestH = dgoal; S.bestK = k; }
+      if (dgoal < 1.1) return navFinish(S, true);
+      const gk = S.g.get(k), hk = S.h.get(k);
+      const sx0 = k === navKey(S.six, S.siz) ? S.sx : x, sz0 = k === navKey(S.six, S.siz) ? S.sz : z;
+      for (let d = 0; d < 8; d++) {
+        const D = NAV_DIRS[d], nix = ix + D[0], niz = iz + D[1], nk = navKey(nix, niz);
+        if (S.closed.has(nk)) continue;
+        if (Math.hypot(nix + 0.5 - S.sx, niz + 0.5 - S.sz) > S.maxR) continue;
+        if (D[2] > 1) {
+          // no corner cutting: both orthogonal neighbours must be free at this height
+          const ta = navTileHas(ix + D[0], iz), tb = navTileHas(ix, iz + D[1]);
+          if (!ta || !tb || navBlocked(ta, ix + D[0] + 0.5, z, hk, S.clear) || navBlocked(tb, x, iz + D[1] + 0.5, hk, S.clear)) continue;
+        }
+        const nh = navStep(S, sx0, sz0, hk, nix, niz);
+        if (nh !== nh) continue; // NaN
+        const ng = gk + D[2] + Math.abs(nh - hk) * 0.6;
+        const og = S.g.get(nk);
+        if (og !== undefined && og <= ng) continue;
+        S.g.set(nk, ng); S.h.set(nk, nh); S.par.set(nk, k);
+        const hx = Math.abs(S.gx - (nix + 0.5)), hz = Math.abs(S.gz - (niz + 0.5));
+        heapPush(S, nk, ng + NAV_W * (Math.max(hx, hz) + 0.4142 * Math.min(hx, hz)));
+      }
+    }
+    return 'pending';
+  }
+  function navFinish(S, reached) {
+    const startK = navKey(S.six, S.siz);
+    const endK = S.bestK;
+    // A partial path must actually get us meaningfully closer
+    const d0 = Math.hypot(S.gx - S.sx, S.gz - S.sz);
+    if (endK === startK || (!reached && S.bestH > d0 - 2)) { NAV.stats.failed++; return 'fail'; }
+    const cells = [];
+    for (let k = endK, n = 0; k !== -1 && k !== undefined && n < 5000; k = S.par.get(k), n++) cells.push(k);
+    cells.reverse();
+    // string pulling over cells this search proved walkable
+    const pts = cells.map((k) => ({ x: Math.floor(k / 60000) - 30000 + 0.5, z: (k % 60000) - 30000 + 0.5 }));
+    if (reached) pts.push({ x: S.gx, z: S.gz });
+    const out = [];
+    let i = 0;
+    const from = { x: S.sx, z: S.sz };
+    while (i < pts.length - 1) {
+      let j = pts.length - 1;
+      for (; j > i + 1; j--) if (navLineKnown(S, i === 0 ? from : pts[i], pts[j])) break;
+      out.push(pts[j]); i = j;
+    }
+    if (!out.length) out.push(pts[pts.length - 1]);
+    S.path = out;
+    NAV.stats.found++;
+    return 'found';
+  }
+  /** Straight segment stays on cells the search expanded (known walkable)? */
+  function navLineKnown(S, p, q) {
+    const dx = q.x - p.x, dz = q.z - p.z, L = Math.hypot(dx, dz), n = Math.ceil(L / 0.35);
+    for (let s = 1; s < n; s++) {
+      const x = p.x + dx * s / n, z = p.z + dz * s / n;
+      if (!S.closed.has(navKey(Math.floor(x), Math.floor(z)))) return false;
+      // stay a little away from blocked neighbours (both sides of the line)
+      if (!S.closed.has(navKey(Math.floor(x + 0.3), Math.floor(z))) && !S.g.has(navKey(Math.floor(x + 0.3), Math.floor(z)))) return false;
+      if (!S.closed.has(navKey(Math.floor(x - 0.3), Math.floor(z))) && !S.g.has(navKey(Math.floor(x - 0.3), Math.floor(z)))) return false;
+      if (!S.closed.has(navKey(Math.floor(x), Math.floor(z + 0.3))) && !S.g.has(navKey(Math.floor(x), Math.floor(z + 0.3)))) return false;
+      if (!S.closed.has(navKey(Math.floor(x), Math.floor(z - 0.3))) && !S.g.has(navKey(Math.floor(x), Math.floor(z - 0.3)))) return false;
+    }
+    return true;
+  }
+  /** Knee-height ray: is the straight line to the goal free of walls/cars? */
+  function clearWalk(a, gx, gz, d) {
+    const L = Math.min(d, 30);
+    if (L < 0.5) return true;
+    _a.set(a.pos.x, a.pos.y + Math.min(0.75, (a.height || 1.8) * 0.5), a.pos.z);
+    _dir.set((gx - a.pos.x) / d, 0, (gz - a.pos.z) / d);
+    const h = G.world.raycast(_a, _dir, L, { ignoreTags: ['actor'] });
+    return !(h && h.dist < L - 0.3 && !(h.collider && h.collider.maxY <= a.pos.y + NAV_STEP));
+  }
+  const navCapable = (a) => !a.hover && !a.burrowed && !a.holdPos;
+  /**
+   * Move toward (gx,gz): straight steering while the way is clear, A* waypoints around walls,
+   * cars and park walls when it isn't (or when steering gets stuck). Returns true on arrival.
+   */
+  C.navMove = function (a, gx, gz, speed, dt, stopDist) {
+    stopDist = stopDist || 0.4;
+    const dx = gx - a.pos.x, dz = gz - a.pos.z, d = Math.hypot(dx, dz);
+    if (d <= stopDist) { a.speed = 0; if (a.nav) { a.nav.path = null; a.nav.search = null; } return true; }
+    if (!navCapable(a)) return steerTo(a, gx, gz, speed, dt, stopDist);
+    const N = a.nav || (a.nav = { path: null, i: 0, gx, gz, search: null, checkT: Math.random() * 0.3, need: false, failUntil: 0, pathT: 0 });
+    const t = now();
+    // The goal moved a lot: the old plan is stale
+    if ((N.path || N.search) && Math.hypot(gx - N.gx, gz - N.gz) > Math.max(2.5, d * 0.3)) { N.path = null; N.search = null; N.need = true; N.checkT = 0; }
+    if (N.path) {
+      let wp = N.path[N.i];
+      while (wp && N.i < N.path.length - 1 && Math.hypot(wp.x - a.pos.x, wp.z - a.pos.z) < 0.8) wp = N.path[++N.i];
+      const last = N.i >= N.path.length - 1;
+      if (!wp || (last && Math.hypot(wp.x - a.pos.x, wp.z - a.pos.z) < 0.8) || t - N.pathT > 15 || a.stuckT > 1.2) {
+        if (a.stuckT > 1.2) { N.need = true; N.checkT = 0; }
+        N.path = null;
+      } else {
+        const wd = Math.hypot(wp.x - a.pos.x, wp.z - a.pos.z);
+        C.steer(a, wp.x - a.pos.x, wp.z - a.pos.z, last ? Math.min(speed, (wd + 0.3) / Math.max(dt, 1e-3)) : speed, dt);
+        return false;
+      }
+    }
+    N.checkT -= dt;
+    if (N.checkT <= 0) {
+      N.checkT = 0.45 + Math.random() * 0.2;
+      N.need = a.stuckT > 0.35 || a.detourT > 0 || !clearWalk(a, gx, gz, d);
+    }
+    if (N.need && !N.search && t > N.failUntil) { N.search = navStart(a, gx, gz); N.gx = gx; N.gz = gz; }
+    if (N.search) {
+      const r = navRun(N.search);
+      if (r === 'found') {
+        N.path = N.search.path; N.i = 0; N.pathT = t; N.search = null; N.need = false;
+        a.detourT = 0; a.avoid = null; a.stuckT = 0;
+        const wp = N.path[0];
+        C.steer(a, wp.x - a.pos.x, wp.z - a.pos.z, speed, dt);
+        return false;
+      }
+      if (r === 'fail' || t - N.search.t0 > 4) { N.search = null; N.failUntil = t + 1.2 + Math.random(); N.need = false; }
+    }
+    // Clear line (or still thinking): classic steering with feelers & stuck detours
+    return steerTo(a, gx, gz, speed, dt, stopDist);
+  };
+  /** Is the actor currently following / computing a path? */
+  C.navBusy = (a) => !!(a.nav && (a.nav.path || a.nav.search));
+  /** Debug / probes: synchronous path query between two points (world x,z). */
+  C.navDebugPath = function (x0, z0, x1, z1, opts) {
+    const fake = { pos: new THREE.Vector3(x0, G.world.groundHeight(x0, z0, (opts && opts.y) || 0.6, 0.2), z0), height: 1.8, td: {} };
+    const S = navStart(fake, x1, z1);
+    let r = 'pending', guard = 0;
+    while (r === 'pending' && guard++ < 400) { NAV.frame = -1; r = navRun(S); }
+    return { result: r, nodes: S.nodes, path: S.path };
+  };
+
+  /** Vertical: ground snap, gravity, hover, amphibious wading. */
+  function vertical(a, dt) {
+    const gh = G.world.groundHeight(a.pos.x, a.pos.z, a.pos.y + 0.6, a.radius * 0.4);
+    if (a.hover) {
+      const bob = Math.sin(now() * 2.1 + a.uid) * 0.12;
+      const want = Math.max(gh, a.td.amphibious ? G.world.waterLevel : gh) + a.hover + bob + (a.hoverBoost || 0);
+      a.pos.y = U.damp(a.pos.y, want, 3, dt);
+      return;
+    }
+    let floor = gh;
+    if (a.td.amphibious && gh < G.world.waterLevel - 0.9) floor = G.world.waterLevel - 0.9;
+    if (a.pos.y > floor + 0.05) {
+      a.vy -= 20 * dt; a.pos.y += a.vy * dt;
+      if (a.pos.y <= floor) { a.pos.y = floor; a.vy = 0; }
+    } else { a.pos.y = floor; a.vy = 0; }
+  }
+  C.vertical = vertical;
+
+  // ------------------------------------------------------------------
+  // Target helpers
+  // ------------------------------------------------------------------
+  function targetPos(a, out) {
+    const t = a.target;
+    if (t === 'player') return out.copy(G.player.pos);
+    return out.copy(t.pos);
+  }
+  function targetAimPoint(a, out) {
+    const t = a.target;
+    if (t === 'player') {
+      const P = G.player;
+      return out.set(P.pos.x, P.pos.y + (P.sneaking ? 0.75 : 1.2), P.pos.z);
+    }
+    if (t.hitParts && t.inScene) return C.partCenter(t, 'torso', out);
+    return t.centerPos(out);
+  }
+  function targetValid(a) {
+    const t = a.target;
+    if (!t) return false;
+    if (t === 'player') return G.player.alive && a.isEnemy('player');
+    return !t.dead && !t.removed && a.isEnemy(t);
+  }
+  function pickNewTarget(a) {
+    // Player first if hostile & recently seen
+    if (a.isEnemy('player') && G.player.alive && a.distToPlayer() < a.sight && (a.seesPlayer || now() - (a.lastPlayerSeen || -99) < 3)) return 'player';
+    return scanActorEnemies(a);
+  }
+
+  // ------------------------------------------------------------------
+  // Attacks
+  // ------------------------------------------------------------------
+  /** Natural melee attack (creatures, fists, melee weapons): windup then resolve. */
+  function startMelee(a, atk) {
+    a.attackCd = atk.cooldown * (0.85 + Math.random() * 0.3);
+    a.pendingMelee = { t: now() + (atk.windup || 0.3), atk };
+    a.oneShot('attack_melee');
+    if (atk.sound && atk.sound !== 'melee_swing') C.sfx(atk.sound, { pos: a.pos, volume: 0.7, pitch: a.td.boss ? 0.7 : 1 });
+    else C.sfx('melee_swing', { pos: a.pos, volume: 0.6 });
+  }
+  function resolvePendingMelee(a) {
+    const pm = a.pendingMelee; if (!pm || now() < pm.t) return;
+    a.pendingMelee = null;
+    const atk = pm.atk;
+    const lvlScale = 1 + (atk.dmgLvl || 0) * (a.level - 1) / Math.max(1, atk.dmg);
+    const dmg = atk.dmg * lvlScale * a.damageMult;
+    G.combat.melee({ from: a, range: atk.range + a.radius, arc: atk.slam ? Math.PI : 1.2, damage: dmg, type: atk.type || 'melee', knock: atk.knock || 0,
+      slam: atk.slam || 0, rads: atk.rads || 0, poison: atk.poison || null, weaponId: a.weapon && a.weapon.melee ? a.weaponId : null });
+  }
+  function meleeAttackDef(a) {
+    if (a.weapon && a.weapon.melee) {
+      const w = a.weapon;
+      return { kind: 'melee', dmg: w.damage * (w.skill === 'unarmed' ? 1 : 1) * (a.td.boss ? 1.5 : 1) * (a.type === 'super_mutant' ? 1.3 : 1), dmgLvl: 0, range: Math.max(1.4, w.range * 0.9),
+        cooldown: 1 / Math.max(0.3, w.rof) + 0.35, windup: 0.3, type: 'melee', sound: 'melee_swing' };
+    }
+    return a.natural && a.natural.kind === 'melee' ? a.natural : (a.natural && a.natural.alt && a.natural.alt.kind === 'melee' ? a.natural.alt : C.NATURAL.fists);
+  }
+
+  /** Ranged shot (weapon or natural ranged). Returns true if fired. */
+  function shoot(a) {
+    const aim = targetAimPoint(a, _c);
+    const muzzle = C.leanOrigin(a, a.muzzlePos(_d), aim);
+    const dir = _a.subVectors(aim, muzzle);
+    const dist = dir.length(); dir.divideScalar(dist || 1);
+    const w = a.weapon;
+    const nat = !w && a.natural && a.natural.kind === 'ranged' ? a.natural : null;
+    if (!w && !nat) return false;
+    // Face the target
+    a.faceTowards(aim.x, aim.z);
+    // scoped long guns (sniper / hunting rifles) are properly accurate at range
+    let spread = w ? (w.spread * 0.8 + (w.range >= 150 ? 0.0025 : 0.012)) : (nat.spread || 0.03);
+    if (a.speed > 0.5) spread *= 1.4;
+    if (a.armCrippled) spread *= 2;
+    if (a.suppressT && a.suppressT > now()) spread *= 1.6;   // rounds cracking past (35_reactions)
+    if (a.target === 'player') {
+      const P = G.player;
+      if (P.moveSpeed > 3) spread *= 1 + (P.moveSpeed - 3) * 0.08;
+      if (P.sneaking) spread *= 1.15;
+    }
+    spread /= a.accuracy;
+    const lvlScale = w ? (0.85 + a.level * 0.03) : (1 + (nat.dmgLvl || 0) * (a.level - 1) / Math.max(1, nat.dmg));
+    const damage = (w ? w.damage : nat.dmg) * lvlScale * a.damageMult;
+    a.oneShot('attack_ranged');
+    if (w) {
+      C.sfx(w.sound, { pos: muzzle, volume: 0.9, pitch: (w.sfxPitch || 1) * (0.95 + Math.random() * 0.1) });
+      if (w.projectile !== 'flame') C.fx('muzzleFlash', muzzle.clone(), dir.clone(), w.flash || (w.damageType === 'energy' ? (w.beam === 'green' ? 'plasma' : 'laser') : 'ballistic'));
+      G.combat.fire({ from: a, origin: muzzle.clone(), dir: dir.clone(), weaponId: a.weaponId, damage, spread, pellets: w.pellets, range: w.range * 1.2,
+        projectile: w.projectile, projectileSpeed: w.projectileSpeed, explosionRadius: w.explosionRadius, damageType: w.damageType, beam: w.beam });
+      if (w.magSize > 0) a.magLeft--;
+      C.noise(a.pos, 45, a, 'gun');
+    } else {
+      C.sfx(nat.sound, { pos: muzzle, volume: 0.8, pitch: nat.pitch || 1 });
+      if (nat.energy) C.fx('muzzleFlash', muzzle.clone(), dir.clone(), 'laser');
+      G.combat.fire({ from: a, origin: muzzle.clone(), dir: dir.clone(), weaponId: null, damage, spread, pellets: 1, range: nat.range * 1.3,
+        damageType: nat.type === 'energy' ? 'energy' : 'ballistic', beam: nat.beam || null });
+      C.noise(a.pos, 30, a, 'gun');
+    }
+    return true;
+  }
+  /** Throw a grenade in a ballistic arc at the target. */
+  function throwGrenade(a) {
+    const tp = targetPos(a, _c);
+    const from = _d.set(a.pos.x, a.pos.y + a.height * 0.9, a.pos.z);
+    const dx = tp.x - from.x, dz = tp.z - from.z, dist = Math.hypot(dx, dz);
+    const t = C.clamp(dist / 13, 0.6, 2.0), g = 9.8;
+    const vel = new THREE.Vector3(dx / t, (tp.y + 0.3 - from.y + 0.5 * g * t * t) / t, dz / t);
+    a.oneShot('attack_melee');
+    a.bark('grenade', 0.9);
+    const plasma = a.faction === 'enclave';
+    G.combat.spawnProjectile({ kind: 'grenade', pos: from.clone(), vel, gravity: g, damage: plasma ? 90 : 60, radius: 5, from: a, fuse: 2.2 + Math.random() * 0.6,
+      explosionKind: plasma ? 'plasma' : 'normal', weaponId: plasma ? 'plasma_grenade' : 'frag_grenade' });
+    C.sfx('melee_swing', { pos: a.pos, volume: 0.5 });
+  }
+  /** Spit projectile (bloatfly larva / mirelurk queen acid). */
+  function spit(a, atk) {
+    const tp = targetAimPoint(a, _c);
+    const from = _d.set(a.pos.x, a.pos.y + a.height * 0.6, a.pos.z);
+    const f = a.forward(_b); from.addScaledVector(f, a.radius * 0.8);
+    const dx = tp.x - from.x, dz = tp.z - from.z, dist = Math.hypot(dx, dz);
+    const sp = atk.speed || 16, t = Math.max(0.3, dist / sp), g = 9.8;
+    const lvlScale = 1 + (atk.dmgLvl || 0) * (a.level - 1) / Math.max(1, atk.dmg);
+    for (let i = 0; i < (atk.count || 1); i++) {
+      const jx = (Math.random() - 0.5) * (atk.count > 1 ? 3 : 0.8), jz = (Math.random() - 0.5) * (atk.count > 1 ? 3 : 0.8);
+      const vel = new THREE.Vector3((dx + jx) / t, (tp.y - from.y + 0.5 * g * t * t) / t, (dz + jz) / t);
+      G.combat.spawnProjectile({ kind: 'spit', pos: from.clone(), vel, gravity: g, damage: atk.dmg * lvlScale * a.damageMult, radius: 1.2, from: a, type: atk.type || 'poison' });
+    }
+    a.oneShot('attack_ranged');
+    C.sfx(atk.sound || 'bloatfly_buzz', { pos: a.pos, volume: 0.7, pitch: 1.3 });
+  }
+  /** Flamer stream (Mister Gutsy / NPC flamer): spawns flame particles toward target. */
+  function flame(a, atk, dt) {
+    const tp = targetAimPoint(a, _c);
+    const from = a.muzzlePos(_d);
+    const dir = _a.subVectors(tp, from).normalize();
+    a.faceTowards(tp.x, tp.z, 6, dt);
+    a._flameAcc = (a._flameAcc || 0) + dt;
+    const lvlScale = 1 + (atk.dmgLvl || 0) * (a.level - 1) / Math.max(1, atk.dmg);
+    while (a._flameAcc > 0.06) {
+      a._flameAcc -= 0.06;
+      const v = dir.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.12, (Math.random() - 0.5) * 0.08, (Math.random() - 0.5) * 0.12)).normalize().multiplyScalar(14 + Math.random() * 4);
+      G.combat.spawnProjectile({ kind: 'flame', pos: from.clone(), vel: v, gravity: -1, damage: atk.dmg * lvlScale * a.damageMult, radius: 0.7, from: a, life: (atk.range || 8) / 15 });
+    }
+    if (!a._flameSnd || now() - a._flameSnd > 0.9) { a._flameSnd = now(); C.sfx('fire_loop', { pos: a.pos, volume: 0.5 }); }
+  }
+
+  // ------------------------------------------------------------------
+  // Cover search (ranged humanoids)
+  // ------------------------------------------------------------------
+  function findCover(a, prefDist, opts) {
+    const tp = targetPos(a, _c);
+    const tEye = _d.set(tp.x, tp.y + 1.5, tp.z);
+    let best = null, bestScore = -1e9;
+    const base = opts && typeof opts.base === 'number' ? opts.base : Math.atan2(a.pos.x - tp.x, a.pos.z - tp.z);
+    const arc = opts && opts.arc ? opts.arc : 2.4, maxTravel = opts && opts.maxTravel ? opts.maxTravel : 16;
+    for (let i = 0; i < 10; i++) {
+      const ang = base + (Math.random() - 0.5) * arc;
+      const dist = C.clamp(prefDist * (0.7 + Math.random() * 0.6), 5, a.sight * 0.8);
+      const px = tp.x + Math.sin(ang) * dist, pz = tp.z + Math.cos(ang) * dist;
+      const travel = Math.hypot(px - a.pos.x, pz - a.pos.z);
+      if (travel > maxTravel) continue;
+      // interiors: stay inside the built cell (no cover spots out in the void between rooms)
+      if (G.LAYOUT.isInterior(px) && !G.world.lineOfSight(_e.set(a.pos.x, a.pos.y + 1.0, a.pos.z), _f.set(px, a.pos.y + 1.0, pz)) && travel > 6) continue;
+      if (!G.LAYOUT.isLand(px, pz) || G.world.terrainHeight(px, pz) < G.world.waterLevel) continue;
+      const gy = G.world.groundHeight(px, pz, a.pos.y + 0.6, a.radius * 0.5);
+      if (Math.abs(gy - a.pos.y) > 1.2) continue;
+      // Inside a collider?
+      const cs = G.world.query(px - a.radius, pz - a.radius, px + a.radius, pz + a.radius);
+      let inside = false;
+      for (const c of cs) if (c.maxY > gy + 0.6 && c.minY < gy + 1.7 && G.world.pointInCollider(c, px, pz, a.radius)) { inside = true; break; }
+      if (inside) continue;
+      const low = _a.set(px, gy + 0.8, pz), high = _b.set(px, gy + 1.65, pz);
+      const coveredLow = !G.world.lineOfSight(tEye, low);
+      const peek = G.world.lineOfSight(high, tEye);
+      let score = (coveredLow ? 3 : 0) + (peek ? 2 : -1) - Math.abs(dist - prefDist) * 0.08 - travel * 0.12;
+      if (coveredLow && !peek) score -= 1.5;
+      if (score > bestScore) { bestScore = score; best = { x: px, z: pz, y: gy, covered: coveredLow, peek }; }
+    }
+    return best && bestScore > 0 ? best : null;
+  }
+
+  /**
+   * Squad tactics (FO3/FO4 style): when three or more gunners of one side fight the same target, one of
+   * them breaks off to work around the flank (~75° off the squad's line) while the rest hold and suppress.
+   */
+  const FLANK_BARKS = {
+    raider: ['Go around! Go around!', 'I\'m flankin\'! Keep \'em busy!', 'Cover me, I\'m goin\' wide!'],
+    super_mutant: ['Go around! Smash from side!', 'You shoot. Me go around.'],
+    enclave: ['Flanking left!', 'Moving to flank. Suppressing fire!', 'Pincer! Push the side!'],
+    brotherhood: ['Moving to flank!', 'Suppressing fire, I\'m going around!'],
+    '*': ['Flank them!', 'Going around the side!', 'Keep them pinned — I\'m moving!'],
+  };
+  function squadOf(a) {
+    const out = [];
+    for (const o of C.list) {
+      if (o === a || o.dead || !o.inCombat || o.target !== a.target || !o.inScene) continue;
+      if (o.faction !== a.faction || !o.weapon || o.weapon.melee || o.holdPos) continue;
+      if (Math.hypot(o.pos.x - a.pos.x, o.pos.z - a.pos.z) > 40) continue;
+      out.push(o);
+    }
+    return out;
+  }
+  function tryFlank(a, pd) {
+    if (a.holdPos || !a.td.human || a.following || a.hp < a.maxHp * 0.5 || G.LAYOUT.isInterior(a.pos.x) && Math.random() < 0.5) return null;
+    const t = now();
+    if (a._flankCd && t < a._flankCd) return null;
+    const squad = squadOf(a);
+    if (squad.length < 2 || squad.some((o) => o._flankUntil && t < o._flankUntil)) return null;
+    // the member farthest from the squad's centre (already out on a wing) takes it
+    const tp = targetPos(a, _c);
+    let cx = a.pos.x, cz = a.pos.z;
+    for (const o of squad) { cx += o.pos.x; cz += o.pos.z; }
+    cx /= squad.length + 1; cz /= squad.length + 1;
+    const mine = Math.hypot(a.pos.x - cx, a.pos.z - cz);
+    if (squad.some((o) => Math.hypot(o.pos.x - cx, o.pos.z - cz) > mine + 1 && !(o._flankCd && t < o._flankCd) && o.td.human && o.hp >= o.maxHp * 0.5)) return null;
+    const main = Math.atan2(cx - tp.x, cz - tp.z);
+    const side = (Math.sin(main) * (a.pos.z - cz) - Math.cos(main) * (a.pos.x - cx)) >= 0 ? 1 : -1; // go round the side we're already on
+    const c = findCover(a, Math.max(8, pd * 0.8), { base: main + side * 1.3, arc: 0.9, maxTravel: 32 }) ||
+      findCover(a, Math.max(8, pd * 0.8), { base: main - side * 1.3, arc: 0.9, maxTravel: 32 });
+    a._flankCd = t + 18 + Math.random() * 10;
+    if (!c) return null;
+    c.flank = true;
+    a._flankUntil = t + 12;
+    const lines = FLANK_BARKS[a.type] || FLANK_BARKS[a.faction] || FLANK_BARKS['*'];
+    if (a.voice && Math.random() < 0.8) a.say(C.pick(lines), 2.5);
+    return c;
+  }
+
+  function preferredDistance(a) {
+    const w = a.weapon;
+    if (!w) return a.natural && a.natural.range ? a.natural.range * 0.5 : 10;
+    if (w.melee) return 1;
+    if (w.projectile === 'missile') return 28;
+    if (w.projectile === 'flame') return 6;
+    if (w.pellets > 1) return 8;
+    if (w.range >= 180) return 30;
+    if (w.automatic) return 15;
+    return 17;
+  }
+
+  // ------------------------------------------------------------------
+  // Behaviours
+  // ------------------------------------------------------------------
+  const B = {};
+
+  /** Ranged humanoid (raiders, enclave, BoS, settlers, mutant gunners). */
+  B.gunner = function (a, dt, opts) {
+    const w = a.weapon;
+    const tp = targetPos(a, _c);
+    const dx = tp.x - a.pos.x, dz = tp.z - a.pos.z, dist = Math.hypot(dx, dz) || 0.01;
+    const pd = opts && opts.advance ? Math.min(preferredDistance(a), 12) : preferredDistance(a);
+    const t = now();
+    a.faceTarget = true;
+    // Reloading
+    if (a.reloadT > 0) {
+      a.reloadT -= dt;
+      if (a.reloadT <= 0) { a.magLeft = w.magSize; }
+      // back off a little while reloading
+      if (a.holdPos) a.speed = 0;
+      else if (a.coverPos) {
+        steerTo(a, a.coverPos.x, a.coverPos.z, a.runSpeed, dt, 0.5);
+        if (a.coverPos.covered && a.td.human && Math.hypot(a.coverPos.x - a.pos.x, a.coverPos.z - a.pos.z) < 0.9) { a.ducked = true; a.duckUntil = t + 0.4; }
+      }
+      else C.steer(a, -dx, -dz, a.walkSpeed, dt);
+      a.faceTowards(tp.x, tp.z, 5, dt);
+      return;
+    }
+    if (w.magSize > 0 && a.magLeft <= 0) {
+      a.reloadT = w.reloadTime * (0.9 + Math.random() * 0.4);
+      a.oneShot('reload'); a.bark('reload', 0.45);
+      C.sfx(w.pellets > 1 ? 'reload_shotgun' : 'reload', { pos: a.pos, volume: 0.5 });
+      return;
+    }
+    // Grenade when the target hides behind cover
+    if (a.td.grenades && t > a.grenadeCd && dist > 7 && dist < 26 && (!a.canSeeTarget && t - a.lastSeenT < 5 || Math.random() < 0.004)) {
+      a.grenadeCd = t + 12 + Math.random() * 10;
+      if (Math.random() < a.td.grenades * 2) { throwGrenade(a); return; }
+    }
+    // Choose/refresh position
+    a.coverT -= dt;
+    if (a.coverT <= 0 && !(opts && opts.advance)) {
+      a.coverT = 4 + Math.random() * 4;
+      if (a.coverPos && a.coverPos.flank && t < (a._flankUntil || 0) && Math.hypot(a.coverPos.x - a.pos.x, a.coverPos.z - a.pos.z) > 1) a.coverT = 1.5; // still working round
+      else a.coverPos = tryFlank(a, pd) || (a.hp < a.maxHp * 0.85 || Math.random() < 0.6 ? findCover(a, pd) : null);
+      if (a.coverPos && a.coverPos.flank) a.coverT = 10;
+    }
+    let moving = false;
+    if (a.holdPos) {
+      // Snipers / turret-like posts (e.g. the Chrysler nest): never leave the spot
+      a.coverPos = null;
+    } else if (a.coverPos && Math.hypot(a.coverPos.x - a.pos.x, a.coverPos.z - a.pos.z) > 0.6) {
+      C.navMove(a, a.coverPos.x, a.coverPos.z, dist < 12 ? a.runSpeed : a.runSpeed * 0.8, dt, 0.5); moving = true;
+    } else if (a.ducked) {
+      // tucked in behind cover (see below)
+    } else if (!a.canSeeTarget && t - a.lastSeenT > 1.2 && t > (a.popT || 0) + 0.5) {
+      // Lost sight: advance toward last known position (pathing around the building in the way)
+      const lk = a.lastKnown || tp;
+      C.navMove(a, lk.x, lk.z, a.runSpeed * 0.8, dt, 2); moving = true; a.coverPos = null;
+    } else if (dist > pd * 1.4) {
+      if (a.canSeeTarget && !(a.stuckT > 0.4) && !C.navBusy(a)) C.steer(a, dx, dz, a.runSpeed * 0.85, dt);
+      else C.navMove(a, tp.x, tp.z, a.runSpeed * 0.85, dt, pd);
+      moving = true;
+    } else if (dist < pd * 0.5 && !(opts && opts.advance)) {
+      C.steer(a, -dx, -dz, a.walkSpeed * 1.4, dt); moving = true;
+    } else if (!a.coverPos || (opts && opts.advance)) {
+      // Strafe
+      a.strafeT -= dt;
+      if (a.strafeT <= 0) { a.strafeT = 0.9 + Math.random() * 1.8; a.strafeDir = Math.random() < 0.3 ? 0 : (Math.random() < 0.5 ? -1 : 1); }
+      if (a.strafeDir) { const sx = -dz / dist * a.strafeDir, sz = dx / dist * a.strafeDir; const adv = opts && opts.advance ? 0.5 : 0; C.steer(a, sx + dx / dist * adv, sz + dz / dist * adv, a.walkSpeed * 1.3, dt); moving = true; }
+    }
+    if (!moving) a.speed = 0;
+    a.faceTowards(tp.x, tp.z, 7, dt);
+    // Duck & pop (FO3/NV): tucked in behind low cover between bursts and while reloading,
+    // standing up to shoot (a short beat to aim first); a ducked head is hidden from the target too.
+    const atCover = !moving && !a.holdPos && a.td.human && a.coverPos && a.coverPos.covered && a.coverPos.peek &&
+      Math.hypot(a.coverPos.x - a.pos.x, a.coverPos.z - a.pos.z) < 0.9 && dist > 4;
+    if (!atCover) a.ducked = false;
+    else if (a.ducked) {
+      if (t > (a.duckUntil || 0) && t - a.lastSeenT < 10) { a.ducked = false; a.popT = t + 0.3 + Math.random() * 0.3; }
+    } else if (a._burstRest && t < a._burstRest - 0.4 && a.burstLeft <= 0 && t > (a.popT || 0) + 0.6) {
+      a.ducked = true; a.duckUntil = a._burstRest;
+    }
+    // Fire in bursts
+    if (a.canSeeTarget && !a.ducked && t > (a.popT || 0) && t > a.aimT && dist < w.range * 1.1) {
+      a.attackCd -= dt;
+      if (a.attackCd <= 0) {
+        if (a.burstLeft <= 0) {
+          if (a._burstRest && t < a._burstRest) return;
+          // Line of fire (35_reactions): never open up through a friend's back — sidestep instead
+          if (C.friendInLine && C.friendInLine(a, targetAimPoint(a, _d))) {
+            a.attackCd = 0.35 + Math.random() * 0.3;
+            if (a.coverPos && !a.holdPos) a.coverT = Math.min(a.coverT, 0.2);
+            else { a.strafeT = 0.8 + Math.random() * 0.6; a.strafeDir = a.strafeDir || (Math.random() < 0.5 ? -1 : 1); }
+            return;
+          }
+          a.burstLeft = w.automatic ? C.randInt(3, 8) : C.randInt(1, 3);
+        }
+        if (w.projectile === 'flame') { flame(a, { dmg: w.damage, dmgLvl: 0, range: w.range }, dt); a.burstLeft -= dt * 3; if (a.burstLeft <= 0) a._burstRest = t + 1 + Math.random(); return; }
+        shoot(a);
+        a.burstLeft--;
+        a.attackCd = w.automatic ? 1 / w.rof : (1 / w.rof) * (1.3 + Math.random() * 0.9) + 0.15;
+        if (a.burstLeft <= 0) a._burstRest = t + (w.automatic ? 0.6 : 0.4) + Math.random() * 1.1 + (atCover ? 0.9 + Math.random() * 1.2 : 0);
+        a.bark('combat', 0.06);
+      }
+    }
+  };
+
+  /** Melee humanoid / generic melee creature: rush & swing. */
+  B.brawler = function (a, dt, opts) {
+    const tp = targetPos(a, _c);
+    const dx = tp.x - a.pos.x, dz = tp.z - a.pos.z, dist = Math.hypot(dx, dz) || 0.01;
+    const atk = (opts && opts.atk) || meleeAttackDef(a);
+    const tr = a.target === 'player' ? G.player.radius : a.target.radius;
+    const reach = atk.range + a.radius * 0.6 + tr;
+    a.faceTarget = dist < reach + 1.5;
+    if (a.faceTarget) a.faceTowards(tp.x, tp.z, 9, dt);
+    // Lunge (ghouls, dogs): burst forward in the last few metres
+    if (atk.lunge && dist < atk.lunge + reach && dist > reach * 0.9 && !a.lungeT && a.attackCd <= 0.2 && Math.random() < 0.08) {
+      a.lungeT = 0.35; a.oneShot('attack_melee');
+      C.sfx(a.td.sounds && a.td.sounds.alert || 'ghoul_scream', { pos: a.pos, volume: 0.6, pitch: 1.1 });
+    }
+    if (a.lungeT) { a.lungeT -= dt; if (a.lungeT <= 0) a.lungeT = 0; C.steer(a, dx, dz, Math.max(9, a.runSpeed * 1.4), dt); }
+    else if (dist > reach * 0.85) {
+      const spd = opts && opts.speed ? opts.speed : a.runSpeed;
+      if (!a.canSeeTarget || a.stuckT > 0.4 || a.detourT > 0 || C.navBusy(a)) {
+        // Around cars, walls and park walls: path to the target (feelers still dodge small stuff)
+        C.navMove(a, tp.x, tp.z, spd, dt, reach * 0.8);
+      } else if (C.surroundSlot && dist < 9 && dist > reach * 1.3 && C.surroundSlot(a, tp, reach, _e)) {
+        // Pack tactics: several melee attackers fan out and close in from different sides
+        C.steer(a, _e.x - a.pos.x, _e.z - a.pos.z, spd, dt);
+      } else {
+        let sx = dx, sz = dz;
+        if (opts && opts.zigzag && dist > 5) { const s = Math.sin(now() * 3.2 + a.uid) * 0.55; sx += -dz / dist * s * dist * 0.3; sz += dx / dist * s * dist * 0.3; }
+        C.steer(a, sx, sz, spd, dt);
+      }
+    } else {
+      a.speed = 0;
+      // slight circling
+      if (Math.random() < 0.02) a.strafeDir = -a.strafeDir;
+    }
+    a.attackCd -= dt;
+    if (dist < reach && a.attackCd <= 0 && !a.pendingMelee) startMelee(a, atk);
+  };
+
+  /** Humanoids: pick gunner or brawler by weapon. Flee at low HP. */
+  B.humanoid = function (a, dt) {
+    if (a.td.flee && !a.fledOnce && !a.holdPos && a.hp < a.maxHp * a.td.flee && Math.random() < 0.5 * dt * 4) {
+      a.fledOnce = true; a.bark('flee', 1); a.setState('flee'); a.fleeFrom = a.target; return;
+    }
+    if (a.weapon && !a.weapon.melee) B.gunner(a, dt);
+    else B.brawler(a, dt);
+  };
+  B.mutant = function (a, dt) {
+    if (a.weapon && !a.weapon.melee) B.gunner(a, dt, { advance: true });
+    else B.brawler(a, dt, { speed: a.runSpeed });
+  };
+  B.behemoth = function (a, dt) {
+    if (a.roarT && now() < a.roarT) { a.speed = 0; return; }
+    B.brawler(a, dt, { speed: a.runSpeed, atk: a.natural });
+  };
+  B.ghoul = function (a, dt) {
+    // Glowing One: periodic radiation burst — heals nearby ferals, irradiates the player
+    if (a.td.glowing && now() > (a.burstT || 0)) {
+      a.burstT = now() + 11 + Math.random() * 6;
+      C.fx('flash', a.centerPos(), 0x66ff44, 6, 0.6);
+      C.fx('explosion', a.centerPos(), 3, 'plasma');
+      C.sfx('ghoul_scream', { pos: a.pos, volume: 1, pitch: 0.7 });
+      for (const o of C.list) if (!o.dead && o.faction === 'feral_ghouls' && o.distTo(a.pos) < 15) o.heal(o.maxHp * 0.5);
+      if (a.distToPlayer() < 10) G.player.addRads(15 * (1 - a.distToPlayer() / 12));
+    }
+    B.brawler(a, dt, { zigzag: true });
+  };
+  B.deathclaw = function (a, dt) {
+    if (a.roarT && now() < a.roarT) { a.speed = 0; a.faceTowards(targetPos(a, _c).x, _c.z, 4, dt); return; }
+    const d = a.target === 'player' ? a.distToPlayer() : a.distTo(a.target.pos);
+    // Charge: fast, committed, poor turning
+    if (d > 7 && !a.chargeT) { a.chargeT = 1.4; }
+    if (a.chargeT) {
+      a.chargeT -= dt; if (a.chargeT <= 0 || d < 3.5) a.chargeT = 0;
+      const tp = targetPos(a, _c);
+      const want = Math.atan2(-(tp.x - a.pos.x), -(tp.z - a.pos.z));
+      a.yaw += C.clamp(U.angleDiff(a.yaw, want), -2.2 * dt, 2.2 * dt); a.applyYaw();
+      a.faceTarget = true;
+      C.steer(a, -Math.sin(a.yaw), -Math.cos(a.yaw), a.runSpeed, dt);
+      a.attackCd -= dt;
+      if (d < 3.4 && a.attackCd <= 0) startMelee(a, a.natural);
+      return;
+    }
+    B.brawler(a, dt, { speed: a.runSpeed * 0.8, atk: a.natural });
+  };
+  B.swarm = function (a, dt) {
+    // Mole rats burrow under the street and pop up next to you
+    if (a.td.burrows) {
+      const d = a.target === 'player' ? a.distToPlayer() : a.distTo(a.target.pos);
+      if (a.burrowed) {
+        const tp = targetPos(a, _c);
+        a.burrowT -= dt;
+        steerTo(a, tp.x, tp.z, 5.5, dt, 1.6);
+        if (a.burrowT <= 0 && (d < 2.4 || a.burrowT < -4)) {
+          a.burrowed = false; a.char.root.visible = true; a.pos.y = G.world.groundHeight(a.pos.x, a.pos.z, a.pos.y + 1);
+          C.fx('dust', a.pos.clone()); C.fx('impact', a.pos.clone(), new THREE.Vector3(0, 1, 0), 'dirt');
+          C.sfx('molerat_squeak', { pos: a.pos, volume: 0.9 });
+          a.attackCd = 0.2; a.burrowCd = now() + 12;
+        }
+        return;
+      }
+      if (d > 11 && now() > (a.burrowCd || 0) && Math.random() < 0.02) {
+        if (!G.LAYOUT.isInterior(a.pos.x)) {
+          a.burrowed = true; a.burrowT = 1.2; a.char.root.visible = false;
+          C.fx('dust', a.pos.clone()); C.sfx('molerat_squeak', { pos: a.pos, volume: 0.7, pitch: 0.8 });
+          return;
+        }
+      }
+    }
+    // Radroaches skitter in jittery lines
+    B.brawler(a, dt, { zigzag: a.type === 'radroach' });
+  };
+  B.dog = function (a, dt) {
+    if (a.td.flee && !a.fledOnce && !a.holdPos && a.hp < a.maxHp * a.td.flee) { a.fledOnce = true; a.setState('flee'); a.fleeFrom = a.target; C.sfx('dog_bark', { pos: a.pos, pitch: 1.6, volume: 0.6 }); return; }
+    if (Math.random() < 0.006) C.sfx('dog_bark', { pos: a.pos, volume: 0.7 });
+    B.brawler(a, dt);
+  };
+  /** Orbit the target at a radius (flyers / eyebots). */
+  function orbit(a, dt, radius, speed) {
+    const tp = targetPos(a, _c);
+    const dx = a.pos.x - tp.x, dz = a.pos.z - tp.z; const d = Math.hypot(dx, dz) || 0.01;
+    const radial = (d - radius) * 0.35;
+    const tx = -dz / d * a.strafeDir, tz = dx / d * a.strafeDir;
+    C.steer(a, tx - dx / d * radial, tz - dz / d * radial, speed, dt);
+    a.strafeT -= dt; if (a.strafeT <= 0) { a.strafeT = 2 + Math.random() * 3; if (Math.random() < 0.4) a.strafeDir = -a.strafeDir; }
+    a.faceTarget = true; a.faceTowards(tp.x, tp.z, 5, dt);
+    return d;
+  }
+  B.flyer = function (a, dt) {
+    const d = orbit(a, dt, 9, a.runSpeed);
+    a.hoverBoost = Math.sin(now() * 1.3 + a.uid) * 0.8;
+    a.attackCd -= dt;
+    if (a.attackCd <= 0 && a.canSeeTarget && d < a.natural.range) { a.attackCd = a.natural.cooldown * (0.8 + Math.random() * 0.5); spit(a, a.natural); }
+    if (d < 1.8) B.brawler(a, dt, { atk: { kind: 'melee', dmg: 3, range: 1.2, cooldown: 1.2, windup: 0.2, type: 'melee', sound: 'bloatfly_buzz' } });
+  };
+  B.robot = function (a, dt) {
+    const nat = a.natural;
+    const tp = targetPos(a, _c);
+    const dx = tp.x - a.pos.x, dz = tp.z - a.pos.z, dist = Math.hypot(dx, dz) || 0.01;
+    a.faceTarget = true; a.faceTowards(tp.x, tp.z, 3, dt);
+    if (dist > 14 || !a.canSeeTarget) C.steer(a, dx, dz, a.runSpeed, dt);
+    else if (dist < 4) C.steer(a, -dx, -dz, a.walkSpeed, dt);
+    else a.speed = 0;
+    a.attackCd -= dt;
+    if (a.canSeeTarget && now() > a.aimT && a.attackCd <= 0) {
+      if (a.burstLeft <= 0) a.burstLeft = nat.burst || 1;
+      shoot(a); a.burstLeft--;
+      a.attackCd = a.burstLeft > 0 ? (nat.burst > 5 ? nat.cooldown : 0.28) : (nat.rest || nat.cooldown) * (0.9 + Math.random() * 0.4);
+      a.bark('combat', 0.05);
+    }
+  };
+  B.handy = function (a, dt) {
+    const nat = a.natural;
+    const tp = targetPos(a, _c);
+    const dx = tp.x - a.pos.x, dz = tp.z - a.pos.z, dist = Math.hypot(dx, dz) || 0.01;
+    a.faceTarget = true; a.faceTowards(tp.x, tp.z, 5, dt);
+    if (dist < 2.2) { B.brawler(a, dt, { atk: nat.alt }); return; }
+    if (dist > 6) C.steer(a, dx, dz, a.runSpeed, dt);
+    else { const s = a.strafeDir; C.steer(a, -dz / dist * s, dx / dist * s, a.walkSpeed, dt); }
+    // Flame bursts: 1.6 s on, 1.4 s off
+    a.flameT = (a.flameT || 0) + dt;
+    const cyc = nat.burstTime + nat.rest;
+    if (a.flameT > cyc) a.flameT -= cyc;
+    if (a.flameT < nat.burstTime && dist < nat.range && a.canSeeTarget) flame(a, nat, dt);
+    if (Math.random() < 0.004) a.bark('combat', 1);
+  };
+  B.eyebot = function (a, dt) {
+    const d = orbit(a, dt, 12, a.runSpeed);
+    a.attackCd -= dt;
+    if (a.attackCd <= 0 && a.canSeeTarget && d < a.natural.range && now() > a.aimT) { a.attackCd = a.natural.cooldown * (0.8 + Math.random() * 0.5); shoot(a); }
+    if (Math.random() < 0.01) C.sfx('eyebot_chatter', { pos: a.pos, volume: 0.5 });
+  };
+  B.mirelurk = function (a, dt) {
+    // Turtle up inside the shell when badly hurt (face protected)
+    if (a.turtleT > 0) {
+      a.turtleT -= dt; a.speed = 0; a.shellUp = a.turtleT > 0;
+      if (!a.shellUp) a.anim('idle');
+      return;
+    }
+    if (a.hp < a.maxHp * 0.45 && !a.turtledOnce && Math.random() < 0.3 * dt * 4) {
+      a.turtledOnce = true; a.turtleT = 2.5 + Math.random(); a.shellUp = true; a.anim('cower');
+      C.sfx('mirelurk_click', { pos: a.pos, volume: 0.8, pitch: 0.7 });
+      return;
+    }
+    B.brawler(a, dt, { atk: a.natural });
+  };
+  B.queen = function (a, dt) {
+    const d = a.target === 'player' ? a.distToPlayer() : a.distTo(a.target.pos);
+    a.spitCd = (a.spitCd || 2) - dt;
+    if (d > 8 && a.spitCd <= 0 && a.canSeeTarget) { a.spitCd = a.natural.alt.cooldown * (0.8 + Math.random() * 0.4); spit(a, a.natural.alt); }
+    B.brawler(a, dt, { speed: d > 14 ? a.runSpeed : a.walkSpeed * 1.5, atk: a.natural });
+  };
+
+  /** Radscorpions: claws, and every few seconds the tail stinger (poison DoT) — unless the tail was shot off. */
+  B.stinger = function (a, dt) {
+    const sting = a.td.stinger && C.NATURAL[a.td.stinger];
+    // the tail is the scorpion's 'leftLeg' part (characters' SCORP_INFO): shot off or crippled = no sting
+    const tailGone = (a.char && typeof a.char.hasPart === 'function' && !a.char.hasPart('leftLeg')) || !!(a.limbs && a.limbs.leftLeg && a.limbs.leftLeg.crippled);
+    a.stingCd = (a.stingCd === undefined ? 1.5 : a.stingCd) - dt;
+    let atk = a.natural;
+    if (sting && !tailGone && a.stingCd <= 0) atk = sting;
+    const before = a.pendingMelee;
+    if (a.td.small && a.td.swarm) B.brawler(a, dt, { zigzag: true, atk }); else B.brawler(a, dt, { atk });
+    if (atk === sting && a.pendingMelee && a.pendingMelee !== before) a.stingCd = sting.cooldown * (0.8 + Math.random() * 0.5);
+  };
+  /** Fire ants / centaurs: lob the natural's alt spit from range, bite up close. */
+  B.spitter = function (a, dt) {
+    const alt = a.natural && a.natural.alt;
+    if (alt) {
+      const d = a.target === 'player' ? a.distToPlayer() : a.distTo(a.target.pos);
+      a.spitCd = (a.spitCd === undefined ? 1.2 : a.spitCd) - dt;
+      if (d > (alt.minRange || 4) && d < alt.range && a.spitCd <= 0 && a.canSeeTarget) {
+        a.spitCd = alt.cooldown * (0.8 + Math.random() * 0.4);
+        const tp = targetPos(a, _c); a.faceTowards(tp.x, tp.z);
+        spit(a, alt);
+      }
+    }
+    B.brawler(a, dt, { atk: a.natural, zigzag: a.type === 'fire_ant' });
+  };
+
+  function combatBehaviour(a) {
+    const ai = a.td.ai;
+    if (ai === 'humanoid') return B.humanoid;
+    if (ai === 'mutant') return B.mutant;
+    return B[ai] || B.brawler;
+  }
+
+  // ------------------------------------------------------------------
+  // Non-combat behaviours
+  // ------------------------------------------------------------------
+  function idleBehaviour(a, dt) {
+    const t = now();
+    a.faceTarget = false;
+    const mode = a.aiMode;
+    // Friendly NPCs look at the player when close (Fallout head-tracking)
+    const dp = a.distToPlayer();
+    if (!a.isEnemy('player') && dp < 5 && a.seesPlayer !== false && !a.isCreature) {
+      try { if (a.char.lookAt) a.char.lookAt(_a.set(G.player.pos.x, G.player.pos.y + 1.55, G.player.pos.z)); } catch (e) { /* ignore */ }
+      a._looking = true;
+    } else if (a._looking) { a._looking = false; try { if (a.char.lookAt) a.char.lookAt(null); } catch (e) { /* ignore */ } }
+    if (mode === 'static' || mode === 'sit' || mode === 'merchant') {
+      a.speed = 0;
+      if (mode === 'merchant' && dp < 4 && !a.isEnemy('player')) a.faceTowards(G.player.pos.x, G.player.pos.z, 2, dt);
+      if (t > a.nextThink) { a.nextThink = t + 12 + Math.random() * 20; if (dp < 18) a.bark('idle', 0.35); }
+      return;
+    }
+    if (mode === 'guard') {
+      if (C.navMove(a, a.home.x, a.home.z, a.walkSpeed, dt, 1.0)) {
+        a.speed = 0;
+        // look around the post
+        if (t > a.nextThink) { a.nextThink = t + 3 + Math.random() * 5; a._lookYaw = a.homeYaw + (Math.random() - 0.5) * 2.2; if (dp < 16) a.bark('idle', 0.12); }
+        if (a._lookYaw !== undefined) { a.yaw += C.clamp(U.angleDiff(a.yaw, a._lookYaw), -1.2 * dt, 1.2 * dt); a.applyYaw(); }
+      }
+      return;
+    }
+    if (mode === 'patrol' && a.patrol && a.patrol.length) {
+      const p = a.patrol[a.patrolIdx % a.patrol.length];
+      if (C.navMove(a, p.x, p.z, a.walkSpeed, dt, 1.2)) { a.patrolIdx++; a.nextThink = t + 1 + Math.random() * 2; }
+      if (t > a.nextThink && dp < 20) { a.nextThink = t + 15 + Math.random() * 15; a.bark('idle', 0.3); }
+      return;
+    }
+    // wander (default): walk to random spots around home, pause, repeat
+    if (!a.wanderGoal || t > a.nextThink) {
+      if (!a.wanderGoal || Math.random() < 0.6) {
+        const ang = Math.random() * Math.PI * 2, r = Math.random() * (a.home.r || 10);
+        const gx = a.home.x + Math.sin(ang) * r, gz = a.home.z + Math.cos(ang) * r;
+        const gg = G.world.groundHeight(gx, gz, a.pos.y + 0.6, 0.2);
+        if ((gg > G.world.waterLevel && gg > a.pos.y - 2.5) || a.td.amphibious || a.hover) a.wanderGoal = { x: gx, z: gz };
+      }
+      a.nextThink = t + 5 + Math.random() * 9;
+      if (dp < 20 && Math.random() < 0.3) a.bark('idle', 0.5);
+      if (a.td.sounds && a.td.sounds.idle && dp < 25 && Math.random() < 0.25) C.sfx(a.td.sounds.idle, { pos: a.pos, volume: 0.35 });
+    }
+    if (a.wanderGoal) {
+      if (C.navMove(a, a.wanderGoal.x, a.wanderGoal.z, a.walkSpeed, dt, 0.8)) a.wanderGoal = null;
+      else if (a.nav && a.nav.failUntil > t && a.stuckT > 0.6) a.wanderGoal = null;   // unreachable spot: pick another
+    } else a.speed = 0;
+  }
+
+  /** [CAUTION] sub-state: stop, turn toward the half-seen shape, peer at it. */
+  function cautionBehaviour(a, dt) {
+    a.speed = 0;
+    a.faceTarget = true;
+    const p = a.cautionAt || G.player.pos;
+    a.faceTowards(p.x, p.z, 3.5, dt);
+    if (!a.isCreature) { try { if (a.char.lookAt) a.char.lookAt(_a.set(p.x, p.y + 1.4, p.z)); a._looking = true; } catch (e) { /* ignore */ } }
+  }
+
+  function followBehaviour(a, dt) {
+    const P = G.player;
+    const ft = a.followTarget === 'player' || a.followTarget === G.player ? P : a.followTarget;
+    if (!ft || (ft.dead)) { a.setState('idle'); return; }
+    const fp = ft.pos;
+    const d = Math.hypot(fp.x - a.pos.x, fp.z - a.pos.z);
+    // Companions fight what the player fights
+    if (a.following === 'player' && now() > (a._nextFollowScan || 0)) {
+      a._nextFollowScan = now() + 0.7;
+      let best = null, bd = 30;
+      for (const o of C.list) if (!o.dead && o.inScene && o.hostile() && o.inCombat && o.target === 'player') { const dd = o.distTo(a.pos); if (dd < bd) { bd = dd; best = o; } }
+      if (best) { C.enterCombat(a, best); return; }
+    }
+    // Catch-up teleport: through doors / other space at once; otherwise only when pathing can't close
+    // the gap (far behind for a while, or no path) — companions walk around the block first.
+    const otherSpace = G.LAYOUT.isInterior(fp.x) !== G.LAYOUT.isInterior(a.pos.x);
+    if (d > 45) a._farT = (a._farT || 0) + dt; else a._farT = 0;
+    const noPath = a.nav && a.nav.failUntil > now() && !a.nav.path;
+    if (otherSpace || d > 110 || (d > 60 && (a._farT > 6 || noPath))) {
+      const back = new THREE.Vector3(Math.sin(P.yaw) * 2.5, 0, Math.cos(P.yaw) * 2.5);
+      a.pos.set(fp.x + back.x, G.world.groundHeight(fp.x + back.x, fp.z + back.z, fp.y + 1), fp.z + back.z);
+      if (a.nav) { a.nav.path = null; a.nav.search = null; }
+      a._farT = 0;
+      a.attach();
+      return;
+    }
+    if (d > 3.5) C.navMove(a, fp.x, fp.z, d > 9 ? a.runSpeed : a.walkSpeed * 1.4, dt, 3.2);
+    else a.speed = 0;
+  }
+
+  function fleeBehaviour(a, dt) {
+    const src = a.fleeFrom === 'player' || !a.fleeFrom ? G.player.pos : a.fleeFrom.pos;
+    const dx = a.pos.x - src.x, dz = a.pos.z - src.z; const d = Math.hypot(dx, dz) || 0.01;
+    if (a.holdPos) { a.speed = 0; a.setState(a.target && targetValid(a) ? 'combat' : 'idle'); return; }
+    a.faceTarget = false;
+    C.steer(a, dx, dz, a.runSpeed, dt);
+    if (Math.random() < 0.004) a.bark('flee', 1);
+    // Fallout: they come back once they've got some distance (and courage)
+    if (a.stateT > 9 || d > 45) {
+      a.heal(a.maxHp * 0.15);
+      if (a.target && targetValid(a)) { a.setState('combat'); a.inCombat = true; }
+      else C.leaveCombat(a, 'idle');
+    }
+  }
+
+  function searchBehaviour(a, dt) {
+    a.faceTarget = false;
+    a.searchT -= dt;
+    const lk = a.holdPos ? a.home : a.lastKnown;
+    if (lk && C.navMove(a, lk.x, lk.z, a.walkSpeed * 1.35, dt, a.holdPos ? 0.8 : 1.5)) {
+      // look around
+      a.speed = 0;
+      if (!a._lookAroundT || now() > a._lookAroundT) { a._lookAroundT = now() + 1.2 + Math.random(); a._lookYaw = a.yaw + (Math.random() - 0.5) * 3; }
+      if (a._lookYaw !== undefined) { a.yaw += C.clamp(U.angleDiff(a.yaw, a._lookYaw), -2 * dt, 2 * dt); a.applyYaw(); }
+    }
+    if (a.searchT <= 0) {
+      a.bark('lost', 0.7);
+      a.awareness = Math.min(a.awareness, 0.2);
+      C.leaveCombat(a, 'idle');
+      a.wanderGoal = { x: a.home.x, z: a.home.z };
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Per-frame update of one (in-scene, alive) actor
+  // ------------------------------------------------------------------
+  C.updateActor = function (a, dt) {
+    if (a.dead) return;
+    if (!a._aiStarted) { a._aiStarted = true; a.homeYaw = a.yaw; } // quests may set yaw right after spawn
+    a.stateT += dt;
+    const t = now();
+    // Perception (throttled & staggered)
+    if (t >= a.nextPerceive) {
+      const dtp = Math.max(0.05, t - (a._lastPerceive || t - 0.25));
+      a._lastPerceive = t;
+      a.nextPerceive = t + (a.state === 'combat' ? 0.18 : 0.3) + Math.random() * 0.08;
+      if (a.state !== 'dormant') perceive(a, dtp);
+    }
+    // Reactions layer (35_reactions): knocked down, dodging a grenade, going for a dropped gun
+    if (C.reactOverride) {
+      const r = C.reactOverride(a, dt);
+      if (r) { if (!a.burrowed) vertical(a, dt); a.applyYaw(); if (r === 1) pickAnim(a); return; }
+    }
+    if (a.pendingMelee) resolvePendingMelee(a);
+    // Glowing aura follows
+    if (a.radSource) { a.radSource.x = a.pos.x; a.radSource.y = a.pos.y + 1; a.radSource.z = a.pos.z; }
+    a.faceTarget = false;
+    switch (a.state) {
+      case 'knocked': {
+        // essential NPC knocked unconscious: gets back up after a while
+        a.speed = 0;
+        if (t > (a.knockT || 0)) { a.knockedOut = false; a.hp = Math.max(a.hp, a.maxHp * 0.3); a.setState('idle'); a.anim('idle'); C.calmEssential(a); }
+        return;
+      }
+      case 'dormant': {
+        a.speed = 0;
+        const d = a.distToPlayer();
+        const P = G.player;
+        // den sleepers (North Woods deathclaws) wake a little farther out, but a careful sneaker can slip past
+        const wr = P.sneaking ? (a.denWake ? 3 + (1 - C.skill('sneak', 15) / 100) * 5 : 4 + (1 - C.skill('sneak', 15) / 100) * 6) : (a.denWake || 11);
+        if (a.isEnemy('player') && P.alive && d < wr) C.wake(a);
+        else if (a.denWake && d < 45 && t > (a._snoreT || 0)) {
+          // slow, heavy breathing from the den — the player hears them before seeing them
+          a._snoreT = t + 4 + Math.random() * 4;
+          if (a.td.sounds && a.td.sounds.idle) C.sfx(a.td.sounds.idle, { pos: a.pos, volume: 0.22, pitch: 0.45 + Math.random() * 0.1 });
+        }
+        break;
+      }
+      case 'combat': {
+        if (!targetValid(a)) {
+          const killed = a.target && a.target !== 'player' && a.target.dead;
+          const nt = pickNewTarget(a);
+          if (nt) { a.target = nt; break; }
+          if (killed || (a.target === 'player' && !G.player.alive)) a.bark('kill', 0.6);
+          C.leaveCombat(a, 'idle');
+          break;
+        }
+        // Lost the target for a while → search
+        if (!a.canSeeTarget && t - a.lastSeenT > (a.target === 'player' && G.player.sneaking ? 5 : 12)) {
+          const lk = a.lastKnown ? a.lastKnown.clone() : targetPos(a, new THREE.Vector3());
+          C.leaveCombat(a, 'idle');
+          a.awareness = 0.6;
+          C.startSearch(a, lk);
+          break;
+        }
+        // Occasionally re-evaluate to a closer enemy
+        if (t > (a._retargetT || 0)) {
+          a._retargetT = t + 1.5 + Math.random();
+          if (a.target !== 'player') { const nt = pickNewTarget(a); if (nt === 'player' && a.distToPlayer() < a.distTo(a.target.pos) * 0.7) a.target = nt; }
+        }
+        try { if (a.char.lookAt) a.char.lookAt(targetAimPoint(a, _b)); } catch (e) { /* ignore */ }
+        combatBehaviour(a)(a, dt);
+        break;
+      }
+      case 'flee': fleeBehaviour(a, dt); break;
+      case 'search': searchBehaviour(a, dt); break;
+      case 'follow': followBehaviour(a, dt); break;
+      case 'move': {
+        if (a.cautionUntil > t) { cautionBehaviour(a, dt); break; }
+        if (!a.moveGoal || C.navMove(a, a.moveGoal.x, a.moveGoal.z, a.moveRun ? a.runSpeed : a.walkSpeed, dt, 0.6)) { a.moveGoal = null; a.setState(a.following ? 'follow' : 'idle'); }
+        break;
+      }
+      case 'cower': {
+        a.speed = 0;
+        if (a.stateT > 8 + Math.random() * 4) a.setState('idle');
+        break;
+      }
+      default:
+        if (a.cautionUntil > t) cautionBehaviour(a, dt);
+        else idleBehaviour(a, dt);
+    }
+    if (!a.burrowed) vertical(a, dt);
+    a.applyYaw();
+    // Animation
+    pickAnim(a);
+  };
+
+  function pickAnim(a) {
+    if (a.state === 'dormant' || a.burrowed) return;
+    // Weapon raised while fighting (G.chars aim pose/IK), lowered otherwise
+    const aiming = a.state === 'combat' && !!a.weapon && !a.weapon.melee;
+    if (aiming !== a._aiming) { a._aiming = aiming; try { if (a.char.setAim) a.char.setAim(aiming); } catch (e) { /* ignore */ } }
+    if (a.shellUp) { a.anim('cower'); return; }
+    const sp = a.speed || 0;
+    if (sp > 0.25) {
+      if (sp > a.walkSpeed * 1.35) a.anim('run', C.clamp(sp / Math.max(1, a.runSpeed), 0.6, 1.6));
+      else a.anim(a.state === 'search' && a.td.human ? 'sneak' : 'walk', C.clamp(sp / Math.max(0.5, a.walkSpeed), 0.6, 1.8));
+      return;
+    }
+    if (a.state === 'cower') a.anim('cower');
+    else if (a.aiMode === 'sit' && a.state === 'idle') a.anim('sit');
+    else if (a.state === 'combat' && a.ducked) a.anim('sneak');
+    else if (a.state === 'combat' && a.weapon && !a.weapon.melee) a.anim('aim');
+    else a.anim('idle');
+  }
+})();
+

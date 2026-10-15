@@ -1,0 +1,224 @@
+/* src/quests/10_items.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 10: QUEST ITEMS, NOTES & HOLOTAPES
+ * Every piece of writing here is original. Items are defined in the
+ * 'init' phase (rpg's G.items registry exists by then: order 40 < 60).
+ * Ids are prefixed q_ to avoid collisions with rpg/weapons items.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+
+  const NOTES = [
+    // ------------------------------------------------------------ Vault 120
+    { id: 'q_note_birthday_card', type: 'note', name: 'Birthday Card (Lucy)', title: 'Happy 19th!',
+      text: 'To my favourite tenant-in-crime,\n\nNineteen! You are officially old enough to be evicted as an adult. ' +
+        'Mom says the cake is "pre-war style," which I think means it is older than both of us. Eat it anyway.\n\n' +
+        'I got you a real present too, but Mr. Super confiscated it for "unauthorized joy." I will steal it back.\n\n— Lucy\n\nP.S. Tommy Ruggiero says he has a present for you. Do not accept it. It is a punch.' },
+    { id: 'q_note_eviction', type: 'note', name: 'Notice to Vacate', title: 'VAULT-TEC PROPERTY MANAGEMENT — NOTICE TO VACATE',
+      text: 'TENANT: {NAME}\nUNIT: 4-C (Shared)\nSTATUS: LEASE NON-RENEWABLE\n\nDear Valued Tenant,\n\nOur records indicate that on this, the ' +
+        'anniversary of your birth, you have been found in ASSOCIATION WITH AN EVICTED PERSON (see: Marlow, E.). Per Vault-Tec Residential ' +
+        'Code 120-7(b), association with an evicted person is itself an evictable offence.\n\nYou are hereby directed to vacate the premises ' +
+        'immediately. Your security deposit (one (1) Vault-Tec Lunchbox) has been retained to cover wear and tear.\n\nVault-Tec thanks you for ' +
+        'choosing Vault 120: Rent-Stabilized Living Beneath America\'s Greatest Park!\n\n— THE SUPERINTENDENT' },
+    { id: 'q_holo_zeke_birthday', type: 'holotape', name: 'Holotape: "Happy Birthday, Kid"', title: 'Zeke Marlow — Personal Log',
+      text: '[Static. A chair creaks. An old man clears his throat.]\n\nZEKE: Is it on? The little wheel is going around. Okay.\n\n' +
+        'Happy birthday, kid. If you\'re hearing this, Super finally kicked me out and you got into my locker, which means you guessed the ' +
+        'combination, which means you remembered it\'s your birthday backwards. Good. I raised you right.\n\nListen. Forty years I fixed ' +
+        'pipes down here, and forty years that robot wouldn\'t let me into the sub-basement. So I let myself in. There\'s a relay down there, ' +
+        'kid. Pre-war. Runs all the way under the harbour to Lady Liberty herself. Vault 120 wasn\'t built to save anybody. It was built to hold ' +
+        'a key.\n\nI copied the key. That\'s the other tape. Don\'t lose it, don\'t sell it, and for God\'s sake don\'t let anybody in a black ' +
+        'helmet ask you nicely for it.\n\nI\'ll be at Grand Central. Ask for me at the Oyster Bar. And kid... the sky\'s bigger than you think. ' +
+        'Try not to stare at it too long.\n\n[Click.]' },
+    { id: 'q_liberty_key', type: 'holotape', quest: true, name: 'Liberty Key (Vault 120 Authorization)', weight: 0, value: 0,
+      title: 'VAULT-TEC / POSEIDON ENERGY — PROJECT KNICKERBOCKER',
+      text: 'AUTHORIZATION CARTRIDGE 120-A\nCLASSIFICATION: EYES ONLY — REGIONAL OVERSEER\n\nThis cartridge contains the civilian authorization ' +
+        'handshake for the KNICKERBOCKER ATMOSPHERIC RECLAMATION ARRAY ("the Torch").\n\nThe array may be operated only with (1) this cartridge ' +
+        'and (2) a charged Knickerbocker Ignition Core.\n\nWARNING: Do not operate the array in SELECTIVE mode without written consent from ' +
+        'the Office of the President. Do not operate the array in RECLAMATION mode without written consent from literally anyone.\n\n' +
+        '[Handwritten label on the cartridge: "DON\'T LOSE THIS — Z."]' },
+    { id: 'q_note_overseer_memo', type: 'note', name: 'Overseer\'s Memo', title: 'Overseer H. Vance — Private',
+      text: 'Day 76,432 (I stopped counting properly around Day 400; the computer keeps counting for me).\n\nThe Superintendent evicted the ' +
+        'Pellegrino family today for "excessive laundry." They were the ninth this year. The Superintendent says the waiting list must be ' +
+        'honoured. There is no waiting list. There has been no one outside to put on a waiting list for two hundred years.\n\nZeke believes ' +
+        'the sub-basement relay is still live, and that someone on the surface has been pinging it. He believes the signal is military. I ' +
+        'told him to leave it alone. I have told him to leave things alone for thirty years and he has never once done it.\n\nIf he\'s ' +
+        'right, Vault 120 is not a vault. It\'s a lockbox. And we\'re the packing peanuts.' },
+    { id: 'q_note_pipe_rats', type: 'note', name: 'Pipe Rats Membership Card', title: 'PIPE RATS — OFFICIAL MEMBER',
+      text: 'THIS CARD ENTITLES THE BEARER TO:\n- Be a Pipe Rat\n- Lean on stuff\n- Say "yeah, well" in a tough voice\n\n' +
+        'Card is property of Tommy Ruggiero and may be revoked at any time for being lame.\n\n[On the back, in pencil: "honorary member. ' +
+        'dont tell nobody. -T"]' },
+    { id: 'q_note_door_code', type: 'note', name: 'Folded Note (Door Override)', title: 'In the Overseer\'s handwriting',
+      text: 'Terminal override for the main door: KNICKERBOCKER.\n\nThe Superintendent will lock the atrium behind you. Don\'t look back — ' +
+        'not because anything will follow you, but because Lucy will be standing there, and you\'ll never leave.\n\nFind him. Bring him home ' +
+        'if you can. If you can\'t, bring yourself home.\n\n— H.V.' },
+
+    // ------------------------------------------------------------ Central Park / Borough
+    { id: 'q_note_borough_owner', type: 'note', name: 'Water-Stained Letter', title: 'To whoever finds my dog',
+      text: 'If you\'re reading this I\'m probably the skeleton you\'re standing on. Sorry about that.\n\nThe dog\'s name is Borough. He\'s ' +
+        'a good boy. He is not a good guard dog; he thinks raiders are friends he hasn\'t met yet. He likes Cram, belly rubs and biting ' +
+        'mole rats in half.\n\nHe won\'t leave me. I\'ve tried telling him. If you\'ve got food and a little patience, maybe he\'ll leave with ' +
+        'you. Tell him "Borough, heel." He knows "heel." He ignores it, but he knows it.\n\n— Mack' },
+
+    // ------------------------------------------------------------ Grand Central
+    { id: 'q_holo_zeke_travel', type: 'holotape', name: 'Holotape: Zeke\'s Travel Log', title: 'Zeke Marlow — Travel Log',
+      text: '[Wind. Distant gunfire. Zeke is out of breath.]\n\nZEKE: Day two on the surface. Ate a thing Moe called "tunnel shrimp." ' +
+        'Didn\'t ask. Mistake either way.\n\nThe radio man at Radio City — Valentine — he\'s been catching the same pings I caught down in the ' +
+        'vault. Military cipher, bouncing off the Statue. He thinks with a working amplifier he can listen in proper.\n\nIf I don\'t come back ' +
+        'here, kid, go see Vinnie Valentine. And bring him a present. Radio men love presents.\n\n[Pause.]\n\nZEKE: There\'s a black ' +
+        'bird circling the Chrysler. Not a real bird. I\'m going to go now.\n\n[Click.]' },
+    { id: 'q_note_market_rules', type: 'note', name: 'Grand Central Market Rules', title: 'POSTED BY ORDER OF THE STATIONMASTER',
+      text: '1. No shooting in the concourse. Shooting OUTSIDE the concourse is between you and God.\n2. Caps only. No IOUs, no teeth, no ' +
+        '"I\'ll owe you."\n3. Ghouls welcome. Super mutants not welcome. Super mutant-shaped ghouls: case by case.\n4. Do not feed the ' +
+        'Info-Bot. It cannot eat and it gets upset.\n5. The clock is broken. Asking what time it is will not fix it.\n\n— D. Okafor, Stationmaster' },
+    { id: 'q_note_caravan_manifest', type: 'note', name: 'Caldwell Caravan Manifest', title: 'CALDWELL & DAUGHTERS — MANIFEST #212',
+      text: 'Route: Flatiron → Madison Sq → Grand Central\nPack-bot: "Dolly" (Protectron, legs welded, pulled by Ruiz)\nCargo:\n- 40 purified ' +
+        'water\n- 12 stimpaks (sealed)\n- 1 strongbox (DO NOT OPEN, DO NOT LET RUIZ OPEN)\n\nNotes: Ruiz says he heard whistling from the ' +
+        'Woolworth. I told him it\'s the wind. It is not the wind.' },
+    { id: 'q_note_raider_woolworth', type: 'note', name: 'Raider Scrawl', title: 'on the back of a menu',
+      text: 'GOT THE CARAVAN BOX. CANT OPEN IT. HIT IT WITH A HAMMER. HIT IT WITH SKITZ. SKITZ IS A HAMMER NOW.\n\nWHOEVER WANTS IT BACK ' +
+        'CAN COME TO TOP OF THE WOOLWORTH AND ASK NICE AND WE WILL SAY NO.' },
+
+    // ------------------------------------------------------------ Radio City
+    { id: 'q_holo_intercept', type: 'holotape', name: 'Holotape: Intercepted Transmission', title: 'Radio Free Manhattan — Recorded Intercept',
+      text: '[Vinnie Valentine\'s voice, whispering: "We\'re rolling, we\'re rolling."]\n\n[Heavy static resolves into a clipped, calm ' +
+        'military voice.]\n\nVOICE: —Liberty Station to Raven Rock relay. Asset MARLOW remains uncooperative. He insists the Knickerbocker ' +
+        'array will not accept a Selective payload without the civilian cartridge. Search of Vault 120 surface egress negative. Recommend we ' +
+        'let the vault dweller come to us. They always come to us.\n\n[A second voice, older, further from the mic.]\n\nZEKE: Kid, if you\'re ' +
+        'hearing this — don\'t you dare come to—\n\n[Sound of a door. Static.]\n\nVOICE: Liberty Station out.\n\n[Click.]' },
+
+    // ------------------------------------------------------------ Factions
+    { id: 'q_holo_codex_override', type: 'holotape', name: 'Holotape: Codex Override', title: 'BROTHERHOOD OF STEEL — CODEX OVERRIDE 7',
+      text: 'By authority of the Codex, and of Paladin Commander H. Stroud, Chapter Rockefeller:\n\nThis cartridge transfers command ' +
+        'authority of any pre-war installation to which it is applied to the Brotherhood of Steel, for the purposes of containment, study, ' +
+        'and protection of the wasteland from itself.\n\nThe Brotherhood thanks you for your cooperation. Your cooperation was not optional.' },
+    { id: 'q_holo_directive_7a', type: 'holotape', name: 'Holotape: Directive 7-A', title: 'ENCLAVE — EXECUTIVE DIRECTIVE 7-A',
+      text: 'CLASSIFIED — EXECUTIVE BRANCH\n\nUpon acquisition of the Knickerbocker array, the array is to be operated in SELECTIVE mode.\n\n' +
+        'The Selective payload tunes the array\'s reclamation field to the unmutated human genome. All other organisms within the field ' +
+        '(approx. 40 km radius) will experience "accelerated reclamation."\n\nMedical staff estimate a 94% reduction in mutant, ghoul and ' +
+        'irregular-human populations of the Manhattan region. Public messaging will refer to this as "cleaning the air."\n\nGod bless the ' +
+        'Enclave. God bless America. Keep this tape away from Lieutenant Hale; she still believes the messaging.' },
+    { id: 'q_note_enclave_orders', type: 'note', name: 'Enclave Field Orders', title: 'UN PLAZA — STANDING ORDERS',
+      text: '1. The vault dweller from 120 is NOT to be engaged. Repeat: NOT to be engaged. We want them smiling.\n2. Eyebot EB-44 is to stop ' +
+        'playing the anthem at 0300. Whoever reprogrammed it: we know.\n3. The UN building is property of the United States Government. ' +
+        'It always was. Please remove the flags of other nations; they are historically inaccurate.\n\n— Lt. V. Hale, by order of Col. A. Crane' },
+    { id: 'q_note_kong_manifesto', type: 'note', name: 'KONG BOOK', title: 'KONG BOOK (written in crayon, very large)',
+      text: 'KONG IS KING OF THE EMPIRE.\nEMPIRE IS TALLEST.\nTHEREFORE KONG IS TALLEST KING.\n\nKONG FOUND SHINY ROCK IN SMALL ROOM AT TOP. ' +
+        'SHINY ROCK HUMS. HUMMING MEANS IT LIKES KONG.\n\nKONG NEEDS QUEEN. QUEEN MUST BE SMALL AND PRETTY AND NOT SCREAM. ALL SMALL PRETTY ' +
+        'THINGS SCREAM. KONG IS SAD ABOUT THIS.\n\nKONG ALSO NEEDS BIGGER CLUB.' },
+
+    // ------------------------------------------------------------ The Neon / Atom
+    { id: 'q_note_atom_sermon', type: 'note', name: 'Sermon of the Split Atom', title: 'Father Hollowell\'s Sermon Notes',
+      text: 'Brothers and sisters: in the beginning there was the Atom, and the Atom was whole, and it was lonely.\n\nSo the Atom split ' +
+        'itself, that it might have company. Two became four. Four became a very bright afternoon in October.\n\nWe do not fear the Glow. ' +
+        'The Glow is the Atom saying hello. The ghouls of the Neon have been touched by the Glow and yet they hang lights, as if Atom\'s own ' +
+        'light were not enough! Pray for them. Then, perhaps, unplug them.' },
+    { id: 'q_note_wendell_letter', type: 'note', name: 'Wendell\'s Unsent Letter', title: 'Dearest Marjorie',
+      text: 'Dearest Marjorie,\n\nBlack Friday tomorrow. Management says doors open at 4 a.m. and we are to "stand aside and let the ' +
+        'customers be customers." I will be on the third floor, Housewares. I have hidden your ring in the manager\'s safe so the ' +
+        'customers can\'t be customers at it.\n\nWhen the sale is over I\'ll ask you properly. On one knee. In Housewares, if that\'s all right.\n\n' +
+        'All my love,\nWendell\n\n[Dated: October 22, 2077.]' },
+
+    // ------------------------------------------------------------ Downtown
+    { id: 'q_note_toll_rates', type: 'note', name: 'Brooklyn Bridge Toll Schedule', title: 'BROOKLYN BRIDGE TOLL AUTHORITY (UNDER NEW MANAGEMENT)',
+      text: 'CROSSING TOLLS (EACH WAY):\nPedestrian ........ 20 caps\nPedestrian w/ dog .. 25 caps (dog is extra)\nCaravan ........... 150 caps\n' +
+        'Brahmin ........... we do not know what that is, 200 caps\nSuper mutant ...... please just go\nComplaints ........ 50 caps\n\nE-ZPass not accepted.' },
+    { id: 'q_note_betty_ledger', type: 'note', name: 'The Exchange — Ledger', title: 'BEAR MARKET BETTY — BOOKS',
+      text: 'ASSETS: 3 floors of the Exchange, 11 raiders (9 reliable, 2 "Kevin"), 1 bell, 4,210 caps.\nLIABILITIES: Kevin.\n\n' +
+        'MARKET OUTLOOK: Bearish on caravans (fewer every week). Bullish on protection rackets. Neutral on the Brotherhood (they have armour, ' +
+        'we have the bell).\n\nNOTE TO SELF: Ring the Closing Bell every night at sundown. Morale. Tradition. Also it scares the mirelurks.' },
+    { id: 'q_note_dolores_diary', type: 'note', name: 'Dolores\' Diary', title: 'D.D. — Up Top',
+      text: 'Day 90 in the eagle\'s nest. The raiders downstairs think I work for them. I work for the view.\n\nCan see all of 42nd from up ' +
+        'here. Caravans come, caravans go. I hit the brahmin-bots, never the drivers. Mostly never the drivers.\n\nSaw a kid in a blue ' +
+        'jumpsuit today walking right down the middle of Park Avenue like he owned it. Didn\'t shoot. Don\'t know why. Maybe I\'m getting soft. ' +
+        'Maybe I\'m getting tired.\n\nIf anybody ever climbs up here and doesn\'t shoot first, I might just listen to what they have to say.' },
+    { id: 'q_note_curator_catalog', type: 'note', name: 'Met Exhibit Placard', title: 'THE METROPOLITAN MUSEUM OF ART — SPECIAL EXHIBITION',
+      text: '"AMERICA TRIUMPHANT: 300 YEARS OF THE ATOM"\nSponsored by General Atomics International\n\nGallery 1: The Atom in Antiquity (it was ' +
+        'there, you just couldn\'t see it)\nGallery 2: The Atom and the Home\nGallery 3: The Atom and the Enemy\nGallery 4: CLOSED FOR RENOVATION ' +
+        '(please disregard the glow)\n\nThe Museum reminds patrons that the security robots are programmed for courtesy.' },
+    { id: 'q_note_ossie_sign', type: 'note', name: 'Ferry Sign', title: 'OSSIE\'S LIBERTY FERRY',
+      text: 'DEPARTS: When Ossie feels like it\nARRIVES: Probably\nFARE: 100 caps (round trip, no refunds for the return trip if you die)\n\n' +
+        'Life jackets available on request. We do not have any life jackets. Please do not request them.' },
+    { id: 'q_note_crane_log', type: 'note', name: 'Colonel Crane\'s Log', title: 'LIBERTY STATION — COMMANDING OFFICER',
+      text: 'The old man talks to me as if I were a child who has broken something. Perhaps I am. My grandfather was a child on the day the ' +
+        'world broke, and he was told it would be fixed by men like me.\n\nThe array will fix it. Not the way Marlow wants — a sky scrubbed ' +
+        'for everyone, ghouls and mutants and raiders dancing in the clean rain — but properly. Surgically. America as it was meant to be.\n\n' +
+        'The vault dweller will come. They always come. When they do, I will offer them a place in history. It is more than history offered me.' },
+  ];
+
+  const QUEST_ITEMS = [
+    { id: 'q_signal_amplifier', type: 'misc', quest: true, name: 'Signal Amplifier', weight: 4, value: 0, desc: 'A pre-war RobCo broadcast amplifier. Vacuum tubes like little glass hearts. One still glows.' },
+    { id: 'q_knickerbocker_core', type: 'misc', quest: true, name: 'Knickerbocker Ignition Core', weight: 6, value: 0, desc: 'A humming cylinder of brass and glass stamped POSEIDON ENERGY — PROJECT KNICKERBOCKER. It is warm, and it is definitely looking at you.' },
+    { id: 'q_neon_core', type: 'misc', quest: true, name: 'Neon Heart (Fusion Core)', weight: 5, value: 0, desc: 'A subway-grade fusion core with "BIG BUZZ #2" scratched into the casing. Could light up Broadway for another decade.' },
+    { id: 'q_blessed_isotope', type: 'misc', quest: true, name: 'Blessed Isotope', weight: 2, value: 0, desc: 'A lead reliquary with a crack in it. The crack glows. You feel the Atom\'s love in your teeth.' },
+    { id: 'q_placebo_isotope', type: 'misc', quest: true, name: 'Blessed Isotope (?)', weight: 2, value: 0, desc: 'The reliquary, now containing a Nuka-Cola Quantum and a lot of hope. It glows beautifully. It is completely harmless.' },
+    { id: 'q_book_fusion', type: 'misc', quest: true, name: 'Book: "Practical Cold Fusion, Vol. II"', weight: 2, value: 0, desc: 'Stamped NYPL REFERENCE — DO NOT REMOVE. Due back: November 4, 2077.' },
+    { id: 'q_book_armor', type: 'misc', quest: true, name: 'Book: "T-45 Field Servicing Manual"', weight: 2, value: 0, desc: 'Property of the U.S. Army, on loan to the New York Public Library for reasons nobody documented.' },
+    { id: 'q_book_vertibird', type: 'misc', quest: true, name: 'Book: "Rotorcraft for the Home Mechanic"', weight: 2, value: 0, desc: 'Chapter 1: "So You\'ve Bought a Vertibird." Chapter 2: "Why Did You Buy a Vertibird."' },
+    { id: 'q_caldwell_strongbox', type: 'misc', quest: true, name: 'Caldwell Strongbox', weight: 8, value: 0, desc: 'Dented. Hammered. Somebody tried to open it with a raider. It remains locked.' },
+    { id: 'q_fay_mannequin', type: 'misc', quest: true, name: 'Mannequin ("Fay")', weight: 12, value: 5, desc: 'A pre-war Macy\'s display mannequin in a slightly scorched evening gown. She is small, she is pretty, and she will never, ever scream.' },
+    { id: 'q_wendell_ring', type: 'misc', quest: true, name: 'Engagement Ring', weight: 0, value: 120, desc: 'A modest gold band with a small stone, kept in a Macy\'s gift box for two hundred and fourteen years.' },
+    { id: 'q_borough_tag', type: 'misc', quest: false, name: 'Dog Tag: "BOROUGH"', weight: 0, value: 1, desc: 'A tin tag on a leather loop. On the back: "IF FOUND, HE FOUND YOU."' },
+    { id: 'q_ferry_token', type: 'misc', quest: true, name: 'Ossie\'s Ferry Token', weight: 0, value: 0, desc: 'A bottlecap with a hole punched through it. Ossie says it means "lifetime pass." Ossie is a ghoul; lifetime is a generous term.' },
+    { id: 'q_pipboy', type: 'misc', quest: true, name: 'Pip-Boy 3000', weight: 0, value: 0, desc: 'Your very own RobCo Pip-Boy 3000, strapped to your left wrist until death or amputation, whichever comes first.' },
+    { id: 'q_birthday_cake', type: 'aid', name: 'Slice of Birthday Cake', weight: 0.5, value: 5, tags: ['food'], sound: 'eat',
+      effects: { hp: 15, rads: 2 }, desc: '"Pre-war style." Delicious. Slightly radioactive. Nineteen candles\' worth of wax.' },
+  ];
+
+  // Apparel rewards (rpg handles apparel generically: slot/dr/special)
+  const APPAREL = [
+    { id: 'q_kong_crown', type: 'apparel', slot: 'head', name: 'Crown of Kong', weight: 3, value: 150, dr: 3, special: { S: 1, C: -1 },
+      desc: 'A bent traffic-light housing hammered into a crown. It smells like a super mutant\'s head. +1 STR, -1 CHA.' },
+    { id: 'q_mayor_top_hat', type: 'apparel', slot: 'head', name: 'Mayor Crowe\'s Top Hat', weight: 1, value: 90, dr: 1, special: { C: 1 },
+      desc: 'Moth-eaten silk with a neon band. Wearing it makes you feel like you should be announcing something. +1 CHA.' },
+    { id: 'q_curator_monocle', type: 'apparel', slot: 'eyes', name: 'Curator\'s Monocle', weight: 0, value: 110, dr: 0, special: { P: 1 }, skills: { science: 5 },
+      desc: 'A brass eyepiece from CURATOR-7\'s spare-parts drawer. +1 PER, +5 Science.' },
+    { id: 'q_vault_birthday_hat', type: 'apparel', slot: 'head', name: 'Vault-Tec Party Hat', weight: 0, value: 1, dr: 0, special: { L: 1 },
+      desc: 'Blue and yellow cardboard. It says "19!" You are, briefly, the luckiest tenant in Vault 120. +1 LCK.' },
+    { id: 'q_atom_robes', type: 'apparel', slot: 'body', name: 'Vestments of the Split Atom', weight: 2, value: 60, dr: 2, radResist: 15, outfit: 'atom_robes',
+      desc: 'Robes stitched with glowing thread. The Children swear by them. +15 Rad Resistance.' },
+    { id: 'q_toll_collector_cap', type: 'apparel', slot: 'head', name: 'Toll Collector\'s Cap', weight: 1, value: 40, dr: 1, skills: { barter: 5 },
+      desc: 'A Port Authority cap with a raider spike glued on. +5 Barter.' },
+  ];
+
+  L.hook('init', function () {
+    for (const n of NOTES) {
+      const d = Object.assign({ weight: 0, value: 0, quest: n.quest !== undefined ? n.quest : false }, n);
+      d.desc = d.desc || (n.type === 'holotape' ? 'A Vault-Tec holotape. Play it in your Pip-Boy (DATA → Notes).' : 'A note. Read it in your Pip-Boy (DATA → Notes).');
+      L.defineItem(d);
+    }
+    for (const it of QUEST_ITEMS) L.defineItem(Object.assign({}, it));
+    for (const it of APPAREL) L.defineItem(Object.assign({ noCondition: false }, it));
+  });
+
+  // Personalize the eviction notice with the player's name at pickup time.
+  L.hook('newGame', function () {
+    if (G.isStub('items') || !G.items.get) return;
+    const d = G.items.get('q_note_eviction');
+    const src = NOTES.find((n) => n.id === 'q_note_eviction');
+    if (d && src) d.text = src.text.replace('{NAME}', (G.player.name || 'Wanderer').toUpperCase());
+  });
+
+  // Carrying the Blessed Isotope slowly irradiates you (it's blessed, not safe).
+  // Implemented as a small rad source riding on the player, so the core applies
+  // Rad-X / Rad Resistance, the Geiger counter clicks and the HUD shows +RADS.
+  // Only polled while the Atom quest could involve it (no per-frame inventory scan).
+  let isoSrc = null, isoT = 0, carrying = false;
+  function isoOff() { if (isoSrc) { try { G.world.removeRadSource(isoSrc); } catch (e) { /* */ } isoSrc = null; } }
+  L.hook('update', function (dt, realDt) {
+    isoT -= realDt;
+    if (isoT <= 0) {
+      isoT = 1;
+      const relevant = G.quests.isActive('sq_atom');
+      carrying = relevant && L.has('q_blessed_isotope');
+    }
+    if (!carrying) { isoOff(); return; }
+    if (!isoSrc && G.world.addRadSource) isoSrc = G.world.addRadSource({ x: 0, y: 0, z: 0, radius: 2.5, strength: 0.6, tag: 'blessed_isotope' });
+    if (isoSrc) { const p = G.player.pos; isoSrc.x = p.x; isoSrc.y = p.y + 1; isoSrc.z = p.z; }
+  });
+  L.hook('reset', function () { isoOff(); carrying = false; isoT = 0; });
+
+  L.NOTES = NOTES;
+})();
+

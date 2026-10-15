@@ -1,0 +1,7 @@
+const {app}=require('electron'),fs=require('fs'),vm=require('vm');
+app.whenReady().then(()=>{try{
+const G={isStub:n=>!G[n],reportError:(n,e)=>{throw new Error(n+': '+e.message)},util:{rng:(s)=>()=>{s=(Math.imul(s,1664525)+1013904223)>>>0;return s/4294967296;}}};const context=vm.createContext({window:{G},console,Math,Map,Set});
+for(const f of ['rpg/00_items_core.js','rpg/10_items_aid.js','rpg/12_items_apparel.js','rpg/14_items_misc.js','rpg/20_loot_tables.js','weapons/00_defs.js'])vm.runInContext(fs.readFileSync('G:/fallout-nyc-port/_js_source/src/'+f,'utf8'),context);
+const d=JSON.parse(fs.readFileSync('outputs/UnityPort/OpenWorld/world-details.json','utf8'));d.items=G.items.all();for(const c of d.containers){let seed=120;for(const ch of c.id)seed=(Math.imul(seed,31)+ch.charCodeAt(0))>>>0;const nearest=d.locations.slice().sort((a,b)=>Math.hypot(a.x-c.pos.x,a.z-c.pos.z)-Math.hypot(b.x-c.pos.x,b.z-c.pos.z))[0];if(c.loot)c.items=G.items.rollLoot(c.loot,nearest?.level||1,seed).map(i=>({id:i[0],count:i[1]}));}
+const file='outputs/UnityPort/WorldPacked/manifest.bytes',m=JSON.parse(fs.readFileSync(file,'utf8'));m.doors=d.doors;m.containers=d.containers;m.items=d.items;fs.writeFileSync(file,JSON.stringify(m));console.log(JSON.stringify({items:m.items.length,doors:m.doors.length,containers:m.containers.length,nonempty:m.containers.filter(c=>c.items.length).length}));app.quit();
+}catch(e){console.error(e.stack);app.exit(1);}});

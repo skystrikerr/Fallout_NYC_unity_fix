@@ -1,0 +1,758 @@
+/* src/quests/20_vault.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 20: VAULT 120 (MQ01 "Lease on Life")
+ *
+ * The first ten minutes. Vault 120 is a Vault-Tec "rent-stabilized"
+ * vault beneath Central Park, run for two centuries by an eviction-happy
+ * Mister Handy called THE SUPERINTENDENT ("Mr. Super"). Today is the
+ * player's 19th birthday — and Lease Renewal Day.
+ *
+ * Beats: birthday party (Overseer gives the Pip-Boy) → Chief Doyle's
+ * "present" (10mm + pest control tutorial) → radroaches → Zeke's locker
+ * (holotape + Liberty Key) → Mr. Super's eviction → Overseer's door code
+ * → vault door terminal → the surface (exit cinematic) → MQ02.
+ *
+ * The vault interior geometry belongs to the map module, so every
+ * position is derived at runtime from LAYOUT.playerStart, the exit door
+ * found in G.world.doors, and optional map anchors, and then validated
+ * with a free-spot search (no NPC spawns inside walls).
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+  const pname = () => G.player.name || 'Wanderer';
+
+  // ------------------------------------------------------------------
+  // Vault geometry helpers
+  // ------------------------------------------------------------------
+  const V = {};   // resolved vault spots for this session
+  function vaultAnchor(name) {
+    // Optional map-provided anchors (see NOTES "Requests to other modules").
+    const tries = [
+      () => G.map.getAnchor && G.map.getAnchor('vault120', name),
+      () => G.map.vaultAnchors && G.map.vaultAnchors[name],
+      () => G.map.anchors && G.map.anchors.vault120 && G.map.anchors.vault120[name],
+      () => G.landmarks.getAnchor && G.landmarks.getAnchor('vault120', name),
+    ];
+    for (const t of tries) {
+      let a = null; try { a = t(); } catch (e) { a = null; }
+      if (a && isFinite(a.x) && isFinite(a.z)) return { x: a.x, y: a.y || 0, z: a.z };
+    }
+    return null;
+  }
+  function computeVaultSpots() {
+    const S = G.LAYOUT.playerStart;
+    const yaw = S.yaw || 0;
+    const f = { x: -Math.sin(yaw), z: -Math.cos(yaw) }, r = { x: Math.cos(yaw), z: -Math.sin(yaw) };
+    const at = (fw, rt) => ({ x: S.x + f.x * fw + r.x * rt, z: S.z + f.z * fw + r.z * rt });
+    const door = L.vaultExitDoor();
+    const y0 = S.y || 0;
+    const los = { x: S.x, y: y0, z: S.z };
+    const free = (p, y, opts) => L.freeSpot(p.x, p.z, y !== undefined ? y : y0, Object.assign({ maxR: 6 }, opts || {}));
+    // Map anchors (map module builds the vault: atrium party stage, office, clinic, reactor...)
+    const atrium = vaultAnchor('atrium'), stage = vaultAnchor('atrium_stage');
+    const off = (a, dx, dz, y) => a ? free({ x: a.x + dx, z: a.z + dz }, y !== undefined ? y : a.y) : null;
+    V.start = { x: S.x, y: y0, z: S.z };
+    const exitDoor = vaultAnchor('vault_door') || (door ? { x: door.def.pos.x, y: 0, z: door.def.pos.z } : null);
+    V.door = door ? { x: door.def.pos.x, z: door.def.pos.z } : (exitDoor || at(28, 0));
+    const party = stage || atrium;
+    // Where everyone looks during the party: the corridor mouth the player arrives from.
+    const corridor = vaultAnchor('corridor_n') || atrium || S;
+    V.face = (p) => Math.atan2(-(corridor.x - p.x), -(corridor.z - p.z));
+    if (party) {
+      // A tight, readable party: everyone gathered around the cake table in front of
+      // the stage in a loose semicircle, facing the corridor the birthday tenant
+      // walks in from (FO3's surprise-party framing). Offsets are relative to the
+      // stage centre (the stage is 8 x 4 m; +z is toward the corridor).
+      const S0 = stage || { x: atrium.x, y: 0.4, z: atrium.z - 7 };
+      V.partyCenter = { x: S0.x, y: 0, z: S0.z + 4.6 };           // the cake table
+      V.punch = { x: S0.x + 4.3, y: 0, z: S0.z + 5.2 };           // punch bowl table
+      V.stage = { x: S0.x, y: S0.y || 0.4, z: S0.z };
+      V.overseer = off(S0, 0, 1.1, S0.y || 0.4);                  // on the stage, front edge
+      V.lucy = off(S0, 1.9, 6.6, 0);                              // front-right: first to greet you
+      V.doctor = off(S0, -2.3, 3.7, 0);                           // behind-left of the cake
+      V.super = off(S0, 2.6, 3.4, 0);                             // hovering at the punch ("staring at it")
+      V.doyle = off(S0, 5.8, 4.1, 0);                             // lurking by the punch bowl, as promised
+      V.tommy = off(S0, -4.6, 7.2, 0);                            // leaning, apart from the fun
+    } else {
+      V.overseer = free(at(4.2, 0.4), y0, { los }); V.lucy = free(at(3.0, 2.1), y0, { los }); V.doyle = free(at(4.6, -2.3), y0, { los });
+      V.doctor = free(at(6.0, 1.4), y0, { los }); V.tommy = free(at(7.5, -3.6), y0, { los }); V.super = free(at(6.4, 3.2), y0, { los });
+    }
+    // After the party people go back to work.
+    V.overseerOffice = vaultAnchor('overseer') || V.overseer;
+    V.doyleWork = off(vaultAnchor('security'), 0, 1.5, 0) || V.doyle;
+    V.doctorWork = vaultAnchor('doctor') || V.doctor;
+    V.mabel = vaultAnchor('cafeteria_cook') ? off(vaultAnchor('cafeteria'), 0, 0, 0) : free(at(-3.5, 3), y0, { maxR: 12 });
+    V.roach = vaultAnchor('reactor') || free({ x: S.x + (V.door.x - S.x) * 0.62, z: S.z + (V.door.z - S.z) * 0.62 }, y0, { maxR: 10 });
+    const bed = vaultAnchor('player_bed');
+    V.locker = bed ? off(bed, -1.2, -1.0, 0) : free(at(1.5, -3.2), y0, { los, maxR: 8 });
+    const con = vaultAnchor('door_console');
+    if (con) { V.doorTerm = off(con, 0.2, 2.4, 0); V.doorTermYaw = Math.PI / 2; }
+    else {
+      const D = V.door, dx = S.x - D.x, dz = S.z - D.z, dl = Math.hypot(dx, dz) || 1;
+      V.doorTerm = free({ x: D.x + dx / dl * 3.2 + (-dz / dl) * 1.8, z: D.z + dz / dl * 3.2 + (dx / dl) * 1.8 });
+      V.doorTermYaw = Math.atan2(-(S.x - D.x), -(S.z - D.z));
+    }
+    const ov = vaultAnchor('overseer');
+    V.overseerTerm = ov ? off(ov, -4.5, 3.6, ov.y) : free(at(9, 2.5), y0, { maxR: 8 });
+    const sec = vaultAnchor('security');
+    V.securityTerm = sec ? off(sec, -3.5, 4.5, 0) : null;
+    V.superTerm = atrium ? off(atrium, -9, 5, 0) : free(at(9, -2.5), y0, { maxR: 8 });
+    V.faceStart = (p) => Math.atan2(-(S.x - p.x), -(S.z - p.z)); // yaw that looks at the start point
+    return V;
+  }
+
+  // ------------------------------------------------------------------
+  // MQ01 definition
+  // ------------------------------------------------------------------
+  const ROACH_IDS = ['v120_roach_1', 'v120_roach_2', 'v120_roach_3'];
+  function roachesLeft() { return ROACH_IDS.filter((id) => !L.flag('dead_' + id)).length; }
+
+  L.hook('init', function () {
+    L.quest({
+      id: 'mq01', main: true, order: 1, name: 'Lease on Life', giver: 'Overseer Vance', location: 'Vault 120',
+      desc: 'Today is your nineteenth birthday in Vault 120 — and, according to the Superintendent, your Lease Renewal Day. ' +
+        'Zeke Marlow, the old maintenance chief who raised you, was evicted to the surface a month ago.',
+      stages: [
+        { id: 'party', text: 'Attend your birthday party and speak with Overseer Vance.', markers: () => [{ npc: 'v120_overseer', label: 'Overseer Vance' }] },
+        { id: 'present', text: 'Collect your "birthday present" from Chief Doyle.', markers: () => [{ npc: 'v120_doyle', label: 'Chief Doyle' }],
+          onEnter() { L.hint('pipboy', 'Press [Tab] to open your Pip-Boy 3000. Your quests are under DATA.', 2); } },
+        { id: 'roaches', text: () => 'Exterminate the radroaches in the lower corridor (' + (3 - roachesLeft()) + '/3).',
+          markers: () => (V.roach ? [{ x: V.roach.x, z: V.roach.z, label: 'Radroaches' }] : []),
+          onEnter() {
+            spawnRoaches();
+            L.hint('fire', ((!G.isStub('weapons') && G.weapons.isHolstered && !G.weapons.isHolstered()) ? '' : 'Draw your weapon with [H]. ') + '[Left Mouse] fires, [Right Mouse] aims, [R] reloads.', 0.5);
+            if (G.isStub('actors')) L.later(1, () => Q.setStage('mq01', 'locker'));
+          } },
+        { id: 'locker', text: 'Search Zeke\'s old locker in your quarters.', markers: () => (V.locker ? [{ x: V.locker.x, z: V.locker.z, label: 'Zeke\'s Locker' }] : []),
+          onEnter() {
+            L.say('v120_doyle', 'Nice shooting, kid. Real nice.');
+            L.hint('notes', 'Holotapes and notes can be played from your Pip-Boy: DATA → Notes.', 4);
+          } },
+        { id: 'eviction', text: 'The Superintendent has terminated your lease. Speak with the Overseer.', markers: () => [{ npc: 'v120_overseer', label: 'Overseer Vance' }],
+          onEnter() { superEviction(); } },
+        { id: 'lucy_bye', text: 'Say goodbye to Lucy.', sideObjective: true, optional: true, showIf: () => !L.flag('lucy_goodbye') && Q.isActive('mq01') && (Q.stage('mq01') === 'door' || Q.stage('mq01') === 'eviction'),
+          markers: () => [{ npc: 'v120_lucy', label: 'Lucy' }] },
+        { id: 'door', text: 'Open the Vault 120 door using the door control terminal.', markers: () => (V.doorTerm ? [{ x: V.doorTerm.x, z: V.doorTerm.z, label: 'Door Control' }] : []),
+          onEnter() { unlockDoorTerminal(); } },
+        { id: 'leave', text: 'Leave Vault 120.', markers: () => [{ x: V.door ? V.door.x : 4000, z: V.door ? V.door.z : 0, label: 'Vault Door' }] },
+      ],
+      rewards: { xp: 100 },
+      onComplete() { L.later(4.5, () => Q.start('mq02'), 'chain'); },
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Scripted beats
+  // ------------------------------------------------------------------
+  function spawnRoaches() {
+    if (!V.roach || G.isStub('actors')) return;
+    ROACH_IDS.forEach((id, i) => {
+      if (L.flag('dead_' + id)) return;
+      const a = (i / 3) * Math.PI * 2;
+      L.spawnNPC({ id, type: 'radroach', name: 'Radroach', faction: 'creatures', level: 1, hostile: true, ai: 'wander', noRespawn: true,
+        hp: 12, damage: 2, at: { fallback: { x: V.roach.x + Math.cos(a) * 1.6, z: V.roach.z + Math.sin(a) * 1.6, y: V.roach.y }, maxR: 5 },
+        home: { x: V.roach.x, z: V.roach.z, r: 5 } });
+    });
+  }
+
+  function onRoachKilled(actor) {
+    if (!actor || ROACH_IDS.indexOf(actor.id) < 0) return;
+    L.setFlag('dead_' + actor.id);
+    if (Q.stage('mq01') !== 'roaches') return;
+    if (roachesLeft() === 0) { L.xp(15, 'Pest control'); Q.setStage('mq01', 'locker'); }
+    else L.refresh('mq01');
+  }
+
+  function superEviction() {
+    const sup = L.npc('v120_super');
+    // Mr. Super hovers over to the player and serves the notice.
+    if (sup && sup.moveTo) { try { sup.moveTo(G.player.pos.x + 1.5, G.player.pos.z + 1.5); } catch (e) { /* ignore */ } }
+    L.sfx('alarm', { volume: 0.35 });
+    L.later(0.3, () => L.notify('ATTENTION TENANTS: The lease of Tenant ' + pname().toUpperCase() + ' has been TERMINATED. Please join us in wishing them a pleasant apocalypse!'));
+    L.later(1.2, () => L.say('v120_super', 'EVICTION! Eviction! Oh, happy day for the waiting list!'));
+    L.later(2.0, () => { L.give('q_note_eviction', 1); });
+    L.later(4.0, () => L.say('v120_lucy', 'They can\'t do that! ...Can they do that?'));
+  }
+
+  // ---- Door terminal: locked (Science 50) until the Overseer gives the code
+  const doorTerm = {
+    title: 'VAULT 120 — PRIMARY EGRESS CONTROL',
+    header: 'VAULT-TEC PROPERTY MANAGEMENT SYSTEM v2.0.77\nUNIT: VAULT 120 (CENTRAL PARK)\n>> UNAUTHORIZED EGRESS IS A LEASE VIOLATION',
+    lock: 50, password: 'q_note_door_code',
+    entries: [
+      { title: 'Door Status', text: () => 'PRIMARY DOOR: ' + (L.flag('vault_door_open') ? 'OPEN' : 'SEALED') + '\nSEAL CYCLES SINCE 2077: 1\nLAST OPENED: October 23, 2077 (INBOUND)\n\nNOTE: Door has been opened 212 times since for OUTBOUND tenant relocation. These openings are not counted as "cycles" for accounting reasons.' },
+      { title: 'Relocation Log (last 5)', text: 'PELLEGRINO, family of 4 ........ excessive laundry\nMARLOW, EZEKIEL ................. unauthorized maintenance\nKIM, SOO-AH ...................... whistling\nDUBOIS, ANTOINE ................. owning a cat (cat retained)\nOKONKWO, B. ...................... "an attitude"' },
+      { title: '>> OPEN VAULT DOOR', cond: () => !L.flag('vault_door_open'), action: () => openVaultDoor() },
+      { title: '>> Close Vault Door', cond: () => !!L.flag('vault_door_open') && !Q.isActive('mq01'), action: () => { L.setFlag('vault_door_open', false); if (G.map.closeVaultDoor) try { G.map.closeVaultDoor(); } catch (e) { /* */ } } },
+    ],
+    onUnlock() { L.setFlag('v120_door_hacked'); if (Q.stage('mq01') === 'eviction') Q.setStage('mq01', 'door'); },
+  };
+  // the unlock is a runtime change of the terminal def: re-apply it after a load (code handed over / terminal hacked)
+  L.hook('loaded', function () { if (L.flag('v120_door_hacked') || Q.stage('mq01') === 'door' || Q.stage('mq01') === 'leave') unlockDoorTerminal(); });
+  L.hook('reset', function () { doorTerm.lock = 50; L.terminal('v120_door', doorTerm); });
+  function unlockDoorTerminal() { doorTerm.lock = 0; L.terminal('v120_door', doorTerm); if (!G.isStub('terminals') && G.terminals.unlock) { try { G.terminals.unlock('v120_door'); } catch (e) { /* */ } } }
+  function openVaultDoor() {
+    L.setFlag('vault_door_open');
+    L.sfx('vault_alarm', { volume: 0.6 });
+    L.later(0.6, () => L.sfx('vault_door'));
+    // Map module owns the giant cog door; use its hooks if present.
+    if (!G.isStub('map') && G.map.lockVaultDoor) { try { G.map.lockVaultDoor(false); } catch (e) { /* */ } }
+    const hooks = ['openVaultDoor', 'openVault', 'vaultDoorOpen'];
+    for (const h of hooks) if (typeof G.map[h] === 'function' && !G.isStub('map')) { try { G.map[h](); } catch (e) { G.reportError('quests:vaultdoor', e); } break; }
+    if (G.map.vault && typeof G.map.vault.open === 'function') { try { G.map.vault.open(); } catch (e) { /* */ } }
+    G.player.shake(0.35, 2.2);
+    L.notify('The great cog door grinds open. Two hundred years of stale air rushes out to meet the morning.');
+    if (Q.isActive('mq01')) Q.setStage('mq01', 'leave');
+    G.events.emit('vaultDoorOpened');
+  }
+  L.vault = { openVaultDoor, spots: V };
+
+  // ------------------------------------------------------------------
+  // Terminals
+  // ------------------------------------------------------------------
+  L.hook('register', function () {
+    L.terminal('v120_door', doorTerm);
+    L.terminal('v120_overseer', {
+      title: 'OVERSEER\'S TERMINAL', header: 'ROBCO INDUSTRIES UNIFIED OPERATING SYSTEM\nVAULT 120 — OVERSEER H. VANCE\nWelcome, Overseer. The Superintendent is watching. (This message cannot be disabled.)',
+      lock: 50,
+      entries: [
+        { title: 'Tenancy Report', text: 'OCCUPANCY: 61 (design capacity: 1,000)\nWAITING LIST: 0 (projected: 0)\nEVICTIONS (LIFETIME): 2,211\nBIRTHS (LIFETIME): 2,207\n\nNOTE FROM OVERSEER: We are four tenants away from being a vault of zero. The Superintendent calls this "approaching full vacancy optimization."' },
+        { title: 'The Superintendent', text: 'The Superintendent is a Mister Handy unit networked to the vault mainframe. Its directives, per the Vault-Tec binder:\n1. Maintain rent-stabilized living conditions.\n2. Maintain the waiting list.\n3. [REDACTED]\n\nDirective 3 is redacted in my copy. Zeke says it isn\'t redacted in the robot\'s.' },
+        { title: 'RE: Marlow, E.', text: 'Zeke — I know you\'ve been in the sub-basement. The Superintendent knows too. It doesn\'t yell, Zeke. It files. When it has enough paper, you\'re gone.\n\nWhatever you found down there isn\'t worth a birthday without you. Leave it alone.\n\n— H.' },
+        { title: 'Sub-Basement Relay (RESTRICTED)', text: 'ACCESS: SUPERINTENDENT ONLY\n\nRELAY 120-A: "KNICKERBOCKER" UPLINK — LIBERTY ISLAND\nSTATUS: LISTENING\nLAST INBOUND PING: 14 days ago. Origin: Liberty Island. Cipher: U.S. GOVERNMENT (post-war).\nCARTRIDGE 120-A: ...MISSING.\n\n[The Superintendent has appended: "Missing items are deducted from security deposits."]', cond: () => true },
+        { title: 'Personal: Lucy', text: 'Lucy asked me today whether anyone has ever come BACK after being relocated. I told her the truth, which is that nobody has ever been allowed to.\n\nShe said "allowed" is doing a lot of work in that sentence. She gets that from her father. Or from Zeke. I\'m honestly not sure which.' },
+      ],
+      onUnlock() { L.xp(20, 'Hacked the Overseer\'s terminal'); },
+    });
+    L.terminal('v120_super_ledger', {
+      title: 'SUPERINTENDENT RENT LEDGER', header: 'VAULT-TEC PROPERTY MANAGEMENT\n"A HAPPY TENANT IS A COMPLIANT TENANT"',
+      lock: 25,
+      entries: [
+        { title: 'Your Account', text: () => 'TENANT: ' + pname().toUpperCase() + '\nRENT OWED: 0 labour-hours\nFESTIVITY PERMITS USED: 1 (today)\nASSOCIATION FLAGS: MARLOW, E. (guardian)\nRISK ASSESSMENT: ELEVATED\nRECOMMENDATION: Non-renewal on anniversary of occupancy. How festive!' },
+        { title: 'Festivity Permits', text: 'PERMIT #7,099 — Karaoke night (DENIED: "vibes")\nPERMIT #7,100 — Funeral, Mr. Abernathy (APPROVED, 15 min)\nPERMIT #7,101 — Tommy Ruggiero\'s "Pipe Rats" (DENIED: "not a real club")\nPERMIT #7,102 — Birthday, 19th (APPROVED, 1 cake, 1 slice per tenant)' },
+        { title: 'Directive 3', text: 'DIRECTIVE 3: PROTECT CARTRIDGE 120-A. IN THE EVENT CARTRIDGE 120-A IS REMOVED BY A TENANT, TERMINATE THAT TENANT\'S LEASE.\n\nDirective 3 supersedes Directives 1 and 2.\nDirective 3 supersedes common sense.\nHave a nice day.' },
+      ],
+      onUnlock() { L.xp(15, 'Hacked the Superintendent\'s ledger'); },
+    });
+    L.terminal('v120_security', {
+      title: 'VAULT 120 SECURITY', header: 'SECURITY STATION — CHIEF F. DOYLE\nARMORY STATUS: 3 pistols, 1 riot shotgun, 0 riots',
+      lock: 25,
+      entries: [
+        { title: 'Doyle\'s Log — Roaches', text: 'Roaches in the reactor drains again. That\'s the fourth time this month. I keep telling the Super it\'s the sub-basement seal. The Super keeps telling me the sub-basement "does not exist." I keep hearing it hum.' },
+        { title: 'Doyle\'s Log — The Kid', text: 'Super asked for the file on Marlow\'s kid again. Third time. I told it the file got water damage. Then I water-damaged it.\n\nThe kid\'s birthday is Thursday. Regulation says I give them a sidearm. I\'m giving them the good one.' },
+      ],
+    });
+  });
+
+  L.hook('world', function () {
+    // Terminals are static; placed once (positions from the vault layout).
+    computeVaultSpots();
+    if (V.doorTerm) L.spawnTerminal('v120_door', V.doorTerm, V.doorTermYaw);
+    if (V.overseerTerm) L.spawnTerminal('v120_overseer', V.overseerTerm, Math.PI / 2);
+    if (V.superTerm) L.spawnTerminal('v120_super_ledger', V.superTerm, V.face(V.superTerm));
+    if (V.securityTerm) L.spawnTerminal('v120_security', V.securityTerm, 0);
+  });
+
+  // ------------------------------------------------------------------
+  // NPC roster (spawned on newGame and after loading)
+  // ------------------------------------------------------------------
+  let lockerGen = -1;
+  const VAULT_BARKS = {
+    lucy: ['Nineteen! You\'re practically a fossil.', 'Did you try the cake? Don\'t try the cake.', 'Mr. Super keeps staring at the punch.'],
+    tommy: ['Pipe Rats forever.', '...What are you looking at?', 'Nice party. For a nerd.'],
+    super: ['Occupancy is a privilege!', 'Please enjoy the approved amount of fun.', 'Have you considered the waiting list?', 'Rent is love. Love is rent.'],
+    mabel: ['They say the surface is all glass now. Glass! Imagine the dusting.', 'Nobody tells Mabel anything. So Mabel finds out.'],
+  };
+  L.hook('spawn', function () {
+    computeVaultSpots();
+    const partyOver = Q.isComplete('mq01') || ['eviction', 'door', 'leave'].indexOf(Q.stage('mq01')) >= 0;
+    const face = (p) => V.face(p);
+    const ovPos = Q.isComplete('mq01') ? V.overseerOffice : V.overseer;
+    const doylePos = partyOver ? V.doyleWork : V.doyle;
+    const docPos = partyOver ? V.doctorWork : V.doctor;
+    // Overseer and friends stay in the vault forever (the ending may revisit them).
+    L.spawnNPC({ id: 'v120_overseer', type: 'human', name: 'Overseer Vance', outfit: 'vault_overseer', gender: 'f', faction: 'vault', ai: 'static',
+      essential: true, dialogue: 'dlg_v120_overseer', pos: ovPos, yaw: face(ovPos), lookYaw: face(ovPos), level: 5, voice: 'f_stern' });
+    L.spawnNPC({ id: 'v120_lucy', type: 'human', name: 'Lucy Vance', outfit: 'vault_suit', gender: 'f', faction: 'vault', ai: 'static',
+      essential: true, dialogue: 'dlg_v120_lucy', pos: V.lucy, yaw: face(V.lucy), lookYaw: face(V.lucy), barks: VAULT_BARKS.lucy, voice: 'f_young' });
+    L.spawnNPC({ id: 'v120_doyle', type: 'human', name: 'Chief Doyle', outfit: 'vault_suit', gender: 'm', faction: 'vault', ai: 'static',
+      essential: true, dialogue: 'dlg_v120_doyle', pos: doylePos, yaw: face(doylePos), lookYaw: face(doylePos), weapon: ['pistol_10mm'], level: 6, voice: 'm_gruff' });
+    L.spawnNPC({ id: 'v120_doctor', type: 'human', name: 'Dr. Priya Nandakumar', outfit: 'lab_coat', gender: 'f', faction: 'vault', ai: 'static',
+      essential: true, dialogue: 'dlg_v120_doctor', pos: docPos, yaw: face(docPos), lookYaw: face(docPos) });
+    L.spawnNPC({ id: 'v120_tommy', type: 'human', name: 'Tommy Ruggiero', outfit: 'vault_suit', gender: 'm', faction: 'vault', ai: 'static',
+      essential: true, dialogue: 'dlg_v120_tommy', pos: V.tommy, yaw: face(V.tommy), lookYaw: face(V.tommy), barks: VAULT_BARKS.tommy, hair: 'pompadour' });
+    L.spawnNPC({ id: 'v120_super', type: 'mister_handy', name: 'The Superintendent', faction: 'vault', ai: 'static',
+      essential: true, dialogue: 'dlg_v120_super', pos: V.super, yaw: face(V.super), lookYaw: face(V.super), barks: VAULT_BARKS.super, voice: 'robot' });
+    L.spawnNPC({ id: 'v120_mabel', type: 'human', name: 'Mabel Fitzgerald', outfit: 'vault_suit', gender: 'f', faction: 'vault', ai: 'wander', home: 'here', homeR: 3,
+      dialogue: 'dlg_v120_mabel', pos: V.mabel, barks: VAULT_BARKS.mabel, skinTone: 0.3 });
+    if (Q.stage('mq01') === 'roaches') spawnRoaches();
+    // Fresh crowd: nobody pipes up on their first AI tick (staggered start).
+    holdVaultBarks(Q.stage('mq01') === 'party' ? 9 : 3);
+    // Zeke's locker (container) or fallback pickups.
+    if (!L.flag('zeke_locker_looted') && V.locker && lockerGen !== L.gen) {
+      lockerGen = L.gen;   // session-local guard (no junk flags in the save)
+      const items = [['q_holo_zeke_birthday', 1], ['q_liberty_key', 1], ['q_birthday_cake', 1]];
+      const stim = L.item('stimpak', /^stimpak$/i); if (stim) items.push([stim, 1]);
+      const pins = L.item('bobby_pin'); if (pins) items.push([pins, 3]);
+      const h = L.dyn(L.prop('locker', { x: V.locker.x, y: V.locker.y, z: V.locker.z, yaw: face(V.locker), items, name: 'Zeke\'s Locker', locked: 0, owner: null,
+        // stable id → rpg restores a half-emptied locker from the save instead of re-rolling it
+        id: 'q_zeke_locker', persistent: false, noSave: false }));
+      if (!h || (!h.container && !h.interactable)) {
+        L.pickup('zeke_tape', 'q_holo_zeke_birthday', 1, { x: V.locker.x, y: V.locker.y + 0.9, z: V.locker.z });
+        L.pickup('liberty_key', 'q_liberty_key', 1, { x: V.locker.x + 0.35, y: V.locker.y + 0.9, z: V.locker.z });
+      }
+    }
+    // The cog door stays locked until the story (or a hacker) opens it.
+    const allowOut = Q.isComplete('mq01') || L.flag('vault_door_open') || Q.stage('mq01') === 'leave' || !Q.isStarted('mq01');
+    if (!G.isStub('map') && G.map.lockVaultDoor) { try { G.map.lockVaultDoor(!allowOut, 'Door control locked. Overseer authorization required — use the door control terminal.'); } catch (e) { /* */ } }
+  });
+
+  // ------------------------------------------------------------------
+  // New game: start MQ01 and the opening beats
+  // ------------------------------------------------------------------
+  L.hook('newGame', function (opts) {
+    opts = opts || {};
+    if (opts.cheatSkipVault) {
+      // Straight to the surface: write MQ01 as already finished (no "QUEST ADDED" /
+      // "COMPLETED" banners for a quest the player never saw) and hand over MQ02 at
+      // once, so the compass has an objective from the very first frame.
+      L.setFlag('left_vault'); L.setFlag('vault_door_open'); L.setFlag('lucy_goodbye');
+      catchUpGear(true);
+      L.completeSilently('mq01', MQ01_ALL);
+      Q.start('mq02');
+      return;
+    }
+    Q.start('mq01');
+    L.later(1.0, () => L.hint('party', 'It\'s your 19th birthday! Your party is in the Atrium — follow the quest marker on your compass (bottom of the screen).'));
+    L.later(3.5, () => L.hint('move', '[W][A][S][D] move · [Mouse] look · [E] talk / use · [Space] jump · [Shift] sprint'));
+    L.later(5.5, () => { if (!G.isStub('music') && G.music.setMood) try { G.music.setMood('vault'); } catch (e) { /* */ } });
+  });
+
+  // The surprise: fires the moment the birthday tenant walks into the atrium.
+  L.trigger({ id: 'mq01_surprise', r: 12, pos: () => V.partyCenter || V.overseer || null,
+    cond: () => Q.stage('mq01') === 'party',
+    fire() {
+      // One voice at a time (never a wall of stacked subtitles): each line is short and
+      // clears before the next starts; idle chatter is held off until the speeches end.
+      holdVaultBarks(14);
+      L.say('v120_lucy', 'SURPRISE! Happy birthday, ' + pname() + '!', 2.2);
+      const seq = [
+        [2.3, 'v120_doyle', 'Happy birthday, kid.'],
+        [4.0, 'v120_doctor', 'Many happy returns!'],
+        [5.7, 'v120_tommy', 'Yay. Woo. Whatever.'],
+        [7.4, 'v120_super', 'Festivity has commenced! Festivity will conclude in fourteen minutes.'],
+        [10.4, 'v120_overseer', 'Come up here, birthday tenant. I have something for you.'],
+      ];
+      for (const [t, id, line] of seq) L.later(t, () => L.say(id, line, id === 'v120_super' ? 2.9 : 2.0), 'surprise');
+      L.sfx('ui_select', { volume: 0.5 });
+      if (G.isStub('dialogue')) return;
+      L.later(11, () => L.hint('talk', 'Walk up to Overseer Vance on the stage and press [E] to talk.'), 'surprise');
+    } });
+
+  // ------------------------------------------------------------------
+  // Crowd bark governor. Seven NPCs in one room would otherwise all fire an idle
+  // bark on their first AI tick. Only one vault resident speaks at a time, with a
+  // breath between lines (combat's per-actor bark gate is actor._lastBark).
+  // ------------------------------------------------------------------
+  const VAULT_IDS = ['v120_overseer', 'v120_lucy', 'v120_doyle', 'v120_doctor', 'v120_tommy', 'v120_super', 'v120_mabel'];
+  const barkSeen = new Map();
+  let vaultQuietUntil = 0;
+  /** Suppress idle barks from every vault resident for `sec` seconds, staggered. */
+  function holdVaultBarks(sec) {
+    const now = G.time.elapsed;
+    vaultQuietUntil = Math.max(vaultQuietUntil, now + sec);
+    VAULT_IDS.forEach((id, i) => {
+      const a = L.npc(id); if (!a) return;
+      // combat's bark(): silent while (now - _lastBark) < 4
+      a._lastBark = Math.max(a._lastBark || -1e9, now + sec - 4 + i * 2.5);
+      barkSeen.set(id, a._lastBark);
+      if (a.nextThink !== undefined) a.nextThink = Math.max(a.nextThink || 0, now + sec * 0.5 + i * 1.3);
+    });
+  }
+  L.hook('update', function () {
+    if (!L.inInterior()) return;
+    const V0 = G.LAYOUT.INTERIORS.vault120 && G.LAYOUT.INTERIORS.vault120.origin;
+    if (V0 && Math.hypot(G.player.pos.x - V0.x, G.player.pos.z - V0.z) > 260) return;
+    const now = G.time.elapsed;
+    let fresh = null;
+    for (const id of VAULT_IDS) {
+      const a = L.npc(id); if (!a) continue;
+      const lb = a._lastBark;
+      if (lb === undefined || lb === barkSeen.get(id)) continue;
+      // a new idle bark this frame
+      if (fresh || now < vaultQuietUntil) {
+        // someone else already spoke this frame, or a scripted speech is running: hush it
+        const hb = (G.combat && G.combat.hideBark) || (G.__cmb && G.__cmb.hideBark);   // same frame: never visible
+        if (typeof hb === 'function') { try { hb(a); } catch (e) { /* */ } }
+        barkSeen.set(id, lb);
+        continue;
+      }
+      fresh = id; barkSeen.set(id, lb);
+    }
+    if (fresh) {
+      // give the speaker the floor: everyone else waits ~4.5 s
+      for (const id of VAULT_IDS) {
+        if (id === fresh) continue;
+        const a = L.npc(id); if (!a) continue;
+        a._lastBark = Math.max(a._lastBark || -1e9, now + 0.5);
+        barkSeen.set(id, a._lastBark);
+      }
+    }
+  });
+  L.vaultHoldBarks = holdVaultBarks;
+
+  /** Core cheat "skip vault" (and newGame {cheatSkipVault}): jump MQ01 to its end. */
+  const MQ01_ALL = ['party', 'present', 'roaches', 'locker', 'eviction', 'door', 'leave'];
+  function skipVault() {
+    if (L.flag('left_vault')) return;
+    L.setFlag('left_vault'); L.setFlag('vault_door_open'); L.setFlag('lucy_goodbye');
+    catchUpGear(true);
+    if (Q.isActive('mq01')) {
+      // Fill the log with the skipped steps so the completed quest reads properly.
+      const s = L.STATE.get('mq01');
+      if (s) for (const id of MQ01_ALL) if (s.log.indexOf(id) < 0 && id !== s.stage) s.log.splice(s.log.length - 1, 0, id);
+      Q.complete('mq01');
+    }
+    // No 4.5 s gap with an empty compass: the next objective is handed over now.
+    if (!Q.isStarted('mq02')) Q.start('mq02');
+  }
+  // Old saves / skipped intros: the Pip-Boy was handed over long ago.
+  L.hook('loaded', function () {
+    if (Q.isComplete('mq01') || L.flag('left_vault')) L.setFlag('got_pipboy');
+    // saved during the eviction announcement: make sure the notice arrived
+    if (Q.isActive('mq01') && ['eviction', 'door', 'leave'].indexOf(Q.stage('mq01')) >= 0 && !L.has('q_note_eviction')) L.give('q_note_eviction', 1, true);
+  });
+  G.events.on('cheatSkipVault', () => { try { skipVault(); } catch (e) { G.reportError('quests:skipVault', e); } });
+
+  // ------------------------------------------------------------------
+  // Progress detection
+  // ------------------------------------------------------------------
+  G.events.on('actorKilled', (a) => { try { onRoachKilled(a); } catch (e) { G.reportError('quests:roach', e); } });
+  G.events.on('itemAdded', (id) => {
+    if ((id === 'q_liberty_key' || id === 'q_holo_zeke_birthday') && !L.flag('left_vault')) {
+      L.setFlag('zeke_locker_looted');
+      const st = Q.stage('mq01');
+      if (Q.isActive('mq01') && (st === 'party' || st === 'present' || st === 'roaches' || st === 'locker')) Q.setStage('mq01', 'eviction');
+    }
+    if (id === 'q_note_door_code') { unlockDoorTerminal(); }
+  });
+
+  // Leaving the vault (door or otherwise). Complete gracefully even if steps were skipped.
+  let exitTimer = 0;
+  L.hook('update', function (dt, realDt) {
+    exitTimer -= realDt; if (exitTimer > 0) return; exitTimer = 0.25;
+    const p = G.player.pos;
+    const outside = p.x < G.LAYOUT.INTERIOR_X_MIN;
+    if (!outside || L.flag('left_vault')) return;
+    if (!Q.isStarted('mq01')) return;
+    L.setFlag('left_vault');
+    catchUpGear();
+    if (Q.isActive('mq01')) Q.complete('mq01');
+    // Only play the "first daylight" cinematic when actually stepping out at the vault
+    if (!G.SHOT && !G.SMOKE && Math.hypot(p.x - G.LAYOUT.vaultExit.x, p.z - G.LAYOUT.vaultExit.z) < 60) exitCinematic();
+  });
+
+  /** If the player skipped steps (walked straight out), give them what the story needs. */
+  function catchUpGear(quiet) {
+    let gave = false;
+    if (!L.flag('got_pipboy')) L.givePipboy(true);
+    if (!L.has('q_liberty_key')) { L.give('q_liberty_key', 1, true); L.give('q_holo_zeke_birthday', 1, true); gave = true; }
+    if (!L.flag('got_birthday_pistol')) {
+      L.setFlag('got_birthday_pistol');
+      const pistol = L.item('vault120_service_pistol', 'pistol_10mm');
+      if (pistol && !L.has(pistol)) L.give(pistol, 1, true);
+      L.give(['ammo_10mm'], 24, true);
+    }
+    if (gave && !quiet) L.notify('Lucy stuffed Zeke\'s holotapes into your pocket when you weren\'t looking.');
+  }
+
+  // ------------------------------------------------------------------
+  // "First daylight" exit cinematic (eyes adjusting, pan to the skyline)
+  // ------------------------------------------------------------------
+  function exitCinematic() {
+    const P = G.player;
+    // Eyes adjusting to real daylight for the first time: a white wash that fades…
+    L.overlay('#fffbe8', 0, 0.15, 3.2, 1);
+    // …while the camera drifts from the sky down to the Midtown skyline (driven by
+    // the quest update loop, so it pauses with the game and dies with a reset).
+    const y0 = P.yaw, p0 = 0.55;
+    const tx = 80 - P.pos.x, tz = -72 - P.pos.z;   // look toward the Empire State
+    const y1 = Math.atan2(-tx, -tz);
+    L.cinematic(5.2, (e) => {
+      P.yaw = y0 + G.util.wrapAngle(y1 - y0) * e;
+      P.pitch = p0 * (1 - e) + 0.06 * e;
+    });
+    L.sfx('wind_gust', { volume: 0.7 });
+    L.later(1.2, () => L.notify('The sky. The actual sky. It is much, much bigger than the Superintendent said.'));
+    L.later(6.0, () => L.hint('map', '[M] opens the world map · [J] opens your quests · the compass points to your objective.'));
+    if (!G.isStub('music') && G.music.setMood) try { G.music.setMood('explore'); } catch (e) { /* */ }
+  }
+
+  // ------------------------------------------------------------------
+  // Dialogue
+  // ------------------------------------------------------------------
+  const st = () => Q.stage('mq01');
+  const mqDone = () => Q.isComplete('mq01');
+
+  L.hook('register', function () {
+    // ---------------- Overseer Harriet Vance ----------------
+    L.dialogue('dlg_v120_overseer', {
+      start: () => {
+        if (st() === 'party') return 'party';
+        if (st() === 'eviction') return 'evict';
+        if (st() === 'door' || st() === 'leave') return 'after';
+        if (mqDone()) return 'returned';
+        return 'idle';
+      },
+      nodes: {
+        party: { text: () => 'There\'s the birthday tenant. Nineteen years in Vault 120 — the Superintendent has logged every single one of them, you know. Including the year you tried to flush Tommy Ruggiero\'s tooth.',
+          responses: [
+            { text: 'Thank you, Overseer. It\'s a wonderful party.', next: 'pip' },
+            { text: 'Is the Superintendent going to hover over us all night?', next: 'super' },
+            { text: 'Nineteen years in a hole in the ground. Whoopee.', next: 'snark' },
+          ] },
+        super: { text: 'The Superintendent attends every birthday. It calls it "celebrating continued occupancy." Smile at it. It notices when you don\'t.',
+          responses: [{ text: 'Right. Smiling.', next: 'pip' }] },
+        snark: { text: 'A rent-stabilized hole in the ground, thank you very much. People up there would kill for it. Then again, up there, people kill for everything. Come here.',
+          responses: [{ text: '[Hold out your arm.]', next: 'pip' }] },
+        pip: { text: 'Vault tradition: on their nineteenth birthday every tenant receives their very own Pip-Boy 3000. [She snaps the heavy device around your wrist.] There. Now the Superintendent can measure your productivity to the second. Happy birthday.',
+          onEnter() {
+            if (!L.flag('got_pipboy')) {
+              L.givePipboy(false); L.sfx('pipboy_open');
+              L.later(0.8, () => L.notify('Pip-Boy 3000 acquired.', { sub: 'Press [Tab] to open it.', icon: 'pipboy' }));
+            }
+          },
+          responses: [
+            { text: 'It\'s heavier than it looks.', next: 'pip_heavy' },
+            { text: 'What does it actually do?', next: 'pip_what' },
+            { text: 'Thank you. I\'ll treasure it.', next: 'pip_done' },
+          ] },
+        pip_heavy: { text: 'So is responsibility. So is a lead apron. You\'ll get used to all three.', responses: [{ text: 'What does it do?', next: 'pip_what' }, { text: 'Thanks, Overseer.', next: 'pip_done' }] },
+        pip_what: { text: 'Maps. Your vital signs. A radio, for when there\'s anything to hear — which there isn\'t. Mostly it counts your steps so the Superintendent can decide whether you\'re pulling your weight.',
+          responses: [{ text: 'Got it.', next: 'pip_done' }] },
+        pip_done: { text: 'Go on, enjoy yourself. Chief Doyle has been lurking by the punch bowl with a box the exact size of a firearm. Try to act surprised.',
+          responses: [
+            { text: 'I\'ll go see him.', action: () => Q.setStage('mq01', 'present') },
+            { text: 'Have you heard anything from Zeke?', next: 'zeke' },
+          ] },
+        zeke: { text: '[She glances at the Superintendent.] Ezekiel Marlow was relocated for unauthorized maintenance. That is all the record says and all I am permitted to say. [Quietly.] ...Check his old locker. After the party. The combination is something only you would know.',
+          onEnter() { L.setFlag('overseer_hint_locker'); },
+          responses: [{ text: 'I understand.', action: () => Q.setStage('mq01', 'present') }] },
+        evict: { text: 'I heard. Of course I heard — the Superintendent broadcast it on every speaker in the vault. With a jingle. [She lowers her voice.] Listen to me. Zeke is alive. Two weeks ago something on the surface pinged our relay — and it was Zeke who pinged back.',
+          responses: [
+            { text: 'Then I\'m going after him.', next: 'evict_go' },
+            { text: 'You\'re the Overseer. You could overrule the Superintendent.', check: { skill: 'speech', value: 40 }, next: 'overrule', failNext: 'overrule_fail' },
+            { text: 'Why is this happening to me?', next: 'why' },
+          ] },
+        why: { text: 'Because you were close to Zeke, and Zeke broke into the one room this vault was actually built to protect. The Superintendent doesn\'t punish crimes. It audits relationships.',
+          responses: [{ text: 'Then I\'m going after him.', next: 'evict_go' }] },
+        overrule: { text: '[She laughs, surprised.] You know, I haven\'t overruled that machine since I was your age. It controls the air, the water and the door. I control the thermostat in my office, on Tuesdays. ...But you\'re right about one thing. I can still do this.',
+          onEnter() { L.xp(10, 'Speech'); }, responses: [{ text: 'Do what?', next: 'evict_go' }] },
+        overrule_fail: { text: '"Overseer" is a title, sweetheart. The Superintendent is a landlord. You grew up in New York — well, under it. You know which of those wins.',
+          responses: [{ text: 'Then I\'ll go.', next: 'evict_go' }] },
+        evict_go: { text: 'This is the override for the door terminal. Memorize it. Then eat it — or don\'t, it\'s paper, you\'ll be hungry enough up there. Find Zeke. If his last signal was right, he was heading for Grand Central.',
+          onEnter() { if (!L.has('q_note_door_code')) L.give('q_note_door_code', 1); },
+          responses: [
+            { text: 'Thank you, Overseer. For everything.', karma: 5, action: () => Q.setStage('mq01', 'door') },
+            { text: 'What about Lucy?', next: 'lucy' },
+            { text: 'Is there anything else you can spare?', next: 'extra', cond: () => !L.flag('overseer_extra') },
+          ] },
+        lucy: { text: 'Lucy will do what Lucy does, which is whatever I tell her not to. Say goodbye to her. Then go — before she decides to come with you.',
+          responses: [{ text: 'I will.', action: () => Q.setStage('mq01', 'door') }, { text: 'Anything else you can spare?', next: 'extra', cond: () => !L.flag('overseer_extra') }] },
+        extra: { text: 'Two Stimpaks and a RadAway from the clinic. Doctor Nandakumar will pretend she counted wrong. She\'s been pretending to count wrong for me for twenty years.',
+          onEnter() { L.setFlag('overseer_extra'); L.give(['stimpak', /^stimpak$/i], 2); L.give(['radaway', /radaway/i], 1); },
+          responses: [{ text: 'Goodbye, Overseer.', action: () => Q.setStage('mq01', 'door') }] },
+        after: { text: 'You\'re still here? The Superintendent will start charging you by the hour. The door terminal is by the main door. Go.', responses: [{ text: 'Going.' }] },
+        returned: { text: () => 'Well. Look at you. ' + (L.flag('ending_played') ? 'The radio won\'t stop talking about you.' : 'Still breathing, still wearing the jumpsuit.') + ' The Superintendent has already re-let your bunk. To itself.',
+          responses: [{ text: 'Good to see you too, Overseer.' }] },
+        idle: { text: 'Enjoy your birthday. That\'s an order, and I so rarely get to give them.', responses: [{ text: 'Yes, Overseer.' }] },
+      },
+    });
+
+    // ---------------- Lucy Vance ----------------
+    L.dialogue('dlg_v120_lucy', {
+      start: () => (st() === 'eviction' || st() === 'door' || st() === 'leave') ? (L.flag('lucy_goodbye') ? 'bye_again' : 'bye') : (L.flag('lucy_gift') ? 'again' : 'party'),
+      nodes: {
+        party: { text: 'Happy birthday, old-timer! Nineteen! I made you a card. Well — I made the card, Mom made the cake, and the Superintendent made us fill out a Festivity Request in triplicate.',
+          responses: [
+            { text: 'Thanks, Lucy. You\'re the best.', next: 'gift' },
+            { text: 'Where\'s my real present?', next: 'real' },
+            { text: 'Is Tommy here?', next: 'tommy' },
+          ] },
+        real: { text: 'Confiscated! By Mr. Super! "Unauthorized joy." It was a Grognak the Barbarian comic — the good one, with the robot snake. I\'m going to steal it back. Probably. Eventually.',
+          responses: [{ text: 'My hero.', next: 'gift' }] },
+        tommy: { text: 'Of course he is. He\'s leaning on something by the wall, trying to look dangerous. He\'s been practising that lean for six years. It\'s getting pretty good, honestly.',
+          responses: [{ text: 'Ha. Thanks, Lucy.', next: 'gift' }] },
+        gift: { text: 'Here — card, and the hat. The hat is regulation. I checked. [She grins.] Eat the cake before Tommy gets to it.',
+          onEnter() { if (!L.flag('lucy_gift')) { L.setFlag('lucy_gift'); L.give('q_note_birthday_card', 1); L.give('q_vault_birthday_hat', 1); } },
+          responses: [{ text: 'I\'ll wear it with pride.' }, { text: 'Have you heard anything about Zeke?', next: 'zeke' }] },
+        zeke: { text: '[She checks that the Superintendent isn\'t looking.] Only that he\'s not dead. Mom knows more. She always knows more. She just keeps it in her face instead of her mouth.',
+          responses: [{ text: 'I\'ll ask her.' }] },
+        again: { text: () => ['Did you see Tommy\'s face when the cake came out? Pure hunger.', 'Mr. Super keeps staring at the punch bowl. I think it\'s trying to evict it.', 'You look good in the hat. Nobody looks good in the hat.'][Math.floor(Math.random() * 3)],
+          responses: [{ text: 'See you around, Lucy.' }] },
+        bye: { text: 'You\'re leaving. You\'re actually leaving. [She swallows hard.] The eviction announcement had a little song. It was horrible. I\'m going to find out who wrote it and evict them.',
+          responses: [
+            { text: 'Come with me.', next: 'come' },
+            { text: 'I\'ll come back. I promise.', next: 'promise' },
+            { text: 'Look after your mom.', next: 'mom' },
+            { text: 'I need the door override code.', cond: () => !L.has('q_note_door_code'), next: 'code' },
+          ] },
+        come: { text: 'I can\'t. Somebody has to be here to fight the Superintendent when you come back and tell everyone what\'s really out there. Somebody has to open the door from this side.',
+          responses: [{ text: 'Then I\'ll come back. I promise.', next: 'promise' }] },
+        mom: { text: 'Always do. Somebody has to keep her from arguing with a robot until three in the morning. Promise me you\'ll come back?',
+          responses: [{ text: 'I promise.', next: 'promise' }, { text: 'I can\'t promise that.', next: 'nopromise' }] },
+        code: { text: 'Mom told me to give you this if she didn\'t get the chance. The door override. [She presses a folded note into your hand.] Don\'t tell her I read it. I read it.',
+          onEnter() { if (!L.has('q_note_door_code')) L.give('q_note_door_code', 1); if (Q.stage('mq01') === 'eviction') Q.setStage('mq01', 'door'); }, responses: [{ text: 'Thanks, Lucy.', next: 'bye' }] },
+        promise: { text: 'You\'d better. And bring me something from outside. A rock. A real one, not from hydroponics. [She hugs you, fast and hard.] Okay. Go. Before I get sentimental in front of Tommy.',
+          onEnter() { L.setFlag('lucy_goodbye'); L.setFlag('lucy_promise'); L.xp(10, 'Goodbye, Lucy'); }, responses: [{ text: 'Goodbye, Lucy.' }] },
+        nopromise: { text: 'Yeah. I know. [She wipes her eyes on her sleeve.] Just... don\'t make it easy for them out there, okay?',
+          onEnter() { L.setFlag('lucy_goodbye'); }, responses: [{ text: 'Goodbye, Lucy.' }] },
+        bye_again: { text: 'Go already! You\'re letting all the recycled air out!', responses: [{ text: '[Leave.]' }] },
+      },
+    });
+
+    // ---------------- Chief Doyle ----------------
+    L.dialogue('dlg_v120_doyle', {
+      start: () => st() === 'party' ? 'early' : st() === 'present' ? 'present' : st() === 'roaches' ? 'roaches' : 'after',
+      nodes: {
+        early: { text: 'Talk to the Overseer first, kid. Chain of command. Even at parties. Especially at parties.', responses: [{ text: 'Yes, Chief.' }] },
+        present: { text: 'Well, if it isn\'t the birthday tenant. Vault Regulation 12-9: every tenant of age is enrolled in the Auxiliary Pest Control Service. That means you get a gun. That means I have to give you a gun. [He sighs and hands you a worn 10mm pistol.]',
+          onEnter() {
+            if (!L.flag('got_birthday_pistol')) {
+              L.setFlag('got_birthday_pistol');
+              const pistol = L.item('vault120_service_pistol', 'pistol_10mm');
+              if (pistol) L.give(pistol, 1);
+              L.give(['ammo_10mm'], 36);
+              if (pistol && !G.isStub('inventory') && G.inventory.equip) { try { G.inventory.equip(pistol, { silent: true }); } catch (e) { /* */ } }
+            }
+          },
+          responses: [
+            { text: 'A gun? For my birthday?', next: 'why' },
+            { text: 'What\'s the catch?', next: 'catch' },
+            { text: 'I\'ve always wanted one of these.', next: 'catch' },
+          ] },
+        why: { text: 'Radroaches, kid. Bugs the size of a lunchbox with the manners of a raider. They\'re coming up through the reactor drains again, and I\'ve got a bad knee and a worse attitude. It\'s a present with a job attached.',
+          responses: [{ text: 'What\'s the job?', next: 'catch' }] },
+        catch: { text: 'Three roaches in the lower corridor. Shoot \'em, stomp \'em, reason with \'em, I don\'t care. Come back with all your fingers. [He lowers his voice.] And do me a favor — keep that pistol after. Something tells me you\'ll need it.',
+          responses: [
+            { text: 'I\'m on it, Chief.', action: () => Q.setStage('mq01', 'roaches') },
+            { text: 'Why would I need it after?', check: { special: 'I', value: 6 }, next: 'catch_int', failNext: 'catch_dumb' },
+            { text: '[Check the pistol.] The slide\'s dry and the extractor\'s chipped. This thing will jam on the second magazine.', check: { skill: 'guns', value: 25 }, next: 'catch_guns', failNext: 'catch_guns_fail' },
+          ] },
+        catch_guns: { text: '[Doyle blinks, then grins for the first time all evening.] Well, look at that. Somebody actually read the manual. [He swaps in a spare extractor from his breast pocket and slaps two more magazines into your hand.] Don\'t tell the Super I keep parts. It\'d count them.',
+          onEnter() { L.setFlag('doyle_guns'); L.xp(10, 'Guns'); L.give(['ammo_10mm'], 24); }, responses: [{ text: 'Thanks, Chief. I\'m on it.', action: () => Q.setStage('mq01', 'roaches') }] },
+        catch_guns_fail: { text: 'That\'s the safety, kid. It\'s supposed to click. Go on — roaches.', responses: [{ text: 'Right. Roaches.', action: () => Q.setStage('mq01', 'roaches') }] },
+        catch_int: { text: 'Because the Superintendent has asked me for the security file on you and Zeke every day this week, and robots don\'t ask twice unless they\'re building a case. Now go squish some bugs.',
+          onEnter() { L.setFlag('doyle_warned'); L.xp(10, 'Intelligence'); }, responses: [{ text: 'Understood.', action: () => Q.setStage('mq01', 'roaches') }] },
+        catch_dumb: { text: 'Because... bugs. There are lots of bugs. Go on, get.', responses: [{ text: 'Right. Bugs.', action: () => Q.setStage('mq01', 'roaches') }] },
+        roaches: { text: () => 'Roaches aren\'t going to shoot themselves. They\'re bugs. They can\'t hold guns. That\'s the whole plan. ' + (roachesLeft() < 3 ? roachesLeft() + ' left, by my count.' : 'Lower corridor, toward the main door.'),
+          responses: [{ text: 'On my way.' }] },
+        after: { text: () => (st() === 'eviction' || st() === 'door' || st() === 'leave')
+          ? 'I heard the announcement. For the record, I told the Super the lease terms were garbage. For the record, the Super doesn\'t keep records of what I say. Keep your head down up there, kid. Aim for the eyes. Everything\'s got eyes.'
+          : 'Nice shooting. You\'ve got your mother\'s aim — or Zeke\'s. Hard to say who raised who down here.',
+          responses: [{ text: 'Thanks, Chief.' }] },
+      },
+    });
+
+    // ---------------- Dr. Nandakumar ----------------
+    L.dialogue('dlg_v120_doctor', {
+      start: 'hello',
+      nodes: {
+        hello: { text: () => (st() === 'eviction' || st() === 'door' || st() === 'leave')
+          ? 'Evicted on your birthday. The Superintendent\'s sense of timing is almost medical. Come here — let me look at you one last time.'
+          : 'Birthday check-up! Say "ah." ...Hmm. Yes. You\'re alive. That\'s always my favourite diagnosis.',
+          responses: [
+            { text: 'Could you patch me up?', next: 'heal', cond: () => G.player.hp < G.player.maxHp || G.player.rads > 0 },
+            { text: 'Any advice for surviving on the surface?', next: 'advice' },
+            { text: 'Do you have anything for radiation?', next: 'radx', cond: () => !L.flag('doc_radx') && (st() === 'eviction' || st() === 'door' || st() === 'leave') },
+            { text: 'I\'m fine, Doc. Thanks.' },
+          ] },
+        heal: { text: 'Hold still. There. Good as new — or as new as anyone gets down here.', onEnter() { L.healFull(); }, responses: [{ text: 'Thanks, Doc.' }] },
+        advice: { text: 'Radiation is invisible, cumulative and unkind. Your Pip-Boy will click at you when you\'re in it — listen to it. Don\'t drink standing water. Don\'t eat anything that glows. Don\'t let anything that glows eat you. RadAway flushes it out; Rad-X helps you resist it.',
+          responses: [{ text: 'What about injuries?', next: 'advice2' }, { text: 'Thanks, Doc.' }] },
+        advice2: { text: 'Stimpaks. Inject, don\'t eat. You would be amazed how often I have to say that. Your Pip-Boy lists them under Aid. And if you break a leg, don\'t walk on it; walk on the other one.',
+          responses: [{ text: 'Got it.' }] },
+        radx: { text: 'One Rad-X and one RadAway. Take the Rad-X before you do something stupid and the RadAway after. Don\'t tell the Overseer I counted right for once.',
+          onEnter() { L.setFlag('doc_radx'); L.give(['rad_x', /rad-x/i], 1); L.give(['radaway', /radaway/i], 1); }, responses: [{ text: 'Thank you, Doctor.' }] },
+      },
+    });
+
+    // ---------------- Tommy Ruggiero ----------------
+    L.dialogue('dlg_v120_tommy', {
+      start: () => (st() === 'eviction' || st() === 'door' || st() === 'leave') ? 'evicted' : L.flag('tommy_done') ? 'done' : 'hello',
+      nodes: {
+        hello: { text: 'Well, well, well. If it ain\'t the birthday tenant. Pipe Rats don\'t do birthdays. Pipe Rats do... [he thinks hard] ...leaning.',
+          responses: [
+            { text: 'Lean somewhere else, Tommy.', check: { special: 'S', value: 6 }, next: 'scared', failNext: 'laugh' },
+            { text: 'Nice jacket. Did you make it yourself?', check: { skill: 'speech', value: 30 }, next: 'flattered', failNext: 'annoyed' },
+            { text: 'Get lost, Tommy.', next: 'annoyed' },
+          ] },
+        scared: { text: 'Whoa, whoa. Easy. It\'s your birthday, right? Happy birthday. Real happy. [He finds somewhere else to lean.]', onEnter() { L.setFlag('tommy_done'); L.xp(10, 'Strength'); }, responses: [{ text: 'That\'s what I thought.' }] },
+        laugh: { text: 'Ha! You? You couldn\'t lean on a wall if the wall leaned first.', onEnter() { L.setFlag('tommy_done'); }, responses: [{ text: '[Sigh.]' }] },
+        flattered: { text: '...Yeah. Yeah, I did. Nobody ever noticed. [He sniffs.] Here. Honorary Pipe Rat. Don\'t make it weird.',
+          onEnter() { L.setFlag('tommy_done'); L.setFlag('pipe_rat'); L.give('q_note_pipe_rats', 1); L.xp(10, 'Speech'); }, responses: [{ text: 'I\'ll treasure it, Tommy.' }] },
+        annoyed: { text: 'Pipe Rats never forget, tenant. Except birthdays. We forget those on purpose.', onEnter() { L.setFlag('tommy_done'); }, responses: [{ text: 'Sure, Tommy.' }] },
+        done: { text: () => L.flag('pipe_rat') ? 'Pipe Rat. [He nods at you, very seriously.]' : 'What? I\'m leaning here.', responses: [{ text: '[Leave.]' }] },
+        evicted: { text: 'Heard you got evicted. That\'s... actually kinda tough. Pipe Rats respect eviction. [He looks at his shoes.] Kill something big up there for me, okay? Something with teeth.',
+          responses: [{ text: 'I will, Tommy.', karma: 1 }] },
+      },
+    });
+
+    // ---------------- The Superintendent (Mr. Super) ----------------
+    L.dialogue('dlg_v120_super', {
+      start: () => (st() === 'eviction' || st() === 'door' || st() === 'leave') ? 'evict' : 'hello',
+      nodes: {
+        hello: { speaker: 'The Superintendent', text: () => 'GREETINGS, TENANT ' + pname().toUpperCase() + '! Happy anniversary of your occupancy! This celebration has been approved under Festivity Permit #7,102. Please enjoy exactly one (1) slice of cake.',
+          responses: [
+            { text: 'Where is Zeke, Super?', next: 'zeke' },
+            { text: 'Can I have two slices of cake?', next: 'cake' },
+            { text: 'Run a diagnostic on yourself.', check: { skill: 'science', value: 35 }, next: 'diag', failNext: 'diag_fail' },
+            { text: 'Nothing. Carry on.' },
+          ] },
+        zeke: { text: 'Former tenant MARLOW, EZEKIEL has been RELOCATED to the SURFACE in accordance with Residential Code 120-4 (Unauthorized Improvements). His unit has been re-let. To himself. On the surface. Rent-free! How generous of us!',
+          responses: [{ text: 'You threw an old man out into the wasteland.', next: 'zeke2' }, { text: 'Right.' }] },
+        zeke2: { text: 'Correction: I RELOCATED an old man into the wasteland. The wasteland has excellent square footage.', responses: [{ text: '[Leave.]' }] },
+        cake: { text: 'Request DENIED. Permit #7,102 authorizes one (1) slice per tenant. Additional slices constitute "excessive festivity," a Class C lease violation. You have a Class C face, tenant. I am watching it.', responses: [{ text: 'Unbelievable.' }] },
+        diag: { text: 'DIAGNOSTIC COMPLETE. All systems nominal. Occupancy: 61. Evictions this cycle: 9. Primary directive: PROTECT CARTRIDGE 120-A AT ALL COSTS. ...That line was not meant to be read aloud. Please forget it. Thank you for your compliance.',
+          onEnter() { L.setFlag('super_leak'); L.xp(15, 'Science'); }, responses: [{ text: 'What\'s Cartridge 120-A?', next: 'diag2' }] },
+        diag2: { text: 'I have no idea what you are talking about. Also, if you ever find it, please return it to me, and do not listen to anything old men in lockers tell you. Have a festive day!', responses: [{ text: '[Leave.]' }] },
+        diag_fail: { text: 'Diagnostic requests require Form 88-D, available from the Superintendent, who is me, and who is out of Form 88-D.', responses: [{ text: '[Leave.]' }] },
+        evict: { text: () => 'TENANT ' + pname().toUpperCase() + '! As you have been found in association with an evicted person, AND as you have removed property from a sealed unit, your lease is hereby TERMINATED! Please proceed to the Vault Door at your earliest convenience, which is now!',
+          responses: [
+            { text: 'You can\'t do this!', next: 'cant' },
+            { text: 'As an evicted tenant, I\'m owed my security deposit.', check: { skill: 'speech', value: 55 }, next: 'deposit', failNext: 'deposit_fail', cond: () => !L.flag('super_deposit') },
+            { text: 'Fine. I\'m going.' },
+          ] },
+        cant: { text: 'I am a Vault-Tec Rent-Stabilization Unit. I can do anything the lease permits. The lease permits EVERYTHING. It is a very long lease. Would you like a copy? It is four thousand pages. It is also on fire, metaphorically.', responses: [{ text: '[Leave.]' }] },
+        deposit: { text: '...Processing. ...Processing. Tenant is correct. Security deposit of one (1) Vault-Tec Lunchbox is hereby refunded, minus cleaning fees, minus festivity surcharge, minus emotional damages to the Superintendent. Remaining balance: 40 caps. ENJOY YOUR RELOCATION!',
+          onEnter() { L.setFlag('super_deposit'); L.giveCaps(40); L.xp(20, 'Speech: Tenant rights'); }, responses: [{ text: 'Pleasure doing business.' }] },
+        deposit_fail: { text: 'Your security deposit was applied against: one (1) cake slice (excessive), one (1) birthday hat (unregulated), and one (1) sarcastic tone (ongoing).', onEnter() { L.setFlag('super_deposit'); }, responses: [{ text: 'Of course it was.' }] },
+      },
+    });
+
+    // ---------------- Mabel (vault gossip) ----------------
+    L.dialogue('dlg_v120_mabel', {
+      start: 'hello',
+      nodes: {
+        hello: { text: 'Oh! The birthday tenant! Come here, come here. Mabel has news. Mabel always has news. Nobody tells Mabel anything, so Mabel finds out.',
+          responses: [
+            { text: 'What kind of news?', next: 'news' },
+            { text: 'What\'s the surface like?', next: 'surface' },
+            { text: 'Maybe later, Mabel.' },
+          ] },
+        news: { text: 'The Superintendent has been going down to the sub-basement at night. Down! Robots don\'t go down, dear, they hover. And Zeke — before he went — Zeke was humming. Zeke never hummed. A man who hums has a secret, and a man with a secret gets evicted.',
+          responses: [{ text: 'Thanks, Mabel.' }] },
+        surface: { text: 'My great-great-grandmother said it was all glass up there after the bombs. Glass! Imagine the dusting. Imagine the fingerprints. I\'d never leave, dear. Never. Not unless they made me.',
+          responses: [{ text: 'Let\'s hope they don\'t.' }] },
+      },
+    });
+  });
+
+  // Debug helper: G.quests.debug.vault() — jump to the door stage.
+  G.quests.debug.vaultDoor = () => { Q.setStage('mq01', 'door'); L.give('q_note_door_code', 1); return V; };
+  G.quests.debug.vaultSpots = () => V;
+})();
+

@@ -1,0 +1,189 @@
+/* src/rpg/12_items_apparel.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — RPG MODULE — APPAREL DATABASE
+ *
+ * Apparel fields:
+ *   slot: 'body'|'head'|'eyes'|'mouth'|'pipboy'
+ *   dr (damage resistance, %-points), dt (damage threshold, optional),
+ *   radResist, energyResist, fireResist, special {S:+1}, skills {sneak:+5},
+ *   carry (+carry weight), outfit (G.chars outfit id for NPC dressing),
+ *   powerArmor:true (requires Power Armor Training), helmetFor (PA helmet pairing)
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const A = (d) => G.items.define(Object.assign({ type: 'apparel', slot: 'body', tags: ['apparel'] }, d));
+
+  // ---------------------------------------------------------------
+  // Vault 120 issue
+  // ---------------------------------------------------------------
+  A({ id: 'pipboy_3000', name: 'Pip-Boy 3000', slot: 'pipboy', weight: 0, value: 0, quest: true, noCondition: true, noLoot: true, tags: ['apparel', 'tech'], mesh: 'pipboy',
+    desc: 'RobCo Industries Personal Information Processor, model 3000. Welded to your wrist on your tenth birthday and never coming off. Tracks your health, your stats, your items and your sins.' });
+  A({ id: 'vault120_jumpsuit', name: 'Vault 120 Jumpsuit', weight: 1, value: 6, dr: 1, outfit: 'vault_suit', tags: ['apparel', 'clothing', 'vault'], mesh: 'cloth_vault',
+    desc: 'Blue and gold, zip-front, one size fits all Vault 120 residents. The big yellow "120" on the back makes an excellent target.' });
+  A({ id: 'vault120_security_armor', name: 'Vault 120 Security Armor', weight: 12, value: 150, dr: 12, outfit: 'vault_suit', tags: ['apparel', 'armor_light', 'vault'], mesh: 'armor_vault',
+    desc: 'A vault jumpsuit under a molded riot vest. Designed to stop an angry resident with a mop, and occasionally something worse.' });
+  A({ id: 'vault120_security_helmet', name: 'Vault 120 Security Helmet', slot: 'head', weight: 2, value: 40, dr: 3, tags: ['apparel', 'helmet', 'vault'], mesh: 'helmet_vault',
+    desc: 'A blue riot helmet with a smoked visor. The inside smells like the last three officers who wore it.' });
+  A({ id: 'vault_lab_uniform', name: 'Vault Lab Uniform', weight: 1, value: 10, dr: 1, skills: { science: 5 }, outfit: 'lab_coat', tags: ['apparel', 'clothing', 'vault'], mesh: 'cloth_white',
+    desc: 'A vault jumpsuit with a white smock over it, standard issue for the medical and science wing.' });
+  A({ id: 'overseer_outfit', name: "Overseer's Outfit", weight: 2, value: 60, dr: 2, special: { C: 1 }, skills: { speech: 5 }, outfit: 'vault_overseer', tags: ['apparel', 'clothing', 'vault'], mesh: 'cloth_vault', noLoot: true,
+    desc: 'A crisp blue suit jacket over the vault uniform, with a gold "120" lapel pin. Authority, tailored.' });
+
+  // ---------------------------------------------------------------
+  // Light & medium armour
+  // ---------------------------------------------------------------
+  A({ id: 'leather_armor', name: 'Leather Armor', weight: 15, value: 160, dr: 12, outfit: 'leather_armor', tags: ['apparel', 'armor_light'], mesh: 'armor_leather',
+    desc: 'Boiled brahmin hide over a padded jacket. The Wasteland\'s favourite compromise between protection and being able to run away.' });
+  A({ id: 'leather_armor_reinforced', name: 'Reinforced Leather Armor', weight: 16, value: 260, dr: 16, outfit: 'leather_armor', tags: ['apparel', 'armor_light'], mesh: 'armor_leather_r', lootWeight: 0.6,
+    desc: 'Leather armor with riveted steel plates across the chest and shoulders. A Brooklyn cobbler\'s masterpiece.' });
+  A({ id: 'metal_armor', name: 'Metal Armor', weight: 30, value: 250, dr: 28, skills: { sneak: -5 }, outfit: 'raider_heavy', tags: ['apparel', 'armor_heavy'], mesh: 'armor_metal',
+    desc: 'Sheet metal, hubcaps and road signs, hammered to shape and strapped together. You can hear it coming three blocks away.' });
+  A({ id: 'metal_helmet', name: 'Metal Helmet', slot: 'head', weight: 5, value: 60, dr: 5, tags: ['apparel', 'helmet'], mesh: 'helmet_metal',
+    desc: 'A dented steel bucket with eye slits. Protects the head; destroys the peripheral vision.' });
+  A({ id: 'combat_armor', name: 'Combat Armor', weight: 25, value: 300, dr: 32, outfit: 'combat_armor', tags: ['apparel', 'armor_heavy'], mesh: 'armor_combat',
+    desc: 'U.S. Army composite body armor, 2076 pattern. Still the best protection you can buy that doesn\'t need a fusion core.' });
+  A({ id: 'combat_helmet', name: 'Combat Armor Helmet', slot: 'head', weight: 3, value: 50, dr: 5, tags: ['apparel', 'helmet'], mesh: 'helmet_combat',
+    desc: 'A matching composite helmet with a chin strap and a faded unit stencil.' });
+  A({ id: 'recon_armor', name: 'Recon Armor', weight: 20, value: 400, dr: 30, skills: { sneak: 5 }, outfit: 'combat_armor', tags: ['apparel', 'armor_heavy'], mesh: 'armor_recon', lootWeight: 0.4,
+    desc: 'Lightweight combat armor designed for pre-war forward scouts. Quieter joints, fewer rattles.' });
+  A({ id: 'riot_police_armor', name: 'Riot Police Armor', weight: 20, value: 280, dr: 25, special: { C: -1 }, outfit: 'combat_armor', tags: ['apparel', 'armor_heavy'], mesh: 'armor_riot', lootWeight: 0.6,
+    desc: 'Black ballistic plates stamped with the badge of a Midtown precinct. Built for the food riots of \'77. Looks like it saw them.' });
+  A({ id: 'riot_police_helmet', name: 'Riot Police Helmet', slot: 'head', weight: 3, value: 60, dr: 6, tags: ['apparel', 'helmet'], mesh: 'helmet_riot', lootWeight: 0.6,
+    desc: 'A full helmet with a scratched polycarbonate faceplate and a tiny, faded American flag decal.' });
+  A({ id: 'chinese_stealth_armor', name: 'Chinese Stealth Armor', weight: 10, value: 1000, dr: 15, skills: { sneak: 10 }, outfit: 'combat_armor', tags: ['apparel', 'armor_light', 'rare'], mesh: 'armor_stealth', lootWeight: 0.1,
+    desc: 'Crimson Dragoon infiltrator armor captured in the Anchorage campaign. Hums faintly. Makes the wearer very hard to see and very easy to hate.' });
+
+  // ---------------------------------------------------------------
+  // Raider gear
+  // ---------------------------------------------------------------
+  A({ id: 'raider_sadist_armor', name: 'Raider Sadist Armor', weight: 15, value: 180, dr: 14, outfit: 'raider', tags: ['apparel', 'armor_light', 'raider'], mesh: 'armor_raider',
+    desc: 'Leather straps, tire rubber, a shoulder pad from a pre-war football uniform and somebody else\'s dried blood.' });
+  A({ id: 'raider_blastmaster_armor', name: 'Raider Blastmaster Armor', weight: 15, value: 180, dr: 14, skills: { explosives: 5 }, outfit: 'raider', tags: ['apparel', 'armor_light', 'raider'], mesh: 'armor_blastmaster',
+    desc: 'Scorched padding and bandoliers. The previous owner liked explosives more than they liked eyebrows.' });
+  A({ id: 'raider_painspike_armor', name: 'Raider Painspike Armor', weight: 16, value: 190, dr: 16, outfit: 'raider_heavy', tags: ['apparel', 'armor_light', 'raider'], mesh: 'armor_raider',
+    desc: 'A leather harness studded with rebar spikes and railroad nails. Hugs are no longer an option.' });
+  A({ id: 'raider_badlands_armor', name: 'Raider Badlands Armor', weight: 15, value: 180, dr: 14, skills: { guns: 5 }, outfit: 'raider', tags: ['apparel', 'armor_light', 'raider'], mesh: 'armor_badlands',
+    desc: 'A patchwork of pre-war motorcycle leathers and scavenged kneepads, favoured by the Bowery gangs.' });
+  A({ id: 'raider_blastmaster_helmet', name: 'Raider Blastmaster Helmet', slot: 'head', weight: 3, value: 50, dr: 3, radResist: 5, tags: ['apparel', 'helmet', 'raider'], mesh: 'helmet_gasmask',
+    desc: 'A welding mask bolted to a gas mask bolted to a football helmet. Airtight, mostly.' });
+  A({ id: 'wall_street_suit_armor', name: 'Exchange Enforcer Armor', weight: 18, value: 240, dr: 18, skills: { barter: 5 }, outfit: 'raider_heavy', tags: ['apparel', 'armor_light', 'raider'], mesh: 'armor_wallstreet', lootWeight: 0.5,
+    desc: 'A pinstripe suit jacket reinforced with trading-floor ticker plates. The uniform of the raiders who run The Exchange.' });
+
+  // ---------------------------------------------------------------
+  // Power armor (requires Power Armor Training)
+  // ---------------------------------------------------------------
+  A({ id: 't45d_power_armor', name: 'T-45d Power Armor', weight: 45, value: 680, dr: 40, dt: 4, radResist: 10, powerArmor: true, helmetFor: 't45d_power_helmet', outfit: 'bos_power_armor', tags: ['apparel', 'power_armor'], mesh: 'pa_t45', noLoot: true,
+    desc: 'The first power armor fielded by the U.S. Army, now the backbone of the Brotherhood of Steel. A walking tank that turns its wearer into a fortress.' });
+  A({ id: 't45d_power_helmet', name: 'T-45d Power Helmet', slot: 'head', weight: 5, value: 110, dr: 8, radResist: 3, powerArmor: true, tags: ['apparel', 'helmet', 'power_armor'], mesh: 'helmet_pa', noLoot: true,
+    desc: 'A riveted steel helm with a slitted visor and a built-in air filter.' });
+  A({ id: 't51b_power_armor', name: 'T-51b Power Armor', weight: 40, value: 1200, dr: 40, dt: 6, radResist: 25, powerArmor: true, helmetFor: 't51b_power_helmet', outfit: 'bos_power_armor', tags: ['apparel', 'power_armor', 'rare'], mesh: 'pa_t51', noLoot: true,
+    desc: 'The pinnacle of pre-war power armor. Sealed against radiation, sleek, and as rare as honest merchants.' });
+  A({ id: 't51b_power_helmet', name: 'T-51b Power Helmet', slot: 'head', weight: 4, value: 200, dr: 8, radResist: 8, powerArmor: true, tags: ['apparel', 'helmet', 'power_armor'], mesh: 'helmet_t51', noLoot: true,
+    desc: 'Rounded, sealed, and fitted with polarized lenses. Iconic enough to be on recruitment posters.' });
+  A({ id: 'x01_power_armor', name: 'X-01 Advanced Power Armor', weight: 45, value: 1400, dr: 45, dt: 8, radResist: 20, special: { S: 1 }, powerArmor: true, helmetFor: 'x01_power_helmet', outfit: 'enclave_power_armor', tags: ['apparel', 'power_armor', 'enclave'], mesh: 'pa_x01', noLoot: true,
+    desc: 'Enclave advanced power armor: black, sleek, terrifying. Built on post-war tech the Brotherhood would kill for — and has.' });
+  A({ id: 'x01_power_helmet', name: 'X-01 Advanced Power Helmet', slot: 'head', weight: 5, value: 250, dr: 10, radResist: 10, special: { P: 1 }, powerArmor: true, tags: ['apparel', 'helmet', 'power_armor', 'enclave'], mesh: 'helmet_enclave', noLoot: true,
+    desc: 'The insectoid black helmet with glowing lenses and a voice modulator that makes every word sound like a threat.' });
+  A({ id: 'enclave_officer_uniform', name: 'Enclave Officer Uniform', weight: 2, value: 90, dr: 5, special: { C: 1 }, skills: { speech: 5 }, outfit: 'lab_coat', tags: ['apparel', 'clothing', 'enclave'], mesh: 'cloth_black', lootWeight: 0.3,
+    desc: 'A pressed charcoal uniform with the Enclave star on the collar. Smells like cologne and arrogance.' });
+  A({ id: 'enclave_officer_hat', name: 'Enclave Officer Hat', slot: 'head', weight: 1, value: 40, dr: 1, special: { C: 1 }, tags: ['apparel', 'hat', 'enclave'], mesh: 'hat_officer', lootWeight: 0.3,
+    desc: 'A peaked cap with the Enclave eagle. Makes anyone look like they\'re about to give a speech about purity.' });
+
+  // ---------------------------------------------------------------
+  // Faction robes & uniforms
+  // ---------------------------------------------------------------
+  A({ id: 'bos_scribe_robe', name: 'Brotherhood Scribe Robe', weight: 2, value: 40, dr: 4, skills: { science: 5, repair: 5 }, outfit: 'lab_coat', tags: ['apparel', 'clothing', 'brotherhood'], mesh: 'cloth_red', lootWeight: 0.4,
+    desc: 'A hooded crimson robe worn by Brotherhood scribes, the Order\'s keepers of lost technology and stern librarians.' });
+  A({ id: 'atom_robes', name: 'Robes of Atom', weight: 2, value: 30, dr: 3, radResist: 10, outfit: 'atom_robes', tags: ['apparel', 'clothing', 'atom'], mesh: 'cloth_green', lootWeight: 0.4,
+    desc: 'Rough-spun green robes of the Children of Atom. Stitched with the sign of the Division and the faint conviction that radiation is love.' });
+  A({ id: 'radiation_suit', name: 'Radiation Suit', weight: 5, value: 60, dr: 8, radResist: 30, tags: ['apparel', 'clothing', 'hazmat'], mesh: 'cloth_yellow',
+    desc: 'A yellow rubberized hazmat suit with sealed cuffs. Squeaks when you walk. Beats glowing.' });
+  A({ id: 'radiation_hood', name: 'Radiation Suit Hood', slot: 'head', weight: 1, value: 20, dr: 2, radResist: 10, tags: ['apparel', 'helmet', 'hazmat'], mesh: 'helmet_hazmat',
+    desc: 'The matching hood, with a fogged plastic faceplate.' });
+  A({ id: 'advanced_radiation_suit', name: 'Advanced Radiation Suit', weight: 7, value: 180, dr: 10, radResist: 40, tags: ['apparel', 'clothing', 'hazmat'], mesh: 'cloth_orange', lootWeight: 0.4,
+    desc: 'An improved hazmat suit with lead-lined panels, built for reactor technicians. Heavier, safer, sweatier.' });
+  A({ id: 'lab_coat', name: 'Lab Coat', weight: 2, value: 10, dr: 2, skills: { science: 5, medicine: 5 }, outfit: 'lab_coat', tags: ['apparel', 'clothing'], mesh: 'cloth_white',
+    desc: 'A long white lab coat with a pocket protector still in place. Instantly adds five points of credibility.' });
+  A({ id: 'doctor_scrubs', name: "Wasteland Doctor Fatigues", weight: 2, value: 15, dr: 3, skills: { medicine: 10 }, outfit: 'doctor', tags: ['apparel', 'clothing'], mesh: 'cloth_white',
+    desc: 'Stained surgical scrubs with a leather apron. Every stain is a story; most of them end badly.' });
+  A({ id: 'mechanic_jumpsuit', name: 'Mechanic Jumpsuit', weight: 2, value: 10, dr: 2, skills: { repair: 10 }, outfit: 'settler', tags: ['apparel', 'clothing'], mesh: 'cloth_grey',
+    desc: 'Grease-stiff coveralls with "SAL" embroidered on the chest. Sal is not coming back for them.' });
+  A({ id: 'army_fatigues', name: 'Army Fatigues', weight: 3, value: 20, dr: 4, skills: { guns: 5 }, outfit: 'combat_armor', tags: ['apparel', 'clothing'], mesh: 'cloth_olive',
+    desc: 'Olive drab fatigues, U.S. Army issue. Name tape reads "DOE." Of course it does.' });
+  A({ id: 'army_helmet', name: 'Army Helmet', slot: 'head', weight: 2, value: 20, dr: 3, tags: ['apparel', 'helmet'], mesh: 'helmet_army',
+    desc: 'A steel pot helmet with a netting cover. The camouflage is for a forest that no longer exists.' });
+
+  // ---------------------------------------------------------------
+  // Wasteland wear & settler clothing
+  // ---------------------------------------------------------------
+  A({ id: 'settler_duds', name: 'Settler Duds', weight: 2, value: 8, dr: 2, outfit: 'settler', tags: ['apparel', 'clothing'], mesh: 'cloth_brown',
+    desc: 'Patched overalls and a flannel shirt. Honest, hardworking, and in need of a wash since 2150.' });
+  A({ id: 'road_leathers', name: 'Road Leathers', weight: 5, value: 20, dr: 5, skills: { unarmed: 5 }, outfit: 'wastelander', tags: ['apparel', 'clothing'], mesh: 'cloth_brown',
+    desc: 'A cracked leather jacket and scuffed chaps. The look says "don\'t." The smell says "please don\'t."' });
+  A({ id: 'merc_grunt_outfit', name: 'Merc Grunt Outfit', weight: 5, value: 30, dr: 6, skills: { guns: 5 }, outfit: 'wastelander', tags: ['apparel', 'clothing'], mesh: 'cloth_olive',
+    desc: 'Hardwearing canvas and a load-bearing vest, the uniform of every caravan guard between here and Jersey.' });
+  A({ id: 'merc_troublemaker', name: 'Merc Troublemaker Outfit', weight: 5, value: 35, dr: 6, skills: { melee_weapons: 5 }, outfit: 'wastelander', tags: ['apparel', 'clothing'], mesh: 'cloth_black',
+    desc: 'A leather duster over a torn tank top. Every bar fight in the Neon started with somebody wearing this.' });
+  A({ id: 'wasteland_wanderer', name: 'Wanderer\'s Coat', weight: 4, value: 40, dr: 6, special: { E: 1 }, outfit: 'wastelander', tags: ['apparel', 'clothing'], mesh: 'cloth_brown', lootWeight: 0.5,
+    desc: 'A long, dust-coloured coat with deep pockets, a turned-up collar and holes where the lining used to be.' });
+  A({ id: 'merchant_outfit', name: 'Merchant Outfit', weight: 3, value: 30, dr: 3, skills: { barter: 5 }, outfit: 'merchant', tags: ['apparel', 'clothing'], mesh: 'cloth_brown',
+    desc: 'A vest with a dozen pockets, a pencil behind each ear, and a coin purse sewn inside the lining.' });
+  A({ id: 'ghoul_wear', name: 'Tattered Ghoul Rags', weight: 1, value: 3, dr: 1, radResist: 5, outfit: 'ghoul_wear', tags: ['apparel', 'clothing'], mesh: 'cloth_grey',
+    desc: 'Layers of pre-war clothing, worn continuously for two centuries by someone who stopped sweating in 2077.' });
+
+  // ---------------------------------------------------------------
+  // Pre-war clothing (New York flavour)
+  // ---------------------------------------------------------------
+  A({ id: 'prewar_businesswear', name: 'Pre-War Businesswear', weight: 2, value: 20, dr: 1, special: { C: 1 }, outfit: 'merchant', tags: ['apparel', 'clothing', 'prewar'], mesh: 'cloth_grey',
+    desc: 'A grey flannel suit with narrow lapels and a tie clip. Madison Avenue\'s finest, with only minor ash damage.' });
+  A({ id: 'prewar_casualwear', name: 'Pre-War Casualwear', weight: 2, value: 10, dr: 1, special: { A: 1 }, outfit: 'settler', tags: ['apparel', 'clothing', 'prewar'], mesh: 'cloth_blue',
+    desc: 'Rolled jeans and a short-sleeve button-up. Perfect for a Sunday stroll through Central Park, which is now a deathtrap.' });
+  A({ id: 'prewar_spring_dress', name: 'Pre-War Spring Outfit', weight: 1, value: 15, dr: 1, special: { C: 1 }, outfit: 'settler', tags: ['apparel', 'clothing', 'prewar'], mesh: 'cloth_floral',
+    desc: 'A floral dress from a Fifth Avenue department store. The flowers have outlived every real flower in the city.' });
+  A({ id: 'prewar_formal', name: 'Pre-War Formal Wear', weight: 2, value: 40, dr: 1, special: { C: 1 }, skills: { speech: 5 }, outfit: 'merchant', tags: ['apparel', 'clothing', 'prewar'], mesh: 'cloth_black',
+    desc: 'A tuxedo last worn to a Broadway premiere on October 22nd, 2077. The show got terrible reviews. Then, well.' });
+  A({ id: 'stockbroker_suit', name: "Stockbroker's Three-Piece", weight: 2, value: 60, dr: 2, skills: { barter: 10 }, outfit: 'merchant', tags: ['apparel', 'clothing', 'prewar'], mesh: 'cloth_grey', lootWeight: 0.4,
+    desc: 'A Wall Street pinstripe with a pocket square and a ticker tape still stuck to the cuff. Sell high. Die rich.' });
+  A({ id: 'showgirl_costume', name: 'Broadway Showgirl Costume', weight: 1, value: 50, dr: 0, special: { C: 2 }, skills: { speech: 5 }, outfit: 'dj', tags: ['apparel', 'clothing', 'prewar'], mesh: 'cloth_sequin', lootWeight: 0.3,
+    desc: 'Sequins, feathers and very little else, from the wardrobe room of a 42nd Street revue. Glitters in the rubble.' });
+  A({ id: 'conductor_uniform', name: 'Subway Conductor Uniform', weight: 2, value: 20, dr: 3, skills: { repair: 5 }, outfit: 'settler', tags: ['apparel', 'clothing', 'prewar'], mesh: 'cloth_blue',
+    desc: 'A navy transit authority jacket with brass buttons. Stand clear of the closing doors, please.' });
+  A({ id: 'doorman_uniform', name: "Doorman's Uniform", weight: 2, value: 25, dr: 2, special: { C: 1 }, outfit: 'merchant', tags: ['apparel', 'clothing', 'prewar'], mesh: 'cloth_red',
+    desc: 'Maroon wool with gold braid, from a Park Avenue apartment lobby. The building is gone; the dignity remains.' });
+
+  // ---------------------------------------------------------------
+  // Hats, glasses & masks
+  // ---------------------------------------------------------------
+  A({ id: 'fedora', name: 'Fedora', slot: 'head', weight: 1, value: 10, special: { P: 1 }, tags: ['apparel', 'hat'], mesh: 'hat_fedora',
+    desc: 'A felt fedora with a pinched crown. Adds a certain hard-boiled perspective to everything you look at.' });
+  A({ id: 'newsboy_cap', name: 'Newsboy Cap', slot: 'head', weight: 1, value: 8, special: { C: 1 }, tags: ['apparel', 'hat'], mesh: 'hat_cap',
+    desc: 'Extra, extra — the world ended! Read all about it!' });
+  A({ id: 'baseball_cap', name: 'Baseball Cap', slot: 'head', weight: 1, value: 6, skills: { guns: 2 }, tags: ['apparel', 'hat'], mesh: 'hat_cap',
+    desc: 'A faded cap from a pre-war Bronx ball club. They were having a good season.' });
+  A({ id: 'cowboy_hat', name: 'Cowboy Hat', slot: 'head', weight: 1, value: 10, special: { A: 1 }, tags: ['apparel', 'hat'], mesh: 'hat_cowboy',
+    desc: 'Not a lot of cattle in Manhattan. Plenty of brahmin, though.' });
+  A({ id: 'top_hat', name: 'Top Hat', slot: 'head', weight: 1, value: 20, special: { C: 1 }, skills: { speech: 3 }, tags: ['apparel', 'hat'], mesh: 'hat_top',
+    desc: 'A silk opera hat from the Metropolitan. The kind of hat that demands to be tipped.' });
+  A({ id: 'bowler_hat', name: 'Bowler Hat', slot: 'head', weight: 1, value: 12, special: { I: 1 }, tags: ['apparel', 'hat'], mesh: 'hat_bowler',
+    desc: 'A rounded derby hat. Makes the wearer look like a banker, a butler or a burglar.' });
+  A({ id: 'liberty_crown', name: 'Foam Liberty Crown', slot: 'head', weight: 0.5, value: 5, special: { C: 1, L: 1 }, tags: ['apparel', 'hat', 'souvenir'], mesh: 'hat_crown', lootWeight: 0.3,
+    desc: 'A green foam souvenir crown from a Battery Park gift stand. Seven spikes for seven seas and continents. Surprisingly uplifting.' });
+  A({ id: 'hard_hat', name: 'Hard Hat', slot: 'head', weight: 1, value: 10, dr: 3, skills: { repair: 2 }, tags: ['apparel', 'helmet'], mesh: 'hat_hard',
+    desc: 'A yellow construction helmet from the eternal repair work on the FDR Drive.' });
+  A({ id: 'motorcycle_helmet', name: 'Motorcycle Helmet', slot: 'head', weight: 2, value: 20, dr: 4, tags: ['apparel', 'helmet'], mesh: 'helmet_moto',
+    desc: 'A scuffed open-face helmet with a flame decal. Safety first, style a very close second.' });
+  A({ id: 'sunglasses', name: 'Sunglasses', slot: 'eyes', weight: 0, value: 5, special: { C: 1 }, tags: ['apparel', 'glasses'], mesh: 'glasses',
+    desc: 'Dark aviator shades. The sun is harsher now, and so are you.' });
+  A({ id: 'reading_glasses', name: 'Reading Glasses', slot: 'eyes', weight: 0, value: 5, special: { I: 1 }, tags: ['apparel', 'glasses'], mesh: 'glasses',
+    desc: 'Horn-rimmed spectacles with a small crack in the left lens. The world is sharper, if not better.' });
+  A({ id: 'shooting_glasses', name: 'Shooting Glasses', slot: 'eyes', weight: 0, value: 12, special: { P: 1 }, tags: ['apparel', 'glasses'], mesh: 'glasses', lootWeight: 0.5,
+    desc: 'Yellow-tinted range glasses. Everything looks like a target, which is more or less accurate.' });
+  A({ id: 'gas_mask', name: 'Gas Mask', slot: 'mouth', weight: 2, value: 15, dr: 1, radResist: 10, tags: ['apparel', 'mask'], mesh: 'gas_mask',
+    desc: 'A civil-defense rubber mask from a subway emergency locker. Breathing through it sounds like a leaky accordion.' });
+  A({ id: 'bandana', name: 'Bandana', slot: 'mouth', weight: 0, value: 3, special: { A: 1 }, tags: ['apparel', 'mask'], mesh: 'bandana',
+    desc: 'A red paisley bandana. Keeps the dust out and the anonymity in.' });
+  A({ id: 'hockey_mask', name: 'Hockey Mask', slot: 'mouth', weight: 1, value: 10, dr: 1, special: { C: -1 }, skills: { melee_weapons: 5 }, tags: ['apparel', 'mask'], mesh: 'mask_hockey', lootWeight: 0.4,
+    desc: 'A white goalie mask from a pre-war Rangers fan. Wearing it makes people very nervous around you.' });
+})();
+

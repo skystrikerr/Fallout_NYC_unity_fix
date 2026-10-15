@@ -1,41 +1,34 @@
-# Native Unity port status
+# Unity full-game port status — 15 October 2026
 
-The target is the original complete game, not only Vault 120. This file separates functioning Unity gameplay from imported assets and remaining source systems.
+This is a playable migration checkpoint, not a completed or production-ready full-game port. The approved Unity human models and outfits are retained. The original Three.js renderer is not embedded: Unity renders native meshes, materials, characters and weapons. Trusted original gameplay scripts execute in-process through Jint without CLR access.
 
-## Playable and checked
-- Vault 120 map, physical doors, condensed birthday/eviction quest, three reactor enemies and exit checkpoint.
-- New character collection, resident idle/short-range movement, essential NPC hit reactions.
-- Keyboard/controller input, title/pause menus, local saves, soundtrack, 75% world rendering.
-- Health/AP/stimpaks, supply caches, reactive range targets, optional range challenge.
-- Original 44 weapon models/materials/stats, native prefabs, individual hand sockets and fitted first-person meshes.
-- Four visible world pickups and eight searchable cases provide all 44 weapons in the current vault map. Normal vault quest grants the imported 10mm pistol. The free Armory menu has been removed.
-- Automatic/semi-auto firing, pellet count, per-weapon magazines/reload timing, original mechanical shot offsets, basic plasma/explosive projectiles, timed bouncing grenades, proximity mines, basic melee reach/swing.
-- Owned weapons, individual magazines, shared ammo-type reserves, selected weapon and claimed loot persist in saves.
+## Implemented in this checkpoint
+- Streamed original exterior city, landmarks and interior geometry: 30,356 mesh instances, 886 streaming cells, 368 portal links and source collision volumes. All 13,576 referenced geometry/texture files verified present.
+- Vault-to-city and return travel. Existing condensed Vault 120 introduction remains playable.
+- Original item definitions and loot tables; 1,711 city containers. All 44 imported weapons occur in city loot. Extra placements are deterministic and recorded in Tools/Porting/extra-world-loot.json.
+- Original actor population/AI, native human views using the approved 50-character roster, and 29 imported original creature prefabs with five animation clips each.
+- Player damage, enemy projectiles/tracers, corpse looting, native NPC weapon sockets and arm fitting. Human deaths currently use a simple prone pose, not full ragdolls.
+- Original quest, dialogue, faction and companion source modules loaded, with native dialogue/journal, skill checks, trading, terminal hacking and door interactions. Loading a module does not establish end-to-end quest parity.
+- XP and native skill-point spending; lockpicking doors and containers; persistent vendor inventory/caps, terminal unlocks, quest progress, enemy/corpse state, player inventory and claimed loot.
+- Simulation runs on a worker so city rendering is not blocked on each AI update. Cold story initialization is still slow.
+- Existing controller support, 75% rendering, soundtrack, 44 weapons, owned inventory and local save slots retained.
 
-## Still incomplete within weapons
-- Full hand-driven reload animations, bolts/cylinders/spin-up and empty-lock behaviors are not fully reproduced.
-- Scope overlays, VATS, weapon condition, limb damage, armor mitigation, perks, full original sounds and weapon balance need the RPG/combat port.
-- Vault weapon pickups and inventory are implemented. Original city loot tables, merchant placements, apparel/aid inventory and broader RPG progression still require porting.
-- Visuals are first-pass native imports. Source models retain their original stylized geometry; this is not a replacement realistic asset pack.
+## Verified
+- Unity compiles without C# errors.
+- Native city floor/collision and movement check; interior destination has a solid floor and return portal. Full portal coverage remains untested.
+- Original first surface quest rewards its holotape and XP and advances to MQ03 in Unity.
+- Offline original simulation exercised at all 72 hostile locations with no adapter errors, up to 212 actors. This is not a navigation or full quest playthrough test.
+- Native enemy death/corpse looting and save/load persistence checked.
+- Actual merchant purchase changes caps/stock; terminal wrong guess uses an attempt, correct guess unlocks and persists.
+- Dialogue, trading, terminal, creature and NPC pistol/rifle screenshots inspected. All NPC weapon poses have not been reviewed.
+- Outside death menu and new-game reset checked; city EventSystem remains active.
+- Detailed checkpoint evidence is copied into Tools/Porting/Validation.
 
-## Remaining full-game port
-1. Exterior terrain, Central Park, street grid, city/building chunks, original landmarks and POI districts. Preserve source layout; add streaming/culling and collision checks before enabling city exploration.
-2. Vault-to-surface transition, subway, dungeons and landmark interiors, matching original portals and named anchors.
-3. Full item registry, inventory/ammo pools, aid/apparel, pickups, containers, merchants, barter and crafting.
-4. Original quest graph/dialogue/conditions/rewards, main quest after vault, side quests, factions, companions and save migration. Current MQ01 is condensed, not exact parity.
-5. Enemy roster, city AI, combat scheduling, navigation, factions and encounters. Current residents only roam locally and three roaches are one-hit enemies.
-6. RPG character creation/SPECIAL/skills/perks/XP, armor/resistance, radiation, survival, weapon condition, VATS and related UI.
-7. Ambient life, weather/day/night, radio/audio routing, holotapes/minigames and environmental interactions.
-8. Content placement, full quest playthroughs, performance/memory budgets, packaging and release QA.
+## Still required for the full port
+1. Complete main/side-quest playthroughs, companion behavior, quest set pieces, ending UI, and original full Vault MQ01 rather than the condensed introduction.
+2. Full SPECIAL/character creation and perk selection; native armor, condition, limb damage, aid/chem effects, crafting, VATS and complete RPG/player-stat integration.
+3. Day/night/weather, radio, holotapes/minigames, original environmental interactions and full audio event coverage.
+4. Replace temporary quest terminal/pickup proxy visuals; verify all interior navigation, portals, locks and ownership/stealing rules.
+5. Full weapon reload animation, NPC weapon-pose coverage, vault armory balance, performance/memory profiling and complete build QA.
 
-The source inventory JSON records every original src JavaScript file and hash so modules cannot silently disappear from the port scope. An imported source file is not evidence that its behavior works in Unity.
-
-## Weapon validation
-- 44/44 equip, fitted-arm presence and ammunition-consumption checks passed.
-- All 44 hip-fire views captured and reviewed; fixes made for wrist stretching, overlapping previous weapons and melee sleeve framing.
-- 18 controller/survival/save/death/range regression checks passed.
-- 20 vault quest/door/collision/audio checks passed.
-- Detailed run output is in Unity Logs/WeaponValidation.txt and Assets/FalloutPort/*Validation.txt.
-
-## World loot update
-72 pickup/inventory/persistence/UI checks passed. Collected loose weapons hide their world model; cases show taken entries and cannot duplicate loot. New games restore all loot. Existing saves migrate the selected weapon into ownership. All 12 loot placements passed static-overlap and normal interaction checks.
+Known limits: some source world features are not yet represented by native views; merchants currently persist stock but do not restock; source RPG special effects are not all applied to the native player. A successful build does not mean these gaps are complete.

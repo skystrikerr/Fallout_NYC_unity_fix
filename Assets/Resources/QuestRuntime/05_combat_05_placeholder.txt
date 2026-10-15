@@ -1,0 +1,289 @@
+/* src/combat/05_placeholder.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — COMBAT: placeholder characters
+ * Owned by: combat.
+ *
+ * Only used when the characters module (G.chars) is a stub or fails to
+ * create a type.  Builds a simple jointed rig with the same interface as a
+ * G.chars Character so the whole combat/AI stack works on its own:
+ *   { root, type, height, radius, parts:{head,torso,leftArm,rightArm,leftLeg,rightLeg},
+ *     setAnim(name,{loop,speed}), update(dt), setWeapon(obj), lookAt(v), dismember(part),
+ *     playOneShot(name), dispose(), placeholder:true }
+ * Models face -Z at rotation 0 (same convention as the player).
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const THREE = window.THREE;
+  const C = G.__cmb;
+
+  const matCache = new Map();
+  function mat(hex, opts) {
+    const key = hex + (opts ? JSON.stringify(opts) : '');
+    let m = matCache.get(key);
+    if (!m) {
+      m = new THREE.MeshStandardMaterial(Object.assign({ color: hex, roughness: 0.85, metalness: 0.05 }, opts || {}));
+      m.userData.shared = true;
+      matCache.set(key, m);
+    }
+    return m;
+  }
+  const geoCache = new Map();
+  function box(w, h, d) { const k = 'b' + w + ',' + h + ',' + d; let g = geoCache.get(k); if (!g) { g = new THREE.BoxGeometry(w, h, d); geoCache.set(k, g); } return g; }
+  function sph(r, ws, hs) { const k = 's' + r + ',' + (ws || 10); let g = geoCache.get(k); if (!g) { g = new THREE.SphereGeometry(r, ws || 10, hs || 8); geoCache.set(k, g); } return g; }
+  function cyl(rt, rb, h, s) { const k = 'c' + rt + ',' + rb + ',' + h + ',' + (s || 8); let g = geoCache.get(k); if (!g) { g = new THREE.CylinderGeometry(rt, rb, h, s || 8); geoCache.set(k, g); } return g; }
+  function cone(r, h) { const k = 'k' + r + ',' + h; let g = geoCache.get(k); if (!g) { g = new THREE.ConeGeometry(r, h, 6); geoCache.set(k, g); } return g; }
+  function mesh(geo, m, x, y, z, parent) { const o = new THREE.Mesh(geo, m); o.position.set(x || 0, y || 0, z || 0); o.castShadow = true; if (parent) parent.add(o); return o; }
+  function pivot(name, x, y, z, parent) { const o = new THREE.Group(); o.name = name; o.position.set(x, y, z); parent.add(o); return o; }
+
+  // Colour schemes per type / outfit
+  const SCHEMES = {
+    raider: { skin: 0xc79a78, top: 0x4a3a2c, legs: 0x3a3226, head: 0x7a2a1a, accent: 0x777777 },
+    raider_heavy: { skin: 0xc79a78, top: 0x55504a, legs: 0x2e2a24, head: 0x444444, accent: 0x888888 },
+    settler: { skin: 0xd8b08c, top: 0x6b6e4a, legs: 0x4a4238, head: 0x5a4030, accent: 0x886644 },
+    wastelander: { skin: 0xc8a080, top: 0x7a6650, legs: 0x4a3f33, head: 0x6a5040, accent: 0x886644 },
+    vault_suit: { skin: 0xe0b894, top: 0x2d5fa8, legs: 0x2d5fa8, head: 0x3a2a1a, accent: 0xf2c200 },
+    ghoul_wear: { skin: 0x8a7a55, top: 0x4a4436, legs: 0x3a3428, head: 0x6a5a40, accent: 0x5a5040 },
+    atom_robes: { skin: 0xd0a880, top: 0x8a8a70, legs: 0x7a7a62, head: 0x8a8a70, accent: 0x44ff66 },
+    combat_armor: { skin: 0xd0a880, top: 0x3a3a34, legs: 0x3a3a34, head: 0x2a2a26, accent: 0x55554a },
+    bos_power_armor: { skin: 0x6a6a60, top: 0x6f6f66, legs: 0x5a5a52, head: 0x707068, accent: 0x9a8a50, bulk: 1.25 },
+    enclave_power_armor: { skin: 0x1a1a1a, top: 0x222222, legs: 0x1c1c1c, head: 0x151515, accent: 0x333333, bulk: 1.25, eyes: 0xff5522 },
+    feral_ghoul: { skin: 0x6e5a3e, top: 0x5a4a34, legs: 0x4a3c2a, head: 0x6e5a3e, accent: 0x3a2a1a },
+    glowing_one: { skin: 0x9aff66, top: 0x6acc44, legs: 0x5aaa3a, head: 0xaaff77, accent: 0x44ff44, glow: 0x55ff33 },
+    super_mutant: { skin: 0x6f8a3a, top: 0x5a4a38, legs: 0x4a3c2c, head: 0x6f8a3a, accent: 0x777766, bulk: 1.6 },
+    deathclaw: { skin: 0x4a3a2a, top: 0x4a3a2a, legs: 0x3e3022, head: 0x4a3a2a, accent: 0xd8d0b0 },
+  };
+
+  /** Humanoid rig. h = height; bulk = width scale. */
+  function buildHumanoid(ch, s, h, bulk) {
+    const u = h / 1.8; bulk = bulk || 1;
+    const body = ch.body;
+    const hips = pivot('hips', 0, 0.95 * u, 0, body);
+    const torso = pivot('torso', 0, 0, 0, hips);
+    mesh(box(0.42 * u * bulk, 0.58 * u, 0.24 * u * bulk), mat(s.top), 0, 0.3 * u, 0, torso);
+    mesh(box(0.38 * u * bulk, 0.14 * u, 0.22 * u * bulk), mat(s.accent), 0, 0.02 * u, 0, torso); // belt
+    const head = pivot('head', 0, 0.66 * u, 0, torso);
+    mesh(box(0.22 * u, 0.26 * u, 0.24 * u), mat(s.skin), 0, 0.1 * u, 0, head);
+    mesh(box(0.24 * u, 0.08 * u, 0.26 * u), mat(s.head), 0, 0.23 * u, 0.01, head);
+    if (s.eyes) { const em = mat(s.eyes, { emissive: s.eyes, emissiveIntensity: 2 }); mesh(box(0.05 * u, 0.03 * u, 0.02), em, -0.05 * u, 0.13 * u, -0.125 * u, head); mesh(box(0.05 * u, 0.03 * u, 0.02), em, 0.05 * u, 0.13 * u, -0.125 * u, head); }
+    const armX = 0.27 * u * bulk;
+    const lA = pivot('leftArm', -armX, 0.55 * u, 0, torso), rA = pivot('rightArm', armX, 0.55 * u, 0, torso);
+    for (const a of [lA, rA]) { mesh(box(0.12 * u * bulk, 0.34 * u, 0.12 * u * bulk), mat(s.top), 0, -0.17 * u, 0, a); mesh(box(0.1 * u * bulk, 0.3 * u, 0.1 * u * bulk), mat(s.skin), 0, -0.48 * u, 0, a); }
+    const hand = pivot('hand', 0, -0.62 * u, -0.02, rA);
+    const lL = pivot('leftLeg', -0.11 * u * bulk, 0, 0, hips), rL = pivot('rightLeg', 0.11 * u * bulk, 0, 0, hips);
+    for (const l of [lL, rL]) { mesh(box(0.15 * u * bulk, 0.48 * u, 0.16 * u * bulk), mat(s.legs), 0, -0.24 * u, 0, l); mesh(box(0.13 * u * bulk, 0.44 * u, 0.14 * u * bulk), mat(s.legs), 0, -0.68 * u, 0, l); mesh(box(0.14 * u, 0.08 * u, 0.24 * u), mat(0x2a2218), 0, -0.9 * u, -0.04, l); }
+    Object.assign(ch.parts, { head, torso, leftArm: lA, rightArm: rA, leftLeg: lL, rightLeg: rL });
+    ch.hand = hand; ch.hips = hips; ch.kind = 'biped';
+  }
+
+  function buildQuadruped(ch, col, len, hgt, wid) {
+    const body = ch.body;
+    const torso = pivot('torso', 0, hgt * 0.6, 0, body);
+    mesh(box(wid, hgt * 0.5, len), mat(col), 0, 0, 0, torso);
+    const head = pivot('head', 0, hgt * 0.15, -len * 0.55, torso);
+    mesh(box(wid * 0.7, hgt * 0.4, len * 0.35), mat(col), 0, 0, -len * 0.12, head);
+    mesh(box(wid * 0.4, hgt * 0.2, len * 0.2), mat(0x221a14), 0, -hgt * 0.08, -len * 0.3, head);
+    const legs = {};
+    const lx = wid * 0.4, lz = len * 0.38, lh = hgt * 0.6;
+    [['leftArm', -lx, -lz], ['rightArm', lx, -lz], ['leftLeg', -lx, lz], ['rightLeg', lx, lz]].forEach(([k, x, z]) => {
+      const p = pivot(k, x, -hgt * 0.1, z, torso); mesh(box(wid * 0.22, lh, wid * 0.22), mat(col), 0, -lh / 2, 0, p); legs[k] = p;
+    });
+    Object.assign(ch.parts, { head, torso }, legs);
+    ch.kind = 'quad';
+  }
+
+  /** Build the rig for a type (with outfit variation). */
+  function build(type, opts) {
+    const td = C.typeDef(type);
+    const root = new THREE.Group(); root.name = 'ph_' + type;
+    const body = new THREE.Group(); root.add(body);
+    const ch = { root, body, type, parts: {}, placeholder: true, height: td.height || 1.8, radius: td.radius || 0.35, _anim: 'idle', _animT: 0, _speed: 1,
+      _oneShot: null, _oneShotT: 0, _dead: false, _deathT: 0, _hidden: new Set() };
+    const outfit = (opts && opts.outfit) || null;
+    switch (type) {
+      case 'radroach': {
+        const torso = pivot('torso', 0, 0.16, 0, body); mesh(box(0.34, 0.14, 0.62), mat(0x5a3218), 0, 0, 0, torso);
+        const head = pivot('head', 0, 0.02, -0.36, torso); mesh(box(0.2, 0.12, 0.16), mat(0x3a2210), 0, 0, 0, head);
+        const la = pivot('leftArm', -0.06, 0.05, -0.08, head), ra = pivot('rightArm', 0.06, 0.05, -0.08, head);
+        mesh(box(0.02, 0.02, 0.45), mat(0x2a1a0a), -0.05, 0, -0.2, la); mesh(box(0.02, 0.02, 0.45), mat(0x2a1a0a), 0.05, 0, -0.2, ra);
+        const ll = pivot('leftLeg', -0.2, -0.04, 0, torso), rl = pivot('rightLeg', 0.2, -0.04, 0, torso);
+        for (const [p, s] of [[ll, -1], [rl, 1]]) for (let i = -1; i <= 1; i++) { const m = mesh(box(0.28, 0.03, 0.03), mat(0x3a2210), s * 0.12, -0.05, i * 0.18, p); m.rotation.z = s * -0.5; }
+        Object.assign(ch.parts, { head, torso, leftArm: la, rightArm: ra, leftLeg: ll, rightLeg: rl }); ch.kind = 'bug'; break;
+      }
+      case 'molerat': buildQuadruped(ch, 0x9a7a6a, 1.0, 0.5, 0.42); mesh(box(0.08, 0.14, 0.04), mat(0xe8e0c0), 0, -0.1, -0.52, ch.parts.head); break;
+      case 'dog': buildQuadruped(ch, 0x6a5038, 1.0, 0.8, 0.3); break;
+      case 'bloatfly': {
+        const torso = pivot('torso', 0, 0, 0, body); mesh(sph(0.26), mat(0x8a8a5a), 0, 0, 0, torso);
+        const head = pivot('head', 0, 0.02, -0.28, torso); mesh(sph(0.12), mat(0x5a2a1a), 0, 0, 0, head);
+        const la = pivot('leftArm', -0.15, 0.18, 0, torso), ra = pivot('rightArm', 0.15, 0.18, 0, torso);
+        const wm = mat(0xcce0cc, { transparent: true, opacity: 0.45 }); mesh(box(0.5, 0.01, 0.22), wm, -0.25, 0, 0, la); mesh(box(0.5, 0.01, 0.22), wm, 0.25, 0, 0, ra);
+        const ll = pivot('leftLeg', 0, -0.2, -0.05, torso); mesh(box(0.14, 0.14, 0.14), mat(0x3a2a1a), 0, 0, 0, ll);
+        const rl = pivot('rightLeg', 0, 0.02, 0.3, torso); mesh(sph(0.2), mat(0xa0a070), 0, 0, 0.1, rl);
+        Object.assign(ch.parts, { head, torso, leftArm: la, rightArm: ra, leftLeg: ll, rightLeg: rl }); ch.kind = 'fly'; break;
+      }
+      case 'eyebot': {
+        const torso = pivot('torso', 0, 0, 0, body); mesh(sph(0.3, 14, 10), mat(0x7a7e84, { metalness: 0.7, roughness: 0.4 }), 0, 0, 0, torso);
+        mesh(cyl(0.12, 0.12, 0.05, 12), mat(0xff3322, { emissive: 0xff2211, emissiveIntensity: 1.5 }), 0, 0, -0.29, torso).rotation.x = Math.PI / 2;
+        const head = pivot('head', 0, 0.28, 0.05, torso); mesh(cyl(0.01, 0.01, 0.5), mat(0x333333), 0, 0.25, 0, head); mesh(sph(0.03), mat(0xff4422, { emissive: 0xff2200 }), 0, 0.5, 0, head);
+        const la = pivot('leftArm', -0.3, 0, 0.05, torso), ra = pivot('rightArm', 0.3, 0, 0.05, torso);
+        mesh(box(0.12, 0.02, 0.2), mat(0x55585c), -0.05, 0, 0, la); mesh(box(0.12, 0.02, 0.2), mat(0x55585c), 0.05, 0, 0, ra);
+        const ll = pivot('leftLeg', 0, -0.3, 0.05, torso); mesh(cyl(0.08, 0.04, 0.12), mat(0x444444), 0, 0, 0, ll);
+        const rl = pivot('rightLeg', 0, 0, 0.3, torso); mesh(box(0.2, 0.16, 0.05), mat(0x333333), 0, 0, 0, rl);
+        Object.assign(ch.parts, { head, torso, leftArm: la, rightArm: ra, leftLeg: ll, rightLeg: rl }); ch.kind = 'float'; break;
+      }
+      case 'mister_handy': {
+        const torso = pivot('torso', 0, 0.2, 0, body); mesh(sph(0.42, 14, 10), mat(0x5a6a50, { metalness: 0.6, roughness: 0.45 }), 0, 0, 0, torso);
+        const head = pivot('head', 0, 0.38, 0, torso);
+        for (let i = 0; i < 3; i++) { const a = (i / 3) * Math.PI * 2; const st = mesh(cyl(0.02, 0.02, 0.35), mat(0x333333), Math.sin(a) * 0.12, 0.15, Math.cos(a) * 0.12 - 0.05, head); st.rotation.x = -0.3; mesh(sph(0.07), mat(0xeeeecc, { emissive: 0x333322 }), Math.sin(a) * 0.14, 0.33, Math.cos(a) * 0.14 - 0.12, head); }
+        const la = pivot('leftArm', -0.4, -0.05, -0.1, torso), ra = pivot('rightArm', 0.4, -0.05, -0.1, torso), rl = pivot('rightLeg', 0, -0.1, 0.4, torso);
+        for (const a of [la, ra]) { mesh(cyl(0.035, 0.035, 0.5), mat(0x444444), 0, -0.2, -0.1, a).rotation.x = 0.6; }
+        mesh(cyl(0.12, 0.12, 0.02, 14), mat(0xaaaaaa, { metalness: 0.8 }), 0, -0.45, -0.3, la).rotation.x = Math.PI / 2;
+        mesh(cyl(0.035, 0.035, 0.45), mat(0x444444), 0, 0, 0.1, rl).rotation.x = -0.8;
+        const ll = pivot('leftLeg', 0, -0.45, 0, torso); mesh(cone(0.2, 0.35), mat(0x333333), 0, 0, 0, ll).rotation.x = Math.PI;
+        Object.assign(ch.parts, { head, torso, leftArm: la, rightArm: ra, leftLeg: ll, rightLeg: rl }); ch.kind = 'float'; break;
+      }
+      case 'mirelurk': case 'mirelurk_queen': {
+        const q = type === 'mirelurk_queen' ? 3.2 : 1;
+        const torso = pivot('torso', 0, 0.7 * q, 0, body); mesh(sph(0.7 * q, 12, 8), mat(0x6a5a3a, { roughness: 0.6 }), 0, 0, 0.1 * q, torso).scale.set(1.1, 0.6, 1.2);
+        const head = pivot('head', 0, -0.05 * q, -0.75 * q, torso); mesh(box(0.35 * q, 0.3 * q, 0.2 * q), mat(0xb0906a), 0, 0, 0, head);
+        const la = pivot('leftArm', -0.6 * q, -0.1 * q, -0.5 * q, torso), ra = pivot('rightArm', 0.6 * q, -0.1 * q, -0.5 * q, torso);
+        for (const a of [la, ra]) { mesh(box(0.2 * q, 0.2 * q, 0.6 * q), mat(0x7a6040), 0, 0, -0.3 * q, a); mesh(box(0.28 * q, 0.14 * q, 0.35 * q), mat(0x8a3a2a), 0, 0, -0.7 * q, a); }
+        const ll = pivot('leftLeg', -0.5 * q, -0.3 * q, 0.2 * q, torso), rl = pivot('rightLeg', 0.5 * q, -0.3 * q, 0.2 * q, torso);
+        for (const l of [ll, rl]) { mesh(box(0.12 * q, 0.5 * q, 0.12 * q), mat(0x5a4a30), 0, -0.2 * q, 0, l); }
+        Object.assign(ch.parts, { head, torso, leftArm: la, rightArm: ra, leftLeg: ll, rightLeg: rl }); ch.kind = 'crab'; break;
+      }
+      case 'protectron': case 'sentry_bot': {
+        buildHumanoid(ch, { skin: 0x7a7e70, top: 0x6a7a66, legs: 0x5a6258, head: 0x9aa090, accent: 0x333333, eyes: 0x66ccff }, type === 'sentry_bot' ? 2.3 : 2.0, 1.2);
+        mesh(sph(0.16), mat(0x88bbcc, { transparent: true, opacity: 0.6 }), 0, 0.22, 0, ch.parts.head);
+        break;
+      }
+      case 'deathclaw': {
+        buildHumanoid(ch, SCHEMES.deathclaw, 2.8, 1.35);
+        const hm = mat(0xd8d0b0);
+        mesh(cone(0.05, 0.35), hm, -0.12, 0.45, 0.02, ch.parts.head).rotation.z = 0.4; mesh(cone(0.05, 0.35), hm, 0.12, 0.45, 0.02, ch.parts.head).rotation.z = -0.4;
+        for (const a of [ch.parts.leftArm, ch.parts.rightArm]) for (let i = -1; i <= 1; i++) { const c = mesh(cone(0.03, 0.4), hm, i * 0.05, -1.05, -0.12, a); c.rotation.x = Math.PI + 0.4; }
+        ch.body.rotation.x = -0.25; // hunched
+        break;
+      }
+      default: {
+        let scheme = SCHEMES[outfit] || SCHEMES[type] || SCHEMES.wastelander;
+        let h = td.height || 1.78, bulk = scheme.bulk || 1;
+        if (type === 'raider') scheme = SCHEMES[outfit] || SCHEMES.raider;
+        if (type === 'enclave_soldier') scheme = SCHEMES.enclave_power_armor;
+        if (type === 'brotherhood_paladin') scheme = SCHEMES.bos_power_armor;
+        if (type === 'super_mutant') { scheme = SCHEMES.super_mutant; bulk = 1.6; }
+        if (type === 'super_mutant_behemoth') { scheme = SCHEMES.super_mutant; bulk = 1.9; }
+        if (opts && opts.ghoul && !SCHEMES[type]) scheme = Object.assign({}, scheme, { skin: 0x8a7a55 });
+        buildHumanoid(ch, scheme, h, bulk);
+        if (scheme.glow) {
+          ch.parts.torso.traverse((o) => { if (o.isMesh) o.material = mat(scheme.skin, { emissive: scheme.glow, emissiveIntensity: 0.8 }); });
+        }
+      }
+    }
+    ch.height = td.height || ch.height;
+    return ch;
+  }
+
+  // ------------------------------------------------------------------
+  // Animation (procedural): walk/run cycles, attack swings, death fall
+  // ------------------------------------------------------------------
+  function animate(ch, dt) {
+    ch._animT += dt * ch._speed;
+    const t = ch._animT, P = ch.parts;
+    if (ch._dead) {
+      ch._deathT = Math.min(1, ch._deathT + dt * 1.8);
+      const k = ch._deathT;
+      const e = k < 1 ? (1 - Math.pow(1 - k, 3)) : 1;
+      if (ch.kind === 'biped') { ch.body.rotation.x = ch._deathDir * e * Math.PI / 2 * 0.98; ch.body.position.y = e * 0.15; }
+      else if (ch.kind === 'float' || ch.kind === 'fly') { ch.body.rotation.z = e * 1.2; }
+      else { ch.body.rotation.z = e * Math.PI * 0.95; ch.body.position.y = e * 0.25; }
+      if (P.leftArm) P.leftArm.rotation.x = -0.6 * e; if (P.rightArm) P.rightArm.rotation.x = -1.0 * e;
+      return;
+    }
+    const a = ch._anim;
+    const moving = a === 'walk' || a === 'run' || a === 'sneak';
+    const freq = a === 'run' ? 11 : a === 'sneak' ? 4.5 : 7;
+    const amp = a === 'run' ? 0.9 : a === 'sneak' ? 0.35 : 0.5;
+    const s = moving ? Math.sin(t * freq) * amp : 0;
+    if (ch.kind === 'biped') {
+      if (P.leftLeg) P.leftLeg.rotation.x = s; if (P.rightLeg) P.rightLeg.rotation.x = -s;
+      let la = -s * 0.8, ra = s * 0.8;
+      if (a === 'aim' || ch._armed) ra = -1.35; // rifle-at-shoulder pose
+      if (ch._armed && (a === 'aim' || a === 'idle')) la = -1.2;
+      if (P.leftArm) P.leftArm.rotation.x = la; if (P.rightArm) P.rightArm.rotation.x = ra;
+      if (ch.hips) ch.hips.position.y = (ch.hips.userData.y0 || (ch.hips.userData.y0 = ch.hips.position.y)) - (a === 'sneak' ? 0.25 : 0) + (moving ? Math.abs(Math.cos(t * freq)) * 0.04 : 0);
+      if (P.torso) P.torso.rotation.x = a === 'sneak' ? 0.35 : a === 'run' ? 0.15 : 0;
+    } else if (ch.kind === 'quad' || ch.kind === 'crab' || ch.kind === 'bug') {
+      if (P.leftArm) P.leftArm.rotation.x = s; if (P.rightLeg) P.rightLeg.rotation.x = s;
+      if (P.rightArm) P.rightArm.rotation.x = -s; if (P.leftLeg) P.leftLeg.rotation.x = -s;
+      if (ch.kind === 'bug' && P.leftArm) { P.leftArm.rotation.y = Math.sin(t * 5) * 0.3; P.rightArm.rotation.y = -Math.sin(t * 5.3) * 0.3; }
+    } else if (ch.kind === 'fly') {
+      if (P.leftArm) P.leftArm.rotation.z = Math.sin(t * 60) * 0.6; if (P.rightArm) P.rightArm.rotation.z = -Math.sin(t * 60) * 0.6;
+      ch.body.position.y = Math.sin(t * 3) * 0.08;
+    } else if (ch.kind === 'float') {
+      ch.body.position.y = Math.sin(t * 2.2) * 0.06;
+      if (P.head) P.head.rotation.y = Math.sin(t * 0.7) * 0.4;
+    }
+    // One-shots (attack / hit)
+    if (ch._oneShot) {
+      ch._oneShotT += dt;
+      const k = ch._oneShotT / 0.45;
+      if (k >= 1) ch._oneShot = null;
+      else {
+        const w = Math.sin(k * Math.PI);
+        if (ch._oneShot === 'attack_melee') { if (P.rightArm) P.rightArm.rotation.x = -2.4 * w + 0.6 * k; if (P.head && ch.kind !== 'biped') P.head.rotation.x = -0.5 * w; }
+        else if (ch._oneShot === 'attack_ranged') { if (P.rightArm) P.rightArm.rotation.x = -1.35 - 0.2 * w; }
+        else if (ch._oneShot === 'hit') { if (P.torso) P.torso.rotation.x = -0.35 * w; }
+        else if (ch._oneShot === 'reload') { if (P.leftArm) P.leftArm.rotation.x = -0.8 - 0.6 * w; }
+      }
+    }
+  }
+
+  C.createPlaceholder = function (type, opts) {
+    const ch = build(type, opts || {});
+    ch.setAnim = function (name) {
+      if (name === 'death' || name === 'dead') {
+        if (!ch._dead) { ch._dead = true; ch._deathT = name === 'dead' ? 1 : 0; ch._deathDir = Math.random() < 0.7 ? 1 : -1; }
+        return;
+      }
+      if (ch._dead) { ch._dead = false; ch.body.rotation.set(ch.type === 'deathclaw' ? -0.25 : 0, 0, 0); ch.body.position.y = 0; }
+      ch._anim = name;
+    };
+    ch.playOneShot = function (name) { ch._oneShot = name; ch._oneShotT = 0; };
+    ch.update = function (dt) { animate(ch, dt); };
+    ch.lookAt = function () { /* placeholder ignores head tracking */ };
+    ch.setWeapon = function (obj) {
+      if (ch._weapon && ch._weapon.parent) ch._weapon.parent.remove(ch._weapon);
+      ch._weapon = obj || null; ch._armed = !!obj;
+      if (obj && ch.hand) { ch.hand.add(obj); obj.rotation.set(0, 0, 0); obj.position.set(0, 0, 0); }
+    };
+    ch.dismember = function (part) {
+      const p = ch.parts[part]; if (!p || ch._hidden.has(part)) return [];
+      ch._hidden.add(part);
+      p.traverse((o) => { if (o.isMesh) o.visible = false; });
+      return []; // combat spawns generic gib chunks itself
+    };
+    ch.dispose = function () { if (ch.root.parent) ch.root.parent.remove(ch.root); };
+    ch.root.traverse((o) => { if (o.isMesh) o.receiveShadow = false; });
+    return ch;
+  };
+
+  /** Simple world model for an NPC weapon when G.weapons can't make one. */
+  C.placeholderWeaponModel = function (wid, info) {
+    const g = new THREE.Group();
+    const dark = mat(0x2a2a2a, { metalness: 0.6, roughness: 0.5 }), wood = mat(0x5a3a22);
+    if (info && info.melee) {
+      mesh(cyl(0.025, 0.03, 0.8), wid === 'super_sledge' ? dark : wood, 0, 0, -0.35, g).rotation.x = Math.PI / 2;
+      if (wid === 'super_sledge') mesh(box(0.14, 0.14, 0.3), dark, 0, 0, -0.75, g);
+    } else {
+      const long = info && (info.range > 100 || info.automatic);
+      mesh(box(0.05, 0.08, long ? 0.55 : 0.22), dark, 0, 0.02, long ? -0.2 : -0.08, g);
+      mesh(cyl(0.015, 0.015, long ? 0.4 : 0.15), dark, 0, 0.05, long ? -0.6 : -0.25, g).rotation.x = Math.PI / 2;
+      if (long) mesh(box(0.05, 0.1, 0.25), wood, 0, -0.01, 0.15, g);
+      mesh(box(0.04, 0.12, 0.05), dark, 0, -0.07, 0, g);
+    }
+    const muzzle = new THREE.Object3D(); muzzle.name = 'muzzle'; muzzle.position.set(0, 0.05, info && info.range > 100 ? -0.8 : -0.35); g.add(muzzle);
+    return g;
+  };
+})();
+

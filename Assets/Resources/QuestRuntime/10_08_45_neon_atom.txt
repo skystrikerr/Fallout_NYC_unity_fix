@@ -1,0 +1,459 @@
+/* src/quests/45_neon_atom.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 45: THE NEON (TIMES SQUARE) & ST. PATRICK'S
+ *   SQ "Neon Heart"        — Mayor Crowe's dying generator; a fusion core
+ *                            in the 42nd St subway (give / sell / repair)
+ *   SQ "The Glow of Atom"  — Father Hollowell wants Grand Central's water
+ *                            "blessed" (plant it / warn them / swap it)
+ *   SQ "Black Friday"      — Wendell's ring in the Macy's manager's safe,
+ *                            and the showgirl who has been waiting 214 years
+ * NPCs: Mayor Lucius Crowe, Marigold, Wendell Pruitt, Big Sal (ghouls),
+ *       Father Ezra Hollowell, Sister Glow (Children of Atom).
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+
+  const TS = { x: -40, z: -262 }, SP = { x: 160, z: -342 };
+  const STOCK_LOUNGE = [[['jet', /^jet$/i], 3], [['psycho', /psycho/i], 2], [['buffout', /buffout/i], 2], [['mentats', /mentats/i], 2],
+    [['nuka_cola', /^nuka-cola$/i], 6], [['whiskey', /whiskey/i], 4], [['beer', /^beer$/i], 6], [['radaway', /radaway/i], 2], [['vodka', /vodka/i], 2]];
+  const STOCK_ATOM = [[['dirty_water', /dirty water/i], 6], [['rad_x', /rad-x/i], 2], [['radaway', /radaway/i], 1], [['nuka_cola_quantum', /quantum/i], 1],
+    [['glowing_fungus', /fungus/i], 3], [['q_atom_robes'], 1]];
+
+  L.hook('init', function () {
+    L.quest({
+      id: 'sq_neon', name: 'Neon Heart', giver: 'Mayor Lucius Crowe', location: 'The Neon (Times Square)',
+      desc: 'The ghoul shanty-town in Times Square runs on a pre-war generator the locals call the Big Buzz, and the Big Buzz is dying. ' +
+        'Mayor Crowe says a spare fusion core was left in the 42nd Street subway tunnels.',
+      stages: [
+        { id: 'core', text: 'Recover the spare fusion core ("Big Buzz #2") from the 42nd Street subway tunnels.',
+          markers: () => (L.pickups.neon_core && !L.has('q_neon_core') ? [{ x: L.pickups.neon_core.pos.x, z: L.pickups.neon_core.pos.z, label: 'Fusion Core' }] : [{ x: -60, z: -228, label: 'Subway Entrance' }]) },
+        { id: 'nh_repair', text: '(Optional) Get the Big Buzz running again without a new core.', sideObjective: true, optional: true,
+          showIf: () => Q.stage('sq_neon') === 'core' && L.skill('repair') >= 60, doneIf: () => L.flag('neon_outcome') === 'repair',
+          markers: () => [{ npc: 'neon_crowe', label: 'The Big Buzz (Mayor Crowe)' }] },
+        { id: 'return', text: 'Bring the fusion core back to Mayor Crowe — or find another buyer.', markers: () => [{ npc: 'neon_crowe', label: 'Mayor Crowe' }] },
+        { id: 'nh_give', text: '(Optional) Give the core to Mayor Crowe.', sideObjective: true, optional: true,
+          showIf: () => Q.stage('sq_neon') === 'return', doneIf: () => L.flag('neon_outcome') === 'crowe' },
+        { id: 'nh_bos', text: '(Optional) Sell the core to Knight Reyes of the Brotherhood instead (400 caps).', sideObjective: true, optional: true,
+          showIf: () => Q.stage('sq_neon') === 'return' && !!(L.flag('met_stroud') || L.flag('mq_faction') === 'bos'),
+          doneIf: () => L.flag('neon_outcome') === 'sold', markers: () => [{ npc: 'bos_reyes', label: 'Knight Reyes' }] },
+        { id: 'nh_atom', text: '(Optional) Hand the core to the Children of Atom.', sideObjective: true, optional: true,
+          showIf: () => Q.stage('sq_neon') === 'return' && !!L.flag('met_ezra'), doneIf: () => L.flag('neon_outcome') === 'atom',
+          markers: () => [{ npc: 'atom_ezra', label: 'Father Hollowell' }] },
+      ],
+      rewards: { xp: 300 },
+    });
+    L.quest({
+      id: 'sq_atom', name: 'The Glow of Atom', giver: 'Father Ezra Hollowell', location: 'St. Patrick\'s Cathedral',
+      desc: 'Father Hollowell of the Children of Atom wants to "share Atom\'s blessing" with Grand Central Market by placing a radioactive ' +
+        'relic in the market\'s water tower. Thousands drink from those taps.',
+      stages: [
+        { id: 'plant', text: 'Place the Blessed Isotope in Grand Central\'s water tower intake.', markers: () => [waterTowerMarker()] },
+        { id: 'warn', text: '(Optional) Warn Stationmaster Okafor about the Children of Atom.', sideObjective: true, optional: true,
+          showIf: () => !L.flag('atom_told_delphine') && !L.flag('atom_isotope_planted'), doneIf: () => !!L.flag('atom_told_delphine'), markers: () => [{ npc: 'gc_delphine', label: 'Stationmaster Okafor' }] },
+        { id: 'ga_placebo', text: '(Optional) Swap the isotope for something that only LOOKS holy.', sideObjective: true, optional: true,
+          showIf: () => Q.stage('sq_atom') === 'plant' && !!L.flag('atom_secret_plan'), doneIf: () => !!L.flag('atom_placebo_planted') },
+        { id: 'ga_refuse', text: '(Optional) Give the isotope back and refuse the task.', sideObjective: true, optional: true,
+          showIf: () => false, doneIf: () => !!L.flag('atom_refused') },
+        { id: 'ga_convince', text: '(Optional) Talk Father Hollowell out of it.', sideObjective: true, optional: true,
+          showIf: () => false, doneIf: () => !!L.flag('atom_convinced') },
+        { id: 'return', text: () => (L.flag('atom_isotope_planted') ? 'Grand Central\'s taps are glowing. ' : L.flag('atom_placebo_planted') ? 'The reliquary glows — harmlessly. ' : '') + 'Return to Father Hollowell at St. Patrick\'s Cathedral.',
+          markers: () => [{ npc: 'atom_ezra', label: 'Father Hollowell' }] },
+      ],
+      rewards: { xp: 250 },
+    });
+    L.quest({
+      id: 'sq_blackfriday', name: 'Black Friday', giver: 'Wendell Pruitt', location: 'Macy\'s Herald Square',
+      desc: 'Wendell, a ghoul who once worked Housewares at Macy\'s, hid an engagement ring in the manager\'s safe the night before the bombs. ' +
+        'Macy\'s is now full of feral ghouls still waiting for the doors to open.',
+      stages: [
+        { id: 'ring', text: 'Retrieve Wendell\'s ring from the Macy\'s manager\'s safe.',
+          // ring already looted before Wendell asked (the pickup exists from game start): go straight to the hand-in
+          onEnter() { if (L.has('q_wendell_ring')) Q.setStage('sq_blackfriday', 'return'); },
+          markers: () => (L.pickups.wendell_ring && !L.has('q_wendell_ring') ? [{ x: L.pickups.wendell_ring.pos.x, z: L.pickups.wendell_ring.pos.z, label: 'Manager\'s Safe' }] : [{ x: 0, z: -50, label: 'Macy\'s' }]) },
+        { id: 'return', text: 'Bring the ring to Wendell in the Neon.', markers: () => [{ npc: 'neon_wendell', label: 'Wendell' }] },
+        { id: 'marjorie', text: '(Optional) Ask Marigold about her past.', sideObjective: true, optional: true,
+          showIf: () => Q.stage('sq_blackfriday') === 'return', doneIf: () => !!L.flag('marigold_is_marjorie'), markers: () => [{ npc: 'neon_marigold', label: 'Marigold' }] },
+        { id: 'bf_wed', text: '(Optional) Bring Wendell and Marjorie back together.', sideObjective: true, optional: true,
+          showIf: () => !!L.flag('marigold_is_marjorie') && !L.flag('ring_resolved'), doneIf: () => !!L.flag('wendell_wed') },
+        { id: 'bf_keep', text: '(Optional) Keep the ring for yourself.', sideObjective: true, optional: true,
+          showIf: () => false, doneIf: () => !!L.flag('ring_kept') },
+      ],
+      rewards: { xp: 250 },
+    });
+  });
+
+  function waterTowerSpot() { return L.anchor('grand_central', ['water_main', 'water_tower', 'roof_tank'], { x: 267, z: -200 }); }
+  function waterTowerMarker() { const p = waterTowerSpot(); return p ? { x: p.x, z: p.z, label: 'Water Tower Intake' } : null; }
+
+  // ---- event hooks ----
+  G.events.on('itemAdded', (id) => {
+    if (id === 'q_neon_core') { if (!Q.isStarted('sq_neon')) Q.start('sq_neon', { stage: 'return' }); else if (Q.stage('sq_neon') === 'core') Q.setStage('sq_neon', 'return'); }
+    if (id === 'q_wendell_ring') { if (Q.stage('sq_blackfriday') === 'ring') Q.setStage('sq_blackfriday', 'return'); }
+  });
+
+  // ---- world ----
+  L.hook('world', function () {
+    const t = L.anchor('st_patricks', ['terminal', 'altar', 'pulpit'], { x: SP.x - 30, z: SP.z + 8 });
+    if (t) L.spawnTerminal('atom_scripture', t, Math.PI / 2);
+    const tn = L.anchor('times_square', ['terminal', 'mayor_office', 'stage'], { x: TS.x + 10, z: TS.z + 6 });
+    if (tn) L.spawnTerminal('neon_mayor', tn, 0);
+    // City Hall of the Neon is a windowless shack: light the Mayor's office so the first
+    // meeting isn't in the dark (props' lamps are emissive + glow sprites, no dynamic lights).
+    const mo = !G.isStub('landmarks') && G.landmarks.getAnchor ? G.landmarks.getAnchor('times_square', 'mayor_office') : null;
+    if (mo && isFinite(mo.x)) {
+      L.prop('lamp', { x: mo.x - 0.7, y: mo.y || 0, z: mo.z + 0.8, kind: 'hanging', persistent: true });
+      L.prop('lamp', { x: mo.x - 2.0, y: mo.y || 0, z: mo.z + 3.4, kind: 'floor', yaw: 0.6, persistent: true });
+    }
+    // The Grand Central water tower intake (only active while carrying the isotope).
+    const w = waterTowerSpot();
+    if (w) {
+      L.world.waterTower = G.world.addInteractable({
+        pos: L.V3(w.x, (w.y || 0) + 1.2, w.z), radius: 0.9, label: 'Water Tower Intake', verb: 'Use', priority: 2,
+        enabled: () => L.has('q_blessed_isotope') && !L.flag('atom_isotope_planted') && !L.flag('atom_placebo_planted'),
+        onInteract() { if (!L.startDialogue('dlg_atom_tower', null)) plantIsotope(false); },
+      });
+    }
+  });
+
+  function subwayCoreSpot() {
+    // Prefer map anchors; else next to the subway's inbound door target.
+    const tries = [() => G.map.getAnchor && G.map.getAnchor('subway', 'loot'), () => G.map.getAnchor && G.map.getAnchor('subway', 'core'),
+      () => G.map.anchors && G.map.anchors.subway && (G.map.anchors.subway.loot || G.map.anchors.subway.car)];
+    for (const t of tries) { let a = null; try { a = t(); } catch (e) { a = null; } if (a && isFinite(a.x)) return { x: a.x, y: a.y || 0, z: a.z }; }
+    const d = L.doorInto('subway');
+    const o = G.LAYOUT.INTERIORS.subway.origin;
+    if (d) { const t = d.def.target; return L.freeSpot(t.x + (o.x - t.x) * 0.6, t.z + (o.z - t.z) * 0.6, t.y || 0, { maxR: 12 }); }
+    return L.freeSpot(o.x, o.z, o.y || 0, { maxR: 20 });
+  }
+
+  L.hook('spawn', function () {
+    // ---- The Neon ----
+    const ts = (anchors, dx, dz) => ({ site: 'times_square', anchors, fallback: { x: TS.x + dx, z: TS.z + dz } });
+    L.spawnNPC({ id: 'neon_crowe', type: 'human', ghoul: true, name: 'Mayor Lucius Crowe', outfit: 'ghoul_wear', gender: 'm', faction: 'ghouls', ai: 'guard', home: 'here', homeR: 3,
+      at: ts(['mayor', 'leader', 'stage', 'merchant1'], 0, 0), dialogue: 'dlg_neon_crowe', essential: true, level: 10, hat: 'top_hat',
+      barks: ['Welcome to the Neon, where the lights are bright and the residents are brighter!', 'Smoothskins welcome. Smooth manners required.', 'Vote Crowe! There is no election. Vote anyway!'], voice: 'ghoul' });
+    L.spawnNPC({ id: 'neon_marigold', type: 'human', ghoul: true, name: 'Marigold', outfit: 'ghoul_wear', gender: 'f', faction: 'ghouls', ai: 'merchant', home: 'here',
+      at: ts(['bar', 'lounge', 'merchant2'], -14, 16), dialogue: 'dlg_neon_marigold', essential: true, merchant: { caps: 400, stock: STOCK_LOUNGE, restock: 3 },
+      barks: ['Welcome to the Rad-Lounge, sugar.', 'Drinks are cheap. The company\'s cheaper.', 'I used to dance, you know. Before everything. Before my knees.'], voice: 'ghoul_f' });
+    L.spawnNPC({ id: 'neon_wendell', type: 'human', ghoul: true, name: 'Wendell Pruitt', outfit: 'ghoul_wear', gender: 'm', faction: 'ghouls', ai: 'wander', home: 'here', homeR: 3,
+      at: ts(['resident1', 'settler1', 'spawn1'], 12, -18), dialogue: 'dlg_neon_wendell', essential: true,
+      barks: ['Housewares, third floor. Can I help you find something?', 'Two hundred years and I still have the name tag.'], voice: 'ghoul' });
+    L.spawnNPC({ id: 'neon_sal', type: 'human', ghoul: true, name: 'Big Sal', outfit: 'raider_heavy', gender: 'm', faction: 'ghouls', ai: 'guard', home: 'here', homeR: 2,
+      at: ts(['club_bouncer', 'club_door', 'bouncer', 'gate', 'entrance'], 0, 40), dialogue: 'dlg_neon_sal', weapon: ['sawed_off_shotgun', 'combat_shotgun'], level: 9,
+      barks: ['No ferals, no raiders, no trouble.', 'You\'re fine. You got a face like a person.'], voice: 'ghoul' });
+
+    L.spawnNPC({ id: 'neon_needles', type: 'human', ghoul: true, name: 'Doc Needles', outfit: 'doctor', gender: 'f', faction: 'ghouls', ai: 'merchant', home: 'here',
+      at: ts(['clinic_nurse', 'doctor', 'clinic'], 45, 32), dialogue: 'dlg_neon_needles', voice: 'ghoul_f',
+      merchant: { caps: 250, stock: [[['stimpak', /^stimpak$/i], 5], [['radaway', /radaway/i], 5], [['rad_x', /rad-x/i], 3], [['med_x', /med-x/i], 2], [['jet', /^jet$/i], 1]], restock: 3 },
+      barks: ['Doc Needles. Don\'t ask about the name.', 'Rads? For ghouls, that\'s a vitamin. For you, sweetie, that\'s a problem.'] });
+
+    // ---- St. Patrick's ----
+    const sp = (anchors, dx, dz) => ({ site: 'st_patricks', anchors, fallback: { x: SP.x + dx, z: SP.z + dz } });
+    L.spawnNPC({ id: 'atom_ezra', type: 'human', name: 'Father Ezra Hollowell', outfit: 'atom_robes', gender: 'm', faction: 'children_of_atom', ai: 'guard', home: 'here', homeR: 2,
+      at: sp(['preacher', 'priest', 'altar', 'pulpit', 'entrance'], -36, 0), dialogue: 'dlg_atom_ezra', essential: true, level: 8,
+      barks: ['Atom\'s light is in all things.', 'Divide and be multiplied!', 'Can you not feel it? The warmth?'], voice: 'm_preacher' });
+    L.spawnNPC({ id: 'atom_glow', type: 'human', name: 'Sister Glow', outfit: 'atom_robes', gender: 'f', faction: 'children_of_atom', ai: 'merchant', home: 'here',
+      at: sp(['merchant', 'acolyte', 'merchant1', 'steps'], -36, 7), dialogue: 'dlg_atom_glow', merchant: { caps: 200, stock: STOCK_ATOM, restock: 3 },
+      barks: ['Holy water! Blessed by Atom himself!', 'Glow in peace.'], skinTone: 0.2 });
+
+    // ---- Quest objects ----
+    if (!L.flag('neon_core_resolved') && !L.has('q_neon_core')) { const c = subwayCoreSpot(); if (c) L.pickup('neon_core', 'q_neon_core', 1, c); }
+    if (!L.flag('ring_resolved') && !L.has('q_wendell_ring')) {
+      const s = L.anchor('macys', ['safe', 'office', 'loot2', 'loot'], { x: -18, z: -58 });
+      if (s) {
+        L.pickup('wendell_ring', 'q_wendell_ring', 1, s);
+        L.pickup('wendell_letter', 'q_note_wendell_letter', 1, { x: s.x + 0.6, y: s.y, z: s.z + 0.2 });
+      }
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // Outcomes
+  // ------------------------------------------------------------------
+  function plantIsotope(placebo) {
+    if (placebo) {
+      L.take('q_blessed_isotope', 1);
+      L.take(L.item('nuka_cola_quantum', /quantum/i), 1);
+      L.setFlag('atom_placebo_planted');
+      L.notify('You empty the isotope into a lead-lined gutter and seat the glowing Nuka-Cola Quantum in the reliquary instead. It looks very holy.');
+      L.xp(60, 'Science: Divine intervention');
+      L.karma(150, 'Saved Grand Central\'s water');
+    } else {
+      L.take('q_blessed_isotope', 1);
+      L.setFlag('atom_isotope_planted');
+      L.notify('The isotope slips into the intake with a soft, green plop. Somewhere below, a thousand taps begin to glow.');
+      L.karma(-400, 'Poisoned Grand Central\'s water');
+      G.world.addRadSource({ x: 240, y: 1, z: -222, radius: 26, strength: 1.2 });
+      L.news('Health bulletin, folks, and it\'s not a good one. The taps at Grand Central Market are running green. Doc Hollis says don\'t drink the water, don\'t bathe in the water, don\'t look at the water. The Children of Atom are calling it a miracle. Vinnie is calling it something I can\'t say on the air.');
+    }
+    if (Q.stage('sq_atom') === 'plant') Q.setStage('sq_atom', 'return');
+  }
+  function neonResolve(how) {
+    L.setFlag('neon_core_resolved'); L.setFlag('neon_outcome', how);
+    if (how === 'crowe' || how === 'repair') {
+      L.news('Good news from Times Square! The lights of the Neon are shining brighter than they have in a decade. Mayor Crowe says drinks are on the house tonight. Mayor Crowe has since clarified that drinks are NOT on the house. But the lights are nice.');
+      Q.complete('sq_neon');
+    } else {
+      L.news(how === 'atom' ? 'Times Square went dark last night, friends. The Neon\'s generator gave up the ghost, and word is the Children of Atom are very, very happy about it. Say a prayer for the ghouls in the dark.'
+        : 'Times Square went dark last night. Somebody sold the Neon\'s last fusion core to the Brotherhood. The ghouls are lighting candles. Candles, folks. In 2291.');
+      Q.complete('sq_neon');
+    }
+  }
+  L.neon = { neonResolve, plantIsotope };
+
+  // ------------------------------------------------------------------
+  // Terminals
+  // ------------------------------------------------------------------
+  L.hook('register', function () {
+    L.terminal('atom_scripture', {
+      title: 'THE SPLIT ATOM — SCRIPTURE', header: 'ROBCO INDUSTRIES — ARCHDIOCESE OF NEW YORK (REPURPOSED)\nBLESSED BE THE DIVISION',
+      lock: 25,
+      entries: [
+        { title: 'The Book of Fission, 1:1-4', text: 'In the beginning the Atom was whole, and was lonely.\nAnd the Atom said, Let there be two; and there were two, and there was light.\nAnd the two said, Let there be four; and there was a very great deal more light.\nAnd the light was good, and it was hot, and it was everywhere.' },
+        { title: 'Father Hollowell\'s Journal', text: 'The ghouls of the Neon wear Atom\'s blessing on their very skin and yet they hang electric lights, as if His glow were not enough. The market at Grand Central drinks clean water as if purity were a virtue.\n\nI will show them both. Gently. The Atom is patient. I am less patient.' },
+        { title: 'Supply List', text: 'Candles (for the unconverted)\nLead (for the reliquary)\nNuka-Cola Quantum (Sister Glow says it is "Atom in a bottle" — confiscate all Quantum on sight, for study)' },
+      ],
+    });
+    L.terminal('neon_mayor', {
+      title: 'OFFICE OF THE MAYOR OF THE NEON', header: 'TIMES SQUARE ALLIANCE — ADMINISTRATIVE TERMINAL\n"THE CROSSROADS OF THE WORLD (STILL)"',
+      lock: 25,
+      entries: [
+        { title: 'The Big Buzz', text: () => 'PRIMARY GENERATOR: ' + (L.flag('neon_outcome') === 'crowe' || L.flag('neon_outcome') === 'repair' ? 'NOMINAL (new core installed)' : L.flag('neon_outcome') ? 'OFFLINE' : 'FAILING (14% output)') + '\nSPARE CORE "BIG BUZZ #2": last seen in 42nd St tunnels, maintenance closet near the derailed car.\n\nNOTE: Do not send Wendell. Wendell got lost in the tunnels in 2211 and it took him nine years to find the exit.' },
+        { title: 'Census', text: 'Residents: 83 ghouls, 4 smoothskins (married in), 1 cat (ghoul? unclear).\nOldest resident: Wendell Pruitt (pre-war).\nSecond oldest: Marigold (pre-war, won\'t say which year).' },
+        { title: 'Mayoral Proclamation #212', text: 'By order of the Mayor, the lights of Times Square shall never go out. The Mayor acknowledges that this proclamation has no legal force whatsoever against physics.' },
+      ],
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Dialogue
+  // ------------------------------------------------------------------
+  L.hook('register', function () {
+    // ---------------- Mayor Lucius Crowe ----------------
+    L.dialogue('dlg_neon_crowe', {
+      start: () => Q.stage('sq_neon') === 'return' && L.has('q_neon_core') ? 'core_back' : (L.flag('met_crowe') ? 'again' : 'first'),
+      nodes: {
+        first: { text: 'Well, well! A smoothskin in a vault suit, and not screaming! Lucius Crowe, Mayor of the Neon, at your service. [He doffs a moth-eaten top hat, revealing very little scalp.] Welcome to the brightest square mile in the ruins. What brings you to our humble crossroads?',
+          onEnter() { L.setFlag('met_crowe'); },
+          responses: [
+            { text: 'Just passing through. Nice lights.', next: 'lights' },
+            { text: 'Mayor? Of what, exactly?', next: 'mayor' },
+            { text: 'You\'re... a ghoul.', next: 'ghoul' },
+          ] },
+        ghoul: { text: 'And you\'re a smoothskin. See how easy this is? We\'ve both pointed out the obvious, nobody got shot, and now we can be friends. Most folks skip straight to the shooting.', responses: [{ text: 'Sorry. What is this place?', next: 'mayor' }] },
+        mayor: { text: 'Of the Neon! Eighty-three souls, give or take the ones who wander off. We came here because nobody else wanted Times Square — too bright, too loud, too full of us. Now it\'s ours. The lights stay on, the drinks are warm, and nobody asks what your face used to look like.',
+          responses: [{ text: 'The lights are impressive.', next: 'lights' }, { text: 'Any trouble I can help with?', next: 'trouble' }] },
+        lights: { text: 'Impressive, and dying. [His smile slips.] The Big Buzz — our generator — is down to fourteen percent. When it goes, the Neon goes dark, and in the dark the ferals come up out of the subway. We\'ve got a spare core, somewhere down in the 42nd Street tunnels. I\'m a mayor, not a tunnel rat.',
+          responses: [
+            { text: 'I\'ll get your fusion core.', cond: () => !Q.isStarted('sq_neon'), action: () => Q.start('sq_neon') },
+            { text: 'Let me look at the generator first.', check: { skill: 'repair', value: 60 }, next: 'repair', failNext: 'repair_fail', cond: () => !L.flag('neon_core_resolved') },
+            { text: 'What\'s in it for me?', next: 'reward', cond: () => !Q.isStarted('sq_neon') },
+            { text: 'Not my problem.' },
+          ] },
+        trouble: { text: 'Trouble? My dear smoothskin, we are ghouls in a city that wants us dead, run by a generator that wants to be dead, next to a church that wants us to be dead in a more spiritual way. Trouble is the Neon\'s chief export.', responses: [{ text: 'Start with the generator.', next: 'lights' }] },
+        reward: { text: 'The gratitude of eighty-three ghouls, two hundred caps from the civic treasury — that\'s my hat — and the title of Honorary Citizen of the Neon, which entitles you to absolutely nothing but feels wonderful.', responses: [{ text: 'Deal.', action: () => Q.start('sq_neon') }, { text: 'I\'ll think about it.' }] },
+        repair: { text: '[You spend an hour elbow-deep in the Big Buzz, bypassing a burnt coil bank and rebalancing the load across the marquee circuits. When you throw the breaker, all of Times Square flares so bright the ghouls cheer.] ...Now THAT is a light show! You beautiful, beautiful smoothskin!',
+          onEnter() { if (!Q.isStarted('sq_neon')) Q.start('sq_neon'); L.xp(80, 'Repair: The Big Buzz'); L.karma(100, 'Kept the lights on'); L.giveCaps(200); L.give('q_mayor_top_hat', 1); neonResolve('repair'); },
+          responses: [{ text: 'All in a day\'s work.' }] },
+        repair_fail: { text: 'You poke at the Big Buzz. The Big Buzz pokes back. [You smell your own eyebrows.] Perhaps the fusion core, then?', responses: [{ text: 'I\'ll get the fusion core.', cond: () => !Q.isStarted('sq_neon'), action: () => Q.start('sq_neon') }, { text: 'Maybe later.' }] },
+        core_back: { text: 'Is that — Big Buzz Number Two! [He takes his hat off and holds it over his heart.] You went into the tunnels. For us. Do you know how long it\'s been since a smoothskin did anything for us that didn\'t involve a shotgun?',
+          responses: [
+            { text: 'It\'s yours, Mayor. Keep the lights on.', next: 'give' },
+            { text: 'The Brotherhood would pay more for this.', next: 'bos_threat' },
+            { text: 'This is worth more than two hundred caps.', check: { skill: 'barter', value: 55 }, next: 'haggle', failNext: 'haggle_fail' },
+          ] },
+        give: { text: '[He calls for Big Sal, and it takes both of them to carry the core to the generator. A minute later, every sign in Times Square blazes back to life at once — NUKA-COLA, SUNSET SARSAPARILLA, VAULT-TEC — and a cheer goes up from every shack.] Honorary Citizen of the Neon. Forever. And take the hat. A citizen needs a hat.',
+          onEnter() { L.take('q_neon_core', 1); L.giveCaps(200); L.give('q_mayor_top_hat', 1); L.karma(100, 'Restored the Neon'); neonResolve('crowe'); },
+          responses: [{ text: 'Long live the Neon.' }] },
+        haggle: { text: 'A negotiator! [He laughs, a wet, rattling laugh.] Fine, fine. Three hundred and the hat. The treasury will need a new hat. I\'ll wear a lampshade.',
+          onEnter() { L.take('q_neon_core', 1); L.giveCaps(300); L.give('q_mayor_top_hat', 1); L.karma(40, 'Restored the Neon'); neonResolve('crowe'); }, responses: [{ text: 'Pleasure doing business, Mayor.' }] },
+        haggle_fail: { text: 'Two hundred is what the treasury has, friend. If you want more, you\'ll have to take it out of my hide, and my hide isn\'t worth much these days.', responses: [{ text: 'Fine. It\'s yours.', next: 'give' }] },
+        bos_threat: { text: '[The warmth leaves his face.] Then sell it to them. The Brotherhood will say thank you, lock it in a box, and forget it exists. And when the lights go out here, eighty-three people will learn exactly what a smoothskin\'s gratitude is worth. Your call, citizen.',
+          responses: [{ text: '...You\'re right. It\'s yours.', next: 'give' }, { text: 'Business is business.' }] },
+        again: { text: () => L.flag('neon_outcome') === 'crowe' || L.flag('neon_outcome') === 'repair' ? 'Citizen! Look at those lights! Every night I stand here and count them. I lose count. It\'s wonderful.' : L.flag('neon_outcome') ? '[The Mayor doesn\'t look at you. The Neon is lit by candles.]' : 'Any luck in the tunnels, smoothskin? The Big Buzz is making that noise again.',
+          responses: [
+            { text: 'Tell me about the Neon.', next: 'mayor' },
+            { text: 'About your generator...', next: 'lights', cond: () => !Q.isStarted('sq_neon') },
+            { text: 'Goodbye, Mayor.' },
+          ] },
+      },
+    });
+
+    // ---------------- Marigold (Rad-Lounge) ----------------
+    L.dialogue('dlg_neon_marigold', {
+      start: () => (L.flag('wendell_wed') ? 'wed' : 'hello'),
+      nodes: {
+        hello: { text: 'Welcome to the Rad-Lounge, sugar. I\'m Marigold. I pour the drinks, I sing on Thursdays, and I don\'t do refunds. What\'ll it be?',
+          responses: [
+            { text: 'Let\'s see what you\'re pouring.', barter: true },
+            { text: 'How long have you lived here?', next: 'past' },
+            { text: 'Marigold... is that your real name?', check: { special: 'P', value: 6 }, next: 'marjorie', failNext: 'name_fail', cond: () => Q.isStarted('sq_blackfriday') && !L.flag('marigold_is_marjorie') },
+            { text: 'Just looking.' },
+          ] },
+        past: { text: 'Since the bombs, give or take a century I don\'t remember. Before that I danced at a club on 44th. Before THAT I was a girl from Queens with a boyfriend who worked in Housewares at Macy\'s and was too scared to propose. Ancient history, sugar.',
+          responses: [{ text: 'What happened to the boyfriend?', next: 'boyfriend' }, { text: 'Let\'s see what you\'re pouring.', barter: true }] },
+        boyfriend: { text: 'Same thing that happened to everybody. [She polishes a glass that doesn\'t need it.] ...Next question.', responses: [{ text: 'Sorry I asked.' }] },
+        name_fail: { text: 'It\'s the name on the sign, sugar. That\'s as real as names get around here.', responses: [{ text: 'Fair enough.' }] },
+        marjorie: { text: '[You notice she wears a Macy\'s employee pin on the inside of her collar — not hers, a man\'s: "W. PRUITT — HOUSEWARES."] ...Nobody\'s noticed that pin in two hundred years. [Quietly.] It was Marjorie, once. He doesn\'t know it\'s me. Look at us — how would he? And I\'ve been too scared to tell him. Isn\'t that a laugh? He was the scared one.',
+          onEnter() { L.setFlag('marigold_is_marjorie'); L.xp(40, 'Perception'); },
+          responses: [{ text: 'He still loves you. He never stopped.', next: 'still' }, { text: 'Your secret\'s safe with me.' }] },
+        still: { text: 'Then he\'ll have to ask. He always did have to be the one to ask. [She smiles, and for a second you can see a girl from Queens.]', responses: [{ text: 'Leave it to me.' }] },
+        wed: { text: 'Well, if it isn\'t the best man. Or woman. Or whatever you are, sugar — you\'re family now. Drinks are half price for family. Don\'t tell Crowe.', responses: [{ text: 'Let\'s see what you\'re pouring.', barter: true }, { text: 'Congratulations, Marjorie.' }] },
+      },
+    });
+
+    // ---------------- Wendell Pruitt ----------------
+    L.dialogue('dlg_neon_wendell', {
+      start: () => (L.flag('wendell_wed') ? 'wed' : Q.stage('sq_blackfriday') === 'return' && L.has('q_wendell_ring') ? 'ring' : (L.flag('met_wendell') ? 'again' : 'first')),
+      nodes: {
+        first: { text: 'Welcome to Macy\'s — oh. Sorry. Habit. Wendell Pruitt, Housewares, third floor. [He taps a name tag pinned to a coat that has been mended so many times it\'s mostly mending.] I was on shift when the world ended. Technically I\'m still on shift. Nobody ever clocked me out.',
+          onEnter() { L.setFlag('met_wendell'); },
+          responses: [
+            { text: 'You worked at Macy\'s before the war?', next: 'macys' },
+            { text: 'Anything I can help you find?', next: 'job' },
+            { text: 'Goodbye, Wendell.' },
+          ] },
+        again: { text: 'Can I help you find something? Oh — it\'s you.', responses: [{ text: 'About your ring...', next: 'job', cond: () => !Q.isStarted('sq_blackfriday') }, { text: 'Just saying hello.' }] },
+        macys: { text: 'Six years. Black Friday was the next morning. Doors at four A.M. Management told us to stand aside and "let the customers be customers." [He shivers.] The customers are still in there, you know. Still waiting for the doors to open. They don\'t look like customers anymore.',
+          responses: [{ text: 'Is there something in there you want?', next: 'job' }] },
+        job: { text: 'A ring. For a girl named Marjorie. I hid it in the manager\'s safe so the customers couldn\'t get at it, and I was going to ask her on one knee, in Housewares, after the sale. [He looks at his hands.] She\'s gone, of course. Everybody\'s gone. But I\'d like to hold it. Just once. Just to know I really meant to.',
+          responses: [
+            { text: 'I\'ll get your ring, Wendell.', cond: () => !Q.isStarted('sq_blackfriday'), action: () => Q.start('sq_blackfriday') },
+            { text: 'That place is crawling with ferals. What\'s it worth to you?', next: 'pay', cond: () => !Q.isStarted('sq_blackfriday') },
+            { text: 'Sorry, Wendell.' },
+          ] },
+        pay: { text: 'I don\'t have much. A hundred caps and a pre-war employee discount card — twenty percent off anything in Macy\'s. [He pauses.] Nothing in Macy\'s is for sale anymore. So it\'s really just the hundred caps.', responses: [{ text: 'I\'ll do it.', action: () => Q.start('sq_blackfriday') }, { text: 'Not worth it.' }] },
+        ring: { text: '[Wendell sees the little gift box in your hand and stops breathing, which for a ghoul is a technicality.] You... you found it. You actually went into the store.',
+          responses: [
+            { text: 'Here. It\'s yours.', next: 'give' },
+            { text: 'Wendell — Marigold is Marjorie. She\'s been here all along.', cond: () => !!L.flag('marigold_is_marjorie'), next: 'reveal' },
+            { text: 'Actually, I couldn\'t find it. The safe was empty.', karma: -50, next: 'lie' },
+          ] },
+        give: { text: '[He holds it for a long time.] Thank you. I know it\'s foolish. Here — the hundred caps, as promised. [He turns the box over and over.] I think I\'ll keep it in my pocket. Just in case the world starts over.',
+          onEnter() { L.take('q_wendell_ring', 1); L.giveCaps(100); L.karma(75, 'Returned Wendell\'s ring'); L.setFlag('ring_resolved'); L.setFlag('ring_returned'); Q.complete('sq_blackfriday'); }, responses: [{ text: 'Take care, Wendell.' }] },
+        reveal: { text: '[He looks across the square at the Rad-Lounge, where Marigold is singing something slow. He looks for a very long time.] ...The way she holds the microphone. Left hand. She always — she ALWAYS — [He is already walking. Then running. In front of the whole Neon, on the dusty asphalt of Times Square, Wendell Pruitt of Housewares gets down on one knee.]',
+          onEnter() { L.take('q_wendell_ring', 1); L.giveCaps(100); L.setFlag('ring_resolved'); L.setFlag('ring_returned'); L.setFlag('wendell_wed'); L.karma(150, 'Reunited Wendell and Marjorie'); L.xp(150, 'Two hundred years late');
+            L.say('neon_marigold', 'Yes, you idiot! YES!'); L.giveCaps(0);
+            L.news('I\'ve got a wedding announcement, folks, and I don\'t say that often in this business. Last night in the Neon, a ghoul named Wendell proposed to a ghoul named Marjorie — two hundred and fourteen years after he meant to. She said yes. She said, and I quote, "you idiot, yes." This next one\'s for the happy couple.');
+            Q.complete('sq_blackfriday'); },
+          responses: [{ text: '[Applaud.]' }] },
+        lie: { text: '[His shoulders drop an inch.] Ah. Well. The customers, I suppose. [He tries to smile.] Thank you for looking. It was silly of me.',
+          onEnter() { L.setFlag('ring_resolved'); L.setFlag('ring_kept'); Q.complete('sq_blackfriday'); }, responses: [{ text: '[Leave.]' }] },
+        wed: { text: 'Married! Can you believe it? I\'m a married man! She says she knew me the whole time. She says she was waiting for me to ask. Two hundred years, and I STILL wasn\'t fast enough. [He beams.] Housewares, third floor, if you ever need anything. Anything at all.', responses: [{ text: 'Congratulations, Wendell.' }] },
+      },
+    });
+
+    // ---------------- Doc Needles ----------------
+    L.dialogue('dlg_neon_needles', {
+      start: 'hello',
+      nodes: {
+        hello: { text: () => 'Doc Needles, head nurse. Broadway does the cutting, I do the stitching — and the cheap patch-ups, if you don\'t need a surgeon. Smoothskins bleed the same colour, mostly. ' + (G.player.rads > 100 ? 'And sweetie, you are GLOWING.' : 'What hurts?'),
+          responses: [
+            { text: 'Patch me up. (25 caps)', cond: () => G.player.hp < G.player.maxHp, action: () => { if (L.pay(25)) { G.player.heal(G.player.maxHp); L.sfx('stimpak'); } } },
+            { text: 'Get the rads out of me. (30 caps)', cond: () => G.player.rads > 0, action: () => { if (L.pay(30)) L.removeRads(); } },
+            { text: 'Let me see your supplies.', barter: true },
+            { text: 'Why "Needles"?', next: 'name' },
+            { text: 'I\'m fine.' },
+          ] },
+        name: { text: 'I was a seamstress before the war. The hands remember. Now I stitch people instead of hems. People are harder. They wiggle. For anything worse than a scratch — radiation, broken bones — see Doc Broadway inside.', responses: [{ text: 'Makes sense.', next: 'hello' }] },
+      },
+    });
+
+    // ---------------- Big Sal ----------------
+    L.dialogue('dlg_neon_sal', {
+      start: 'hello',
+      nodes: {
+        hello: { text: () => ['You\'re fine. You got a face like a person. Go on in.', 'No ferals, no raiders, no trouble. You\'re none of those. Probably.', 'Mayor\'s by the big stage. Lounge is round the back. Don\'t touch the neon, it bites.'][Math.floor(Math.random() * 3)],
+          responses: [{ text: 'Thanks, Sal.' }, { text: 'Seen anything strange lately?', next: 'strange' }] },
+        strange: { text: 'Black helmets. Eyebots floating over the square at night, playing marching music. And a big green guy in a traffic-light crown hanging off the Empire State yelling about a queen. So — normal Tuesday.', responses: [{ text: 'Right.' }] },
+      },
+    });
+
+    // ---------------- Father Ezra Hollowell ----------------
+    L.dialogue('dlg_atom_ezra', {
+      start: () => Q.stage('sq_atom') === 'return' ? 'return' : (L.flag('met_ezra') ? 'again' : 'first'),
+      nodes: {
+        first: { text: 'Welcome, child, to the Cathedral of the Split Atom. I am Father Ezra Hollowell. Do not be afraid of the clicking in your little wrist-machine; that is only Atom, saying hello.',
+          onEnter() { L.setFlag('met_ezra'); },
+          responses: [
+            { text: 'Who is Atom?', next: 'atom' },
+            { text: 'This used to be St. Patrick\'s Cathedral.', next: 'cathedral' },
+            { text: 'Is there anything I can do for the Church?', next: 'task' },
+          ] },
+        atom: { text: 'Atom is the smallest thing and the largest thing. Atom divided itself so that it would not be alone, and in dividing it made light, and heat, and — one October morning — a rather dramatic sunrise. We do not fear the Glow. We welcome it.',
+          responses: [{ text: 'That sounds... dangerous.', next: 'danger' }, { text: 'Is there anything I can do for the Church?', next: 'task' }] },
+        danger: { text: 'So is birth, child. So is love. Everything worth doing makes your Geiger counter sing.', responses: [{ text: 'Anything I can do for the Church?', next: 'task' }, { text: 'I\'ll be going.' }] },
+        cathedral: { text: 'And it still is a cathedral! Its old god simply stepped aside for a newer, brighter one. We kept the windows. The windows are very beautiful when the radstorms light them from behind.', responses: [{ text: 'Anything I can do for the Church?', next: 'task' }] },
+        task: { text: 'There is a market at Grand Central where thousands drink water scrubbed so clean it has forgotten Atom entirely. [He produces a small lead box with a crack in it. The crack glows.] This is a Blessed Isotope. Place it in their water tower\'s intake, and every sip will carry Atom\'s love. They will thank us. Eventually. After the hair loss.',
+          responses: [
+            { text: 'I\'ll do it.', cond: () => !Q.isStarted('sq_atom'), karma: -25, action: () => { L.give('q_blessed_isotope', 1); Q.start('sq_atom'); } },
+            { text: 'Give me the isotope. [Intending to deal with it yourself.]', cond: () => !Q.isStarted('sq_atom'), action: () => { L.give('q_blessed_isotope', 1); Q.start('sq_atom'); L.setFlag('atom_secret_plan'); } },
+            { text: 'Poisoning people isn\'t a blessing.', check: { skill: 'speech', value: 65 }, next: 'convince', failNext: 'convince_fail', cond: () => !Q.isStarted('sq_atom') },
+            { text: 'No.' },
+          ] },
+        convince: { text: '[He is quiet for a long time.] ...You speak as if the Glow were a thing to be pushed onto people. Perhaps you are right. Perhaps a blessing forced is only a wound. [He closes the lead box.] I will pray on it. Take this, for your honesty — Atom favours those who speak plainly.',
+          onEnter() { L.setFlag('atom_convinced'); L.karma(100, 'Talked down Father Hollowell'); L.xp(80, 'Speech: Crisis of faith'); L.give('q_atom_robes', 1); Q.start('sq_atom'); Q.complete('sq_atom'); },
+          responses: [{ text: 'Thank you, Father.' }] },
+        convince_fail: { text: 'You are young, and your wrist-machine frightens you. It will pass. Everything passes. Except half-lives. Those take a while.', responses: [{ text: '[Leave.]' }] },
+        again: { text: () => L.flag('atom_isotope_planted') || L.flag('atom_placebo_planted') ? 'Child of Atom! The market glows with His love! [He seems genuinely overjoyed.]' : 'Atom\'s light upon you, child.',
+          responses: [{ text: 'Is there anything I can do for the Church?', next: 'task', cond: () => !Q.isStarted('sq_atom') }, { text: 'And upon you, Father.' }] },
+        return: { text: () => L.flag('atom_isotope_planted') || L.flag('atom_placebo_planted') ? 'I saw it from the bell tower! Grand Central\'s water tower, glowing like a candle in the dark. Atom has received your offering. Take these vestments, child of Atom, and these caps from the collection plate.'
+          : 'You carry the isotope still. Its warmth is wasted in your pack, child. Have you changed your heart?',
+          responses: [
+            { text: 'Thank you, Father.', cond: () => L.flag('atom_isotope_planted') || L.flag('atom_placebo_planted'),
+              action: () => { L.give('q_atom_robes', 1); L.giveCaps(150); Q.complete('sq_atom'); } },
+            { text: 'I won\'t do it. Take it back.', cond: () => L.has('q_blessed_isotope'),
+              action: () => { L.take('q_blessed_isotope', 1); L.setFlag('atom_refused'); L.karma(25, 'Refused the Children of Atom'); Q.complete('sq_atom'); } },
+            { text: 'Not yet.', cond: () => L.has('q_blessed_isotope') },
+          ] },
+      },
+    });
+
+    // ---------------- Sister Glow ----------------
+    L.dialogue('dlg_atom_glow', {
+      start: 'hello',
+      nodes: {
+        hello: { text: 'Glow in peace, traveller! I\'m Sister Glow. I was Sister Maureen, but then I found Atom, and also a barrel of something green. Would you like some holy water? It\'s very holy. You can tell by the colour.',
+          responses: [
+            { text: 'Let me see what you have.', barter: true },
+            { text: 'Why do you sell RadAway if you love radiation?', next: 'radaway' },
+            { text: 'Glow in peace, Sister.' },
+          ] },
+        radaway: { text: 'For the unbelievers! Atom does not force his love on anyone. [She glances at the cathedral doors, and lowers her voice.] ...Father Hollowell might. But Atom doesn\'t.', responses: [{ text: 'Let me see what you have.', barter: true }, { text: 'I see.' }] },
+      },
+    });
+
+    // ---------------- The water tower (actor-less dialogue) ----------------
+    L.dialogue('dlg_atom_tower', {
+      start: 'tower',
+      nodes: {
+        tower: { speaker: 'Water Tower Intake', text: '[A rusted intake valve feeds Grand Central\'s rooftop water tower. You can hear water rushing below. The Blessed Isotope is warm against your leg.]',
+          responses: [
+            { text: '[Drop the Blessed Isotope into the intake.]', karma: 0, action: () => plantIsotope(false) },
+            { text: '[Swap the isotope for a Nuka-Cola Quantum, seal the reliquary and drop in the fake.]', check: { skill: 'science', value: 50 }, failNext: 'swap_fail',
+              cond: () => L.has(L.item('nuka_cola_quantum', /quantum/i)), action: () => plantIsotope(true) },
+            { text: '[Leave it alone.]' },
+          ] },
+        swap_fail: { text: '[You can\'t work out how to open the reliquary without cracking the lead lining — and irradiating yourself thoroughly in the process.]', responses: [{ text: '[Step back.]' }] },
+      },
+    });
+  });
+
+  // Selling the neon core to the Brotherhood / Atom (from their dialogue — see below hooks)
+  L.hook('register', function () {
+    // Extra response injected into Reyes' and Ezra's trees at runtime: selling the Neon's core.
+    const addSell = (dlgId, nodeId, text, how, caps, karma) => {
+      const tree = L.DIALOGUES.get(dlgId); if (!tree || !tree.nodes[nodeId]) return;
+      const rs = tree.nodes[nodeId].responses;
+      if (rs.some((r) => r._neonSell)) return;
+      rs.splice(rs.length - 1, 0, { _neonSell: true, text, cond: () => L.has('q_neon_core') && !L.flag('neon_core_resolved'),
+        karma, action: () => { L.take('q_neon_core', 1); L.giveCaps(caps); neonResolve(how); } });
+    };
+    addSell('dlg_bos_reyes', 'hello', 'I have a fusion core to sell. (400 caps)', 'sold', 400, -100);
+    addSell('dlg_atom_ezra', 'again', 'I have the Neon\'s fusion core. The ghouls can have the dark. (250 caps)', 'atom', 250, -150);
+  });
+})();
+

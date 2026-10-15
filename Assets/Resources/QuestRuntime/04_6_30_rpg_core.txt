@@ -1,0 +1,1395 @@
+/* src/rpg/30_rpg_core.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — RPG MODULE — CORE CHARACTER SYSTEMS  (G.rpg)
+ *
+ *  S.P.E.C.I.A.L. · 13 skills (FO3/NV formulas) · tag skills · XP curve
+ *  levelling · perk engine (perk data in 32_perks.js) · derived stats
+ *  karma & titles · radiation sickness · timed effects / chems /
+ *  addiction & withdrawal · limb condition · DR/DT mitigation · carry
+ *  weight · barter pricing · skill checks · sleeping / doctors
+ *
+ * All modifiers (apparel, perks, chems, withdrawal, rad sickness, limbs,
+ * bobbleheads) are funnelled through ONE aggregation pass (recalc) so
+ * every query returns consistent numbers. Recalc is cheap and throttled.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const U = G.util;
+
+  // ------------------------------------------------------------------
+  // Static data
+  // ------------------------------------------------------------------
+  const SPECIAL_KEYS = ['S', 'P', 'E', 'C', 'I', 'A', 'L'];
+  const SPECIAL_INFO = {
+    S: { name: 'Strength', desc: 'Raw physical power. Affects carry weight and melee damage.' },
+    P: { name: 'Perception', desc: 'Awareness of your surroundings. Affects Energy Weapons, Explosives and Lockpick, and how early the compass shows enemies.' },
+    E: { name: 'Endurance', desc: 'Stamina and toughness. Affects Hit Points, radiation resistance, Survival and Unarmed.' },
+    C: { name: 'Charisma', desc: 'Charm and force of personality. Affects Speech and Barter.' },
+    I: { name: 'Intelligence', desc: 'Knowledge and reasoning. Affects Medicine, Repair, Science and skill points gained each level.' },
+    A: { name: 'Agility', desc: 'Coordination and reflexes. Affects Action Points, Guns and Sneak.' },
+    L: { name: 'Luck', desc: 'Fate smiles on the lucky. Raises every skill slightly and improves critical hit chance.' },
+  };
+  const SKILLS = ['barter', 'energy_weapons', 'explosives', 'guns', 'lockpick', 'medicine', 'melee_weapons', 'repair', 'science', 'sneak', 'speech', 'survival', 'unarmed'];
+  const SKILL_INFO = {
+    barter: { name: 'Barter', gov: 'C', desc: 'The art of the deal. Better prices when buying and selling.' },
+    energy_weapons: { name: 'Energy Weapons', gov: 'P', desc: 'Effectiveness with laser, plasma and other directed-energy weapons.' },
+    explosives: { name: 'Explosives', gov: 'P', desc: 'Damage and handling of grenades, mines, missiles and the Fat Man.' },
+    guns: { name: 'Guns', gov: 'A', desc: 'Effectiveness with pistols, rifles, shotguns and other conventional firearms.' },
+    lockpick: { name: 'Lockpick', gov: 'P', desc: 'Opening locked doors and containers with a bobby pin and a screwdriver.' },
+    medicine: { name: 'Medicine', gov: 'I', desc: 'How much health stimpaks restore and how well you treat radiation.' },
+    melee_weapons: { name: 'Melee Weapons', gov: 'S', desc: 'Effectiveness with knives, bats, sledgehammers and anything else you can swing.' },
+    repair: { name: 'Repair', gov: 'I', desc: 'Maintaining weapons and armor in the field. Higher condition means more damage and protection.' },
+    science: { name: 'Science', gov: 'I', desc: 'Hacking RobCo terminals and understanding pre-war technology.' },
+    sneak: { name: 'Sneak', gov: 'A', desc: 'Moving unseen and unheard. Sneak attacks deal critical damage.' },
+    speech: { name: 'Speech', gov: 'C', desc: 'Persuading people through words. Unlocks dialogue options.' },
+    survival: { name: 'Survival', gov: 'E', desc: 'Getting more out of food and drink, and living off the land.' },
+    unarmed: { name: 'Unarmed', gov: 'E', desc: 'Fighting with fists and hand-to-hand weapons like brass knuckles and power fists.' },
+  };
+  const LIMBS = ['head', 'torso', 'leftArm', 'rightArm', 'leftLeg', 'rightLeg'];
+  const LIMB_NAMES = { head: 'head', torso: 'torso', leftArm: 'left arm', rightArm: 'right arm', leftLeg: 'left leg', rightLeg: 'right leg' };
+  const LEVEL_CAP = 30;
+
+  const RAD_TIERS = [
+    { at: 0, name: null, special: {} },
+    { at: 200, name: 'Minor Radiation Poisoning', special: { E: -1 } },
+    { at: 400, name: 'Advanced Radiation Poisoning', special: { E: -2, A: -1 } },
+    { at: 600, name: 'Critical Radiation Poisoning', special: { E: -3, A: -2, S: -1 } },
+    { at: 800, name: 'Deadly Radiation Poisoning', special: { E: -3, A: -2, S: -2 } },
+  ];
+
+  // Karma titles by level bracket: [very good, good, neutral, evil, very evil]
+  const KARMA_TITLES = [
+    { max: 2, t: ['Vault Guardian', 'Vault Explorer', 'Vault Dweller', 'Vault Delinquent', 'Vault Renegade'] },
+    { max: 5, t: ['Subway Samaritan', 'Street Sweeper', 'Sidewalk Wanderer', 'Alley Cat', 'Gutter Rat'] },
+    { max: 8, t: ['Neighborhood Watch', 'Borough Scout', 'Five-Borough Drifter', 'Stoop Shark', 'Bowery Bruiser'] },
+    { max: 11, t: ['Defender of the Island', 'Broadway Ranger', 'Island Nomad', 'Harbor Pirate', "Hell's Kitchen Butcher"] },
+    { max: 14, t: ["Lady Liberty's Hand", 'Avenue Guardian', 'Concrete Survivor', 'Tunnel Terror', 'Tombstone Maker'] },
+    { max: 17, t: ['Shield of the Five Boroughs', 'Hudson Paladin', 'Skyline Wanderer', 'Wall Street Wolf', 'Midnight Stalker'] },
+    { max: 20, t: ['Messiah of the Big Apple', 'Champion of Midtown', 'Urban Legend', 'Kingpin of the Rubble', 'Dread of the Boroughs'] },
+    { max: 25, t: ['Beacon of Liberty', 'Knight of the Empire', 'Wasteland Enigma', 'Harbinger of Ruin', 'Scourge of New York'] },
+    { max: 99, t: ['Last Hope of Manhattan', 'The Wanderer Eternal', 'Last Survivor Standing', 'Nuclear Tyrant', 'Devourer of the City'] },
+  ];
+
+  // XP for killing things, by character type (FO3-flavoured values), scaled by actor level
+  const KILL_XP = {
+    radroach: 3, molerat: 5, bloatfly: 5, dog: 6, mutant_hound: 10, feral_ghoul: 8, glowing_one: 25, mirelurk: 15,
+    mirelurk_queen: 120, deathclaw: 60, super_mutant: 20, super_mutant_behemoth: 150, raider: 10, human: 10,
+    enclave_soldier: 30, brotherhood_paladin: 30, protectron: 15, mister_handy: 18, eyebot: 8, sentry_bot: 60,
+  };
+  const INNOCENT_FACTIONS = { settlers: 1, vault: 1, ghouls: 1, brotherhood: 1 };
+
+  // ------------------------------------------------------------------
+  // Mutable character state (reset on 'reset', saved via G.save)
+  // ------------------------------------------------------------------
+  function freshState() {
+    const s = {
+      special: { S: 5, P: 5, E: 6, C: 5, I: 6, A: 6, L: 7 },
+      tags: ['guns', 'sneak', 'speech'],
+      skillPts: {}, bookPts: {},
+      bobble: { special: {}, skills: {} },
+      level: 1, xp: 0, unspent: 0, perkPicks: 0,
+      perks: {},              // id -> rank
+      perkChoices: {},        // id -> [choices]
+      karma: 0,
+      effects: [],            // timed effects
+      addictions: {},         // id -> {name, day, withdrawal}
+      limbs: {},
+      radTier: 0,
+      gender: 'm',
+      difficulty: 'normal',
+      stats: {
+        kills: {}, totalKills: 0, humanKills: 0, creatureKills: 0, robotKills: 0, locations: 0, questsCompleted: 0,
+        stimpaksUsed: 0, radawayUsed: 0, chemsTaken: 0, timesAddicted: 0, capsFound: 0, itemsStolen: 0, locksPicked: 0,
+        terminalsHacked: 0, speechSuccesses: 0, speechFailures: 0, bobbleheads: 0, booksRead: 0, magazinesRead: 0, damageTaken: 0,
+        criticalHits: 0, sneakAttacks: 0, mercifulActs: 0, murders: 0, itemsBought: 0, itemsSold: 0,
+      },
+      lastWellRestedDay: -1,
+      // Hardcore mode (Fallout: New Vegas): hunger / thirst / sleep deprivation, 0..1000. Off by default.
+      needs: { on: false, food: 0, water: 0, sleep: 0 },
+    };
+    for (const k of SKILLS) { s.skillPts[k] = 0; s.bookPts[k] = 0; }
+    for (const l of LIMBS) s.limbs[l] = 100;
+    return s;
+  }
+  let S = freshState();
+
+  // ------------------------------------------------------------------
+  // Perk registry (definitions live in 32_perks.js)
+  // ------------------------------------------------------------------
+  const PERKS = [];           // array of defs (G.rpg.perks)
+  const PERK_MAP = new Map();
+  function definePerk(def) {
+    if (!def || !def.id) return null;
+    def.ranks = def.ranks || def.rank || 1;
+    def.rank = def.ranks;                   // contract field name: max ranks
+    def.reqLevel = def.reqLevel || 2;
+    def.reqSpecial = def.reqSpecial || {};
+    def.reqSkills = def.reqSkills || {};
+    def.icon = def.icon || 'thumbs_up';
+    // contract shape: every perk has apply() (most effects are passive mods, so it is a no-op for them)
+    if (typeof def.apply !== 'function') def.apply = function () {};
+    const i = PERKS.findIndex((p) => p.id === def.id);
+    if (i >= 0) PERKS[i] = def; else PERKS.push(def);
+    PERK_MAP.set(def.id, def);
+    dirty = true;
+    return def;
+  }
+  function perkRank(id) { return S.perks[id] || 0; }
+  function hasPerk(id) { return (S.perks[id] || 0) > 0; }
+  function perkName(def) { return typeof def.name === 'function' ? def.name() : def.name; }
+  function perkDesc(def) { return typeof def.desc === 'function' ? def.desc() : def.desc; }
+
+  // ------------------------------------------------------------------
+  // Modifier aggregation
+  // ------------------------------------------------------------------
+  function emptyMods() {
+    return {
+      special: {}, skills: {}, dr: 0, dt: 0, radResist: 0, energyResist: 0, fireResist: 0, poisonResist: 0,
+      hp: 0, ap: 0, carry: 0, crit: 0, critMelee: 0, critDmg: 0, critDmgVs: {}, dmgMult: 0, dmgType: {}, dmgVs: {}, dmgSkill: {}, radMedMult: 0,
+      apRegenMult: 0, hpRegen: 0, speedMult: 0, xpMult: 0, sneak: 0, vatsHit: 0, vatsHitHead: 0, vatsHitOneHand: 0, vatsHitTwoHand: 0,
+      vatsAPMult: 0, limbDmgMult: 0, lootCaps: 0, lootAmmo: 0, barterMult: 0, stimpakMult: 0, foodRadMult: 0,
+      chemDurationMult: 0, addictionMult: 0, skillPointsPerLevel: 0, bookBonus: 0, unarmedDmg: 0, meleeDmg: 0,
+      hackAttempts: 0, sneakAttackMult: 0, mysteriousStranger: 0, grimReaper: 0, lockpickRetry: 0, stealth: 0, foodHealMult: 0,
+      spreadMult: 0,
+    };
+  }
+  function addMods(M, m) {
+    if (!m) return;
+    for (const k in m) {
+      const v = m[k];
+      if (v === undefined || v === null) continue;
+      if (typeof v === 'object') { const t = M[k] || (M[k] = {}); for (const kk in v) t[kk] = (t[kk] || 0) + v[kk]; }
+      else if (typeof v === 'number') M[k] = (M[k] || 0) + v;
+      else if (typeof v === 'boolean' && v) M[k] = (M[k] || 0) + 1;
+    }
+  }
+
+  let dirty = true, lastCalc = -1;
+  const D = { M: emptyMods(), special: {}, skills: {}, powerArmor: false, crippled: {} };
+
+  /** Context for conditional perks. */
+  function ctx() {
+    const P = G.player;
+    const hour = G.time ? G.time.hour : 12;
+    const indoors = P && G.LAYOUT ? G.LAYOUT.isInterior(P.pos.x) : false;
+    return {
+      hpFrac: P && P.maxHp ? P.hp / P.maxHp : 1,
+      night: hour < 6 || hour >= 18,
+      sunlight: !indoors && hour >= 6.5 && hour < 18.5,
+      indoors, rads: P ? P.rads : 0, karma: S.karma, level: S.level,
+      sneaking: !!(P && P.sneaking),
+    };
+  }
+
+  function recalc(force) {
+    const now = G.time ? G.time.real : 0;
+    if (!force && !dirty && now - lastCalc < 0.25) return D;
+    lastCalc = now; dirty = false;
+    const M = emptyMods();
+    const c = ctx();
+
+    // 1) Apparel (from player inventory)
+    let pa = false;
+    try {
+      if (!G.isStub('inventory') && G.inventory.equippedApparel) {
+        for (const e of G.inventory.equippedApparel()) {
+          const d = e.def; if (!d) continue;
+          const cond = d.hasCondition ? U.clamp(e.condition === undefined ? 1 : e.condition, 0, 1) : 1;
+          const cm = 0.5 + 0.5 * cond; // worn armor protects less
+          if (d.dr) M.dr += d.dr * cm;
+          if (d.dt) M.dt += d.dt * cm;
+          if (d.radResist) M.radResist += d.radResist;
+          if (d.energyResist) M.energyResist += d.energyResist;
+          if (d.fireResist) M.fireResist += d.fireResist;
+          if (d.carry) M.carry += d.carry;
+          if (d.special) addMods(M, { special: d.special });
+          if (d.skills) addMods(M, { skills: d.skills });
+          if (d.powerArmor && d.slot === 'body') pa = true;
+        }
+      }
+    } catch (e) { /* inventory mid-load */ }
+    D.powerArmor = pa;
+
+    // 2) Perks
+    for (const id in S.perks) {
+      const def = PERK_MAP.get(id); const r = S.perks[id];
+      if (!def || !r || !def.mods) continue;
+      try { addMods(M, def.mods(r, c, S.perkChoices[id] || [])); } catch (e) { G.reportError('rpg:perk:' + id, e); }
+    }
+
+    // 3) Timed effects (chems, food buffs, well rested…)
+    const activeAddictionIds = {};
+    for (const ef of S.effects) {
+      if (ef.mods) addMods(M, ef.mods);
+      if (ef.addictionId) activeAddictionIds[ef.addictionId] = true;
+    }
+
+    // 4) Addiction withdrawal (only while the chem is not active)
+    for (const id in S.addictions) {
+      if (activeAddictionIds[id]) continue;
+      addMods(M, S.addictions[id].withdrawal);
+    }
+
+    // 5) Radiation sickness
+    const tier = RAD_TIERS[radTier()];
+    if (tier && tier.special) addMods(M, { special: tier.special });
+
+    // 6) Crippled limbs
+    D.crippled = {};
+    for (const l of LIMBS) if (S.limbs[l] <= 0) D.crippled[l] = true;
+    if (D.crippled.head) addMods(M, { special: { P: -2 } });
+    if (D.crippled.torso) M.apRegenMult -= 0.3;
+    if (D.crippled.leftArm) M.spreadMult += 0.35;
+    if (D.crippled.rightArm) M.spreadMult += 0.35;
+    const legs = (D.crippled.leftLeg ? 1 : 0) + (D.crippled.rightLeg ? 1 : 0);
+    if (legs) M.speedMult -= legs === 2 ? 0.4 : 0.2;
+
+    // 6b) Hardcore needs
+    if (S.needs && S.needs.on) for (const k of NEED_KEYS) { const t = needTier(k); if (t > 0) addMods(M, NEEDS[k].tiers[t].mods); }
+
+    // 7) Bobbleheads (permanent)
+    addMods(M, { special: S.bobble.special, skills: S.bobble.skills });
+
+    // Effective SPECIAL
+    const sp = {};
+    for (const k of SPECIAL_KEYS) sp[k] = U.clamp(Math.round(S.special[k] + (M.special[k] || 0)), 1, 10);
+    // Skills: FO3 formula  2 + 2*SPECIAL + ceil(Luck/2) (+15 tag) + points + books + mods
+    const sk = {};
+    for (const k of SKILLS) {
+      const gov = SKILL_INFO[k].gov;
+      let v = 2 + 2 * sp[gov] + Math.ceil(sp.L / 2);
+      if (S.tags.indexOf(k) >= 0) v += 15;
+      v += (S.skillPts[k] || 0) + (S.bookPts[k] || 0) + (M.skills[k] || 0);
+      sk[k] = U.clamp(Math.round(v), 0, 100);
+    }
+    D.M = M; D.special = sp; D.skills = sk;
+    return D;
+  }
+  function markDirty() { dirty = true; }
+
+  /** Base (permanent, unmodified) skill value without temporary effects. */
+  function skillBase(id) {
+    if (!SKILL_INFO[id]) return 0;
+    const gov = SKILL_INFO[id].gov;
+    const sp = (k) => U.clamp(S.special[k] + (S.bobble.special[k] || 0), 1, 10);
+    let v = 2 + 2 * sp(gov) + Math.ceil(sp('L') / 2);
+    if (S.tags.indexOf(id) >= 0) v += 15;
+    v += (S.skillPts[id] || 0) + (S.bookPts[id] || 0) + (S.bobble.skills[id] || 0);
+    return U.clamp(v, 0, 100);
+  }
+
+  // ------------------------------------------------------------------
+  // Radiation
+  // ------------------------------------------------------------------
+  function radTier() {
+    const r = G.player ? G.player.rads : 0;
+    let t = 0;
+    for (let i = 0; i < RAD_TIERS.length; i++) if (r >= RAD_TIERS[i].at) t = i;
+    return t;
+  }
+  /** Add rads bypassing rad resistance (ingested radiation — food, water). */
+  function addRadsDirect(n) {
+    const P = G.player; if (!P || !n) return;
+    P.rads = U.clamp(P.rads + n, 0, 1000);
+    G.events.emit('radsChanged', P.rads, n);
+    if (P.rads >= 1000 && P.die) P.die({ type: 'rad' });
+  }
+  function removeRads(n) {
+    const P = G.player; if (!P) return;
+    P.rads = Math.max(0, P.rads - Math.abs(n));
+    G.events.emit('radsChanged', P.rads, -Math.abs(n));
+  }
+  function checkRadTier() {
+    const t = radTier();
+    if (t !== S.radTier) {
+      if (t > S.radTier && RAD_TIERS[t].name) {
+        G.notify('You are suffering from ' + RAD_TIERS[t].name.toLowerCase() + '.', { kind: 'radiation', tier: t });
+        G.sfx.play('geiger', { volume: 0.8 });
+      } else if (t < S.radTier && t === 0) G.notify('You are no longer suffering from radiation poisoning.', { kind: 'radiation', tier: 0 });
+      S.radTier = t; dirty = true;
+      G.events.emit('effectsChanged');
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // XP & levelling
+  // ------------------------------------------------------------------
+  /** Total XP needed to REACH level n (FO3 curve: 200, 550, 1050, 1700…). */
+  function xpForLevel(n) { return n <= 1 ? 0 : 25 * (3 * n + 2) * (n - 1); }
+  function skillPointsPerLevel() {
+    const d = recalc();
+    return 10 + Math.floor(d.special.I / 2) + (d.M.skillPointsPerLevel || 0);
+  }
+  function addXP(n, reason) {
+    n = Number(n) || 0;
+    if (n <= 0) return 0;
+    const d = recalc();
+    n = Math.max(1, Math.round(n * (1 + d.M.xpMult)));
+    S.xp += n;
+    G.events.emit('xpGained', n, reason || '');
+    // (the HUD renders xpGained itself — no notify here to avoid duplicate lines)
+    checkLevelUp();
+    return n;
+  }
+  function checkLevelUp() {
+    let gained = 0;
+    while (S.level < LEVEL_CAP && S.xp >= xpForLevel(S.level + 1)) {
+      S.level++; gained++;
+      S.unspent += skillPointsPerLevel();
+      S.perkPicks += 1;
+      dirty = true;
+      // Level-up fully restores health — FO3 behaviour (New Vegas dropped it). Set
+      // G.rpg.options.levelUpHeal = false for the NV rule.
+      const P = G.player;
+      if (P && P.alive) { recalc(true); P.maxHp = maxHp(); if (!R.options || R.options.levelUpHeal !== false) P.hp = P.maxHp; }
+      G.events.emit('levelUp', S.level);
+    }
+    return gained;
+  }
+  function addSkillPoints(skillId, n) {
+    if (typeof skillId === 'number' && n === undefined) { // addSkillPoints(n) → grant unspent points
+      S.unspent += Math.max(0, Math.round(skillId)); G.events.emit('skillsChanged'); return skillId;
+    }
+    if (!SKILL_INFO[skillId]) return 0;
+    n = Math.round(n === undefined ? 1 : n);
+    if (n > 0) {
+      const room = 100 - skillBase(skillId);
+      const k = Math.min(n, S.unspent, Math.max(0, room));
+      if (k <= 0) return 0;
+      S.skillPts[skillId] += k; S.unspent -= k;
+      dirty = true; G.events.emit('skillsChanged', skillId); return k;
+    }
+    if (n < 0) { // refund (level-up screen undo)
+      const k = Math.min(-n, S.skillPts[skillId]);
+      S.skillPts[skillId] -= k; S.unspent += k;
+      dirty = true; G.events.emit('skillsChanged', skillId); return -k;
+    }
+    return 0;
+  }
+  /** Permanently raise a skill without spending points (books, quests). */
+  function boostSkill(skillId, n, source) {
+    if (!SKILL_INFO[skillId]) return 0;
+    const room = 100 - skillBase(skillId);
+    const k = Math.max(0, Math.min(n, room));
+    S.bookPts[skillId] += k; dirty = true;
+    G.events.emit('skillsChanged', skillId);
+    if (source !== 'silent') G.notify(SKILL_INFO[skillId].name + ' increased to ' + skillBase(skillId) + '.', { kind: 'skill', skill: skillId });
+    return k;
+  }
+
+  // ------------------------------------------------------------------
+  // Perks
+  // ------------------------------------------------------------------
+  function perkEligibility(def) {
+    const r = perkRank(def.id);
+    if (def.hidden) return { ok: false, reason: 'Special' };
+    if (r >= def.ranks) return { ok: false, reason: 'Max rank' };
+    const lvlReq = def.reqLevel + (def.levelStep ? r * def.levelStep : 0);
+    if (S.level < lvlReq) return { ok: false, reason: 'Requires level ' + lvlReq };
+    for (const k in def.reqSpecial) {
+      const v = def.reqSpecial[k];
+      const have = S.special[k] + (S.bobble.special[k] || 0);
+      if (v < 0 ? have > -v : have < v) return { ok: false, reason: 'Requires ' + SPECIAL_INFO[k].name + (v < 0 ? ' < ' + (-v + 1) : ' ' + v) };
+    }
+    for (const k in def.reqSkills) if (skillBase(k) < def.reqSkills[k]) return { ok: false, reason: 'Requires ' + SKILL_INFO[k].name + ' ' + def.reqSkills[k] };
+    if (def.reqKarma === 'good' && S.karma < 250) return { ok: false, reason: 'Requires Good Karma' };
+    if (def.reqKarma === 'evil' && S.karma > -250) return { ok: false, reason: 'Requires Evil Karma' };
+    if (def.reqKarma === 'neutral' && Math.abs(S.karma) >= 250) return { ok: false, reason: 'Requires Neutral Karma' };
+    if (def.canTake && !def.canTake()) return { ok: false, reason: def.cantReason || 'Unavailable' };
+    // perks whose world hook belongs to another module stay unpickable until it declares support
+    if (def.needsHook && !HOOKS[def.needsHook]) return { ok: false, reason: 'Not yet available' };
+    return { ok: true, reason: '' };
+  }
+  /** World features other modules declare they honour (e.g. 'traps' for Light Step). */
+  const HOOKS = {};
+  function declareHook(name) { if (name) { HOOKS[name] = true; dirty = true; } }
+  function perksEligible() { return PERKS.filter((p) => perkEligibility(p).ok); }
+  function perksAvailable() { return S.perkPicks > 0 ? perksEligible() : []; }
+  /** All selectable perks with eligibility info, for the level-up screen. */
+  function perkList() {
+    return PERKS.filter((p) => !p.hidden).map((p) => {
+      const el = perkEligibility(p);
+      return { id: p.id, name: perkName(p), desc: perkDesc(p), icon: p.icon, rank: perkRank(p.id), ranks: p.ranks, reqLevel: p.reqLevel, eligible: el.ok, reason: el.reason, choice: p.choice || null, def: p };
+    });
+  }
+  function takePerk(id, choice, opts) {
+    const def = PERK_MAP.get(id); if (!def) return false;
+    opts = opts || {};
+    if (!opts.free) {
+      if (S.perkPicks <= 0) return false;
+      if (!perkEligibility(def).ok) return false;
+    }
+    S.perks[id] = (S.perks[id] || 0) + 1;
+    if (!opts.free) S.perkPicks--;
+    if (choice !== undefined && choice !== null) (S.perkChoices[id] = S.perkChoices[id] || []).push(choice);
+    dirty = true;
+    try { if (def.apply) def.apply(choice, S.perks[id]); } catch (e) { G.reportError('rpg:perkApply:' + id, e); }
+    dirty = true;
+    G.events.emit('perkTaken', id, S.perks[id]);
+    return true;
+  }
+  /** Quest/scripted perk grant (ignores requirements & picks), e.g. Power Armor Training. */
+  function grantPerk(id, silent) {
+    const def = PERK_MAP.get(id); if (!def) return false;
+    if (perkRank(id) >= def.ranks) return false;
+    takePerk(id, undefined, { free: true });
+    if (!silent) G.notify('Perk gained: ' + perkName(def), { kind: 'perk', perk: id });
+    return true;
+  }
+  function playerPerks() {
+    const out = [];
+    for (const id in S.perks) {
+      const def = PERK_MAP.get(id); if (!def || !S.perks[id]) continue;
+      out.push({ id, name: perkName(def), desc: perkDesc(def), rank: S.perks[id], ranks: def.ranks, icon: def.icon, def });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // ------------------------------------------------------------------
+  // Derived stats
+  // ------------------------------------------------------------------
+  function maxHp() { const d = recalc(); return Math.round(90 + d.special.E * 20 + S.level * 10 + d.M.hp); }
+  function maxAp() { const d = recalc(); return Math.round(65 + d.special.A * 2 + d.M.ap); }
+  function carryWeight() { const d = recalc(); return Math.round(150 + d.special.S * 10 + d.M.carry); }
+  /**
+   * Critical chance in percent (FO3: Luck + perks; the caller multiplies by the weapon's crit
+   * multiplier). With a weapon: Luck + all crit perks + melee-only perks (Ninja, Paralyzing Palm).
+   * Legacy no-argument call (combat 30_combat.js playerCritChance): uses the currently drawn
+   * weapon for melee perks, and leaves out Finesse because combat adds Finesse itself
+   * (see COMBAT_SELF_APPLIES) — so every perk is counted exactly once.
+   */
+  function critChance(weaponDef) {
+    const d = recalc();
+    let c = d.special.L + d.M.crit;
+    const legacy = weaponDef === undefined;
+    if (legacy) {
+      if (COMBAT_SELF_APPLIES.finesse && hasPerk('finesse')) c -= FINESSE_CRIT;
+      weaponDef = currentWeaponDef();
+    }
+    const w = weaponBlock(weaponDef);
+    if (w && (w.skill === 'melee_weapons' || w.skill === 'unarmed' || w.melee)) c += d.M.critMelee;
+    c = U.clamp(c, 0, 100);
+    // combat normalises with `if (base > 1) base /= 100`, so a value of 1 or less would be read as a
+    // FRACTION (a Luck-1 character's 1 % as 100 %). Hand those tiny values over as the fraction itself:
+    // correct under either reading (percent > 1, fraction ≤ 0.01).
+    if (legacy && c <= 1) c /= 100;
+    return c;
+  }
+  /** Full crit chance (percent) for a weapon — never compensates for combat's own perk code. */
+  function critChanceBonus(weaponDef) {
+    const d = recalc();
+    let c = d.special.L + d.M.crit;
+    const w = weaponBlock(weaponDef);
+    if (w && (w.skill === 'melee_weapons' || w.skill === 'unarmed' || w.melee)) c += d.M.critMelee;
+    return c;
+  }
+  /** Critical damage multiplier: Better Criticals (+50%), Hunter (+75% vs creatures), Ninja (+25% sneak crits). */
+  function critDamageMult(target, info) {
+    const d = recalc(); const M = d.M;
+    let m = 1 + M.critDmg;
+    const cls = target && typeof target === 'object' ? classifyTarget(target) : null;
+    if (cls && cls.creature && M.critDmgVs.creature) m += M.critDmgVs.creature;
+    if (info && info.sneak) m += M.sneakAttackMult;
+    return m;
+  }
+  const FINESSE_CRIT = 5;
+  function currentWeaponDef() {
+    try {
+      if (!G.isStub('weapons') && G.weapons.current) { const c = G.weapons.current(); if (c && c.id) return G.items.get(c.id) || c; }
+      if (!G.isStub('inventory')) { const id = G.inventory.equipped('weapon'); if (id) return G.items.get(id); }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+  function apRegen() { const d = recalc(); return Math.max(1, (10 + d.special.A * 0.6) * (1 + d.M.apRegenMult)); }
+  function speedMult() { const d = recalc(); return U.clamp(1 + d.M.speedMult, 0.3, 1.6); }
+  function radResist() { const d = recalc(); return U.clamp(d.special.E * 2 + d.M.radResist, 0, 85); }
+  function getDR(type) {
+    const d = recalc();
+    let dr = d.M.dr;
+    if (type === 'energy' || type === 'laser' || type === 'plasma') dr += d.M.energyResist;
+    if (type === 'fire') dr += d.M.fireResist;
+    if (type === 'poison') return U.clamp(d.M.poisonResist, 0, 85);
+    return U.clamp(dr, 0, 85);
+  }
+  function getDT() { return Math.max(0, recalc().M.dt); }
+  function inventoryWeight() { try { return G.isStub('inventory') ? 0 : G.inventory.weight(); } catch (e) { return 0; } }
+  function isOverencumbered() { return inventoryWeight() > carryWeight(); }
+  function isStealthed() { return recalc().M.stealth > 0; }
+  function sneakBonus() { const d = recalc(); return d.skills.sneak + d.M.sneak; }
+  function sneakAttackMult() { return 2 * (1 + recalc().M.sneakAttackMult); }
+  function mysteriousStrangerChance() { return recalc().M.mysteriousStranger ? 0.1 : 0; }
+  function lootCapsMult() { return 1 + recalc().M.lootCaps; }
+  function lootAmmoMult() { return 1 + recalc().M.lootAmmo; }
+  function hackAttemptsBonus() { return recalc().M.hackAttempts; }
+  function wearingPowerArmor() { recalc(); return D.powerArmor; }
+
+  // ------------------------------------------------------------------
+  // Weapon-facing multipliers (queried by weapons/combat/vats)
+  // ------------------------------------------------------------------
+  function weaponBlock(def) {
+    if (!def) return null;
+    if (typeof def === 'string') { const d = G.items.get(def); return d ? (d.weapon || null) : null; }
+    return def.weapon || (def.skill ? def : null);
+  }
+  function isOneHanded(def) {
+    const w = weaponBlock(def) || {};
+    if (w.oneHanded !== undefined) return !!w.oneHanded;
+    if (w.twoHanded !== undefined) return !w.twoHanded;
+    const id = (def && (def.id || '')) + ' ' + (w.viewmodel || '');
+    return /pistol|revolver|magnum|blaster|44|knuckle|knife|fist/.test(id);
+  }
+  /** Skill scaling only: FO3 damage × (0.5 + skill/200). */
+  function skillDamageMult(weaponDef) {
+    const w = weaponBlock(weaponDef);
+    const sk = w && SKILL_INFO[w.skill] ? w.skill : (w && w.skill === 'big_guns' ? 'guns' : null);
+    if (!sk) return 1;
+    return 0.5 + recalc().skills[sk] / 200;
+  }
+  // ------------------------------------------------------------------
+  // Target classification — who a perk's "+X% damage vs …" applies to
+  // ------------------------------------------------------------------
+  const EVIL_FACTIONS = { raiders: 1, enclave: 1, slavers: 1, talon: 1, gunners: 1, outcasts_evil: 1 };
+  const GOOD_FACTIONS = { settlers: 1, vault: 1, brotherhood: 1, ghouls: 1, citizens: 1, minutemen: 1, merchants: 1 };
+  /**
+   * Classify an actor (combat Actor, or any {type, faction, def, td, gender}) for perk bonuses.
+   * Returns {robot, insect, creature, animal, human, ghoul, feral, mutant, evil, good, gender}.
+   */
+  function classifyTarget(t) {
+    if (!t || typeof t !== 'object') return null;
+    if (t._rpgCls && t._rpgClsT === S.karma) return t._rpgCls;   // cheap per-actor cache
+    const tt = String(t.type || (t.def && t.def.type) || '');
+    const td = t.td || null;
+    let info = null;
+    try { info = !G.isStub('chars') && G.chars.info ? G.chars.info(tt) : null; } catch (e) { info = null; }
+    const robot = !!(t.isRobot || (td && td.isRobot) || (info && info.isRobot)) || /protectron|handy|gutsy|eyebot|sentry|robot|turret|robobrain/.test(tt) || t.faction === 'robots';
+    const insect = !robot && /radroach|bloatfly|giant_ant|fire_ant|mantis|mirelurk|stingwing|cazador|radscorpion/.test(tt);
+    const feral = /feral|glowing_one|reaver/.test(tt);
+    const ghoul = feral || /ghoul/.test(tt) || t.faction === 'ghouls' || !!(t.def && t.def.ghoul);
+    const mutant = /super_mutant|behemoth|centaur|nightkin/.test(tt) || t.faction === 'super_mutants';
+    const creatureFlag = !!(t.isCreature || (td && td.isCreature) || (info && info.isCreature));
+    const creature = !robot && !mutant && (creatureFlag || insect || /radroach|molerat|mole_rat|bloatfly|mirelurk|deathclaw|dog|hound|yao|brahmin|radrat|gecko/.test(tt));
+    const animal = creature && /dog|hound|molerat|mole_rat|brahmin|yao|deathclaw|radrat|gecko/.test(tt);
+    const human = !robot && !creature && !mutant && !feral;
+    const kd = t.karma !== undefined ? t.karma : (t.def && t.def.karma);
+    const evil = human && (!!EVIL_FACTIONS[t.faction] || !!(t.def && t.def.evil) || (typeof kd === 'number' && kd > 0));
+    const good = human && !evil && (!!GOOD_FACTIONS[t.faction] || (typeof kd === 'number' && kd < 0));
+    const gender = t.gender || (t.def && t.def.gender) || (t.char && (t.char.gender || (t.char.opts && t.char.opts.gender))) || null;
+    const cls = { robot, insect, creature, animal, human, ghoul, feral, mutant, evil, good, gender };
+    try { t._rpgCls = cls; t._rpgClsT = S.karma; } catch (e) { /* frozen object */ }
+    return cls;
+  }
+  /** Additive damage bonus (fraction) that perks give against this target. */
+  function targetDamageBonus(target, M) {
+    const cls = classifyTarget(target); if (!cls) return 0;
+    M = M || recalc().M;
+    const V = M.dmgVs; let b = 0;
+    if (cls.robot && V.robot) b += V.robot;
+    if (cls.insect && V.insect) b += V.insect;
+    if (cls.human && V.human) b += V.human;
+    if (cls.ghoul && V.ghoul) b += V.ghoul;
+    if (cls.mutant && V.mutant) b += V.mutant;
+    if (cls.creature && V.creature) b += V.creature;
+    if (cls.evil && V.evil) b += V.evil;
+    if (cls.good && V.good) b += V.good;
+    if (cls.human && V.oppositeSex && cls.gender) {
+      const g = cls.gender === 'female' ? 'f' : cls.gender === 'male' ? 'm' : cls.gender;
+      if (g !== S.gender) b += V.oppositeSex;
+    }
+    return b;
+  }
+
+  /**
+   * Perk/chem damage multiplier (no skill scaling).
+   * target: actor (optional) — Lady Killer/Black Widow, Entomologist, Robotics Expert,
+   * Lawbringer/Contract Killer bonuses need it.
+   */
+  function perkDamageMult(weaponDef, target) {
+    const d = recalc(); const M = d.M;
+    const w = weaponBlock(weaponDef) || {};
+    let m = 1 + M.dmgMult;
+    const dt = w.damageType || (w.skill === 'energy_weapons' ? 'energy' : w.skill === 'explosives' ? 'explosive' : (w.skill === 'melee_weapons' || w.skill === 'unarmed') ? 'melee' : 'ballistic');
+    if (M.dmgType[dt]) m += M.dmgType[dt];
+    if (dt !== 'explosive' && M.dmgType.explosive && (w.explosionRadius || w.explosive)) m += M.dmgType.explosive;
+    if (w.skill && M.dmgSkill[w.skill]) m += M.dmgSkill[w.skill];
+    if (target) m += targetDamageBonus(target, M);
+    return m;
+  }
+
+  // Perk effects the combat module (src/combat/30_combat.js) currently applies on its own.
+  // While a flag is true, rpg leaves that perk out of what it hands combat so the perk counts
+  // exactly once. A future combat build that stops doing so can set the flag to false.
+  //   finesse      — combat adds +5% to G.rpg.critChance()
+  //   bloody_mess  — combat multiplies player damage by 1.05
+  //   nerd_rage    — combat multiplies player damage by 1.3 below 20% HP (not in Fallout: rpg divides it back out)
+  //   better_crits — combat multiplies crit damage by 1.5 (rpg's own hook then skips Better Criticals)
+  const COMBAT_SELF_APPLIES = { finesse: true, bloody_mess: true, nerd_rage: true, better_crits: true };
+
+  // Last legacy damageMult(skillId, info) call. Combat calls it right before applyDamage in the same
+  // frame, without the target — the actorDamaged hook below then adds the target-only bonuses.
+  const legacyCall = { pending: false, frame: -1, mult: 1 };
+
+  /**
+   * Full damage multiplier for a player weapon (skill × perks).
+   *   damageMult(weaponDef, targetActor?, {noSkill})    — preferred; includes FO3 skill scaling 0.5 + skill/200
+   *   damageMult(skillId, weaponInfo, targetActor?)      — combat-module form: perk/chem multiplier only
+   *                                                       (combat already scales by skill); target may also
+   *                                                       come from info.target / info.actor / info.victim.
+   */
+  function damageMult(weaponDef, target, opts) {
+    if (typeof weaponDef === 'string' && SKILL_INFO[weaponDef]) {
+      const info = target && typeof target === 'object' && !isActorLike(target) ? target : null;
+      let tgt = isActorLike(opts) ? opts : isActorLike(target) ? target : null;
+      if (!tgt && info) tgt = [info.target, info.actor, info.victim].find(isActorLike) || null;
+      const wdef = Object.assign({}, info ? (info.weapon && typeof info.weapon === 'object' ? info.weapon : info) : {}, { skill: weaponDef });
+      let m = perkDamageMult(wdef, tgt);
+      // combat multiplies its result by ×1.05 (Bloody Mess) and ×1.3 (its own Nerd Rage) — divide
+      // them back out so the product equals rpg's full multiplier exactly.
+      if (COMBAT_SELF_APPLIES.bloody_mess && hasPerk('bloody_mess')) m /= 1 + BLOODY_MESS_DMG;
+      const P = G.player;
+      if (COMBAT_SELF_APPLIES.nerd_rage && hasPerk('nerd_rage') && P && P.maxHp && P.hp < P.maxHp * 0.2) m /= 1.3;
+      m = Math.max(0.05, m);
+      // Remember it for the very next player-sourced actorDamaged (combat applies the hit right
+      // after asking). Consumed once — a shotgun's pellets each ask again before each hit.
+      legacyCall.pending = !tgt; legacyCall.frame = G.time ? G.time.frame : 0; legacyCall.mult = m;
+      return m;
+    }
+    const s = opts && opts.noSkill ? 1 : skillDamageMult(weaponDef);
+    return s * perkDamageMult(weaponDef, target);
+  }
+  const BLOODY_MESS_DMG = 0.05;
+  function isActorLike(o) { return !!(o && typeof o === 'object' && (o.faction !== undefined || o.char !== undefined || o.td !== undefined) && (o.hp !== undefined || o.type !== undefined)); }
+
+  /**
+   * actorDamaged hook (registered in 90_module.js). combat emits actorDamaged(a, dmg, info) after
+   * subtracting HP and BEFORE its kill check, so extra damage subtracted here is honoured by the
+   * same hit (and still kills through combat's normal path). Adds what combat can't know:
+   *   • target perk bonuses when combat used the target-less damageMult(skillId, info) form
+   *   • Hunter (+75% crit damage vs creatures), Ninja (+25% sneak-attack crit damage)
+   *   • Better Criticals only if combat stops applying it itself
+   * Also tracks who started a fight (murder karma).
+   */
+  function onActorDamaged(a, dmg, info) {
+    if (!a || !info || info._rpgBonus) return 0;
+    if (info.source !== 'player' && info.source !== G.player) return 0;
+    try {
+      if (!a.dead) {
+        if (typeof a.hostile === 'function' && a.hostile()) a._rpgSeenHostile = true;
+        else if (!a._rpgSeenHostile) a._rpgPlayerStarted = true;
+      }
+    } catch (e) { /* ignore */ }
+    if (!(dmg > 0) || !(a.hp > 0)) return 0;
+    const M = recalc().M;
+    let extra = 0;
+    const frame = G.time ? G.time.frame : 0;
+    const fresh = legacyCall.pending && frame - legacyCall.frame <= 1;
+    legacyCall.pending = false;
+    if (fresh) {
+      const tb = targetDamageBonus(a, M);
+      if (tb) extra += dmg * tb / Math.max(0.2, legacyCall.mult);
+    }
+    if (info.crit) {
+      const cls = classifyTarget(a);
+      const cm = info.critMult || 1;
+      const critShare = cm / (1 + cm);            // part of this hit that came from the critical
+      let cb = 0;
+      if (cls && cls.creature && M.critDmgVs.creature) cb += M.critDmgVs.creature;
+      if (info.sneak && M.sneakAttackMult) cb += M.sneakAttackMult;
+      if (!COMBAT_SELF_APPLIES.better_crits && M.critDmg) cb += M.critDmg;
+      extra += dmg * critShare * cb;
+    }
+    if (extra > 0.05) {
+      a.hp -= extra;
+      if (a.essential && a.hp < 1) a.hp = 1;
+    }
+    return extra;
+  }
+  /** Flat melee/unarmed damage bonus (STR/2 for melee, Iron Fist for unarmed). */
+  function meleeDamageBonus(weaponDef) {
+    const d = recalc(); const w = weaponBlock(weaponDef) || {};
+    if (w.skill === 'unarmed' || !w.skill) return d.special.S * 0.5 + d.M.unarmedDmg;
+    if (w.skill === 'melee_weapons') return d.special.S * 0.5 + d.M.meleeDmg;
+    return 0;
+  }
+  /** Weapon spread multiplier from skill + crippled arms (weapons module may multiply its spread by this). */
+  function spreadMult(weaponDef) {
+    const d = recalc(); const w = weaponBlock(weaponDef);
+    const sk = w && SKILL_INFO[w.skill] ? d.skills[w.skill] : 50;
+    return (1.5 - sk / 100) * (1 + d.M.spreadMult);
+  }
+  /** Additive VATS hit chance bonus (percentage points) for weapon & body part. */
+  function vatsHitBonus(weaponDef, part) {
+    const d = recalc(); const M = d.M;
+    let b = M.vatsHit;
+    const w = weaponBlock(weaponDef);
+    if (w && (w.skill === 'guns' || w.skill === 'energy_weapons')) b += isOneHanded(weaponDef) ? M.vatsHitOneHand : M.vatsHitTwoHand;
+    if (part === 'head') b += M.vatsHitHead;
+    return b;
+  }
+  function vatsAPCostMult() { return U.clamp(1 + recalc().M.vatsAPMult, 0.4, 2); }
+
+  /**
+   * One-stop combat query for a player attack (preferred over the individual calls):
+   *   G.rpg.combatMods(weaponDef, targetActor?, {part, sneak}) →
+   *   { dmg        — full damage multiplier incl. skill scaling (0.5 + skill/200) and every perk/chem/target bonus
+   *     perkDmg    — the same without skill scaling
+   *     crit       — crit chance in percent (Luck + perks; multiply by the weapon's crit multiplier)
+   *     critDmg    — crit damage multiplier (Better Criticals, Hunter vs creatures, Ninja on sneak crits)
+   *     vatsHit    — additive V.A.T.S. hit bonus in percentage points (Commando/Gunslinger/Sniper/Concentrated Fire)
+   *     vatsAP     — V.A.T.S. AP cost multiplier
+   *     spread     — spread multiplier (skill + crippled arms)
+   *     sneakMult  — sneak-attack damage multiplier
+   *     meleeBonus — flat melee/unarmed damage bonus }
+   * Nothing here compensates for combat's own perk code — a caller using combatMods should drop it.
+   */
+  function combatMods(weaponDef, target, o) {
+    o = o || {};
+    const perk = perkDamageMult(weaponDef, target || null);
+    return {
+      dmg: skillDamageMult(weaponDef) * perk, perkDmg: perk,
+      crit: critChanceBonus(weaponDef), critDmg: critDamageMult(target, { sneak: !!o.sneak }),
+      vatsHit: vatsHitBonus(weaponDef, o.part), vatsAP: vatsAPCostMult(), spread: spreadMult(weaponDef),
+      sneakMult: sneakAttackMult(), meleeBonus: meleeDamageBonus(weaponDef),
+    };
+  }
+
+  // ------------------------------------------------------------------
+  // Karma
+  // ------------------------------------------------------------------
+  function karmaTier() {
+    const k = S.karma;
+    return k >= 750 ? 0 : k >= 250 ? 1 : k > -250 ? 2 : k > -750 ? 3 : 4;
+  }
+  function karmaLabel() { return ['Very Good', 'Good', 'Neutral', 'Evil', 'Very Evil'][karmaTier()]; }
+  function karmaTitle() {
+    const row = KARMA_TITLES.find((r) => S.level <= r.max) || KARMA_TITLES[KARMA_TITLES.length - 1];
+    return row.t[karmaTier()];
+  }
+  function addKarma(n, reason) {
+    n = Math.round(Number(n) || 0);
+    if (!n) return S.karma;
+    const beforeTitle = karmaTitle();
+    S.karma = U.clamp(S.karma + n, -1000, 1000);
+    dirty = true;
+    G.events.emit('karmaChanged', S.karma, n, reason || '');
+    G.notify(n > 0 ? "You've gained Karma." : "You've lost Karma.", { kind: 'karma', delta: n, reason: reason || '', icon: n > 0 ? 'halo' : 'devil' });
+    const t = karmaTitle();
+    if (t !== beforeTitle) G.notify('Karma title: ' + t, { kind: 'karma_title', title: t });
+    return S.karma;
+  }
+
+  // ------------------------------------------------------------------
+  // Timed effects
+  // ------------------------------------------------------------------
+  let effSeq = 0;
+  /**
+   * def: {id, name, duration (sec), mods?, kind?:'chem'|'food'|'buff'|'debuff'|'rest', source?, desc?,
+   *       tick?: {hp, rads} per second, addictionId?, after?:{name,duration,special}, stealth?}
+   * Same id refreshes the timer instead of stacking.
+   */
+  function addEffect(def) {
+    if (!def) return null;
+    const id = def.id || ('fx' + (++effSeq));
+    let ef = S.effects.find((e) => e.id === id && !def.stack);
+    if (ef) { ef.remaining = Math.max(ef.remaining, def.duration || 0); ef.total = Math.max(ef.total, def.duration || 0); }
+    else {
+      ef = { id, name: def.name || id, kind: def.kind || 'buff', total: def.duration || 0, remaining: def.duration || 0, mods: def.mods || null,
+        source: def.source || null, desc: def.desc || '', tick: def.tick || null, addictionId: def.addictionId || null, after: def.after || null };
+      if (def.stealth) { ef.mods = ef.mods || {}; ef.mods.stealth = 1; }
+      S.effects.push(ef);
+      if (def.stealth) { G.events.emit('stealthBoy', true); G.notify('Stealth field active.', { kind: 'effect' }); }
+    }
+    dirty = true;
+    G.events.emit('effectsChanged');
+    return ef;
+  }
+  function removeEffect(id) {
+    const i = S.effects.findIndex((e) => e.id === id);
+    if (i < 0) return false;
+    const ef = S.effects[i];
+    S.effects.splice(i, 1);
+    onEffectEnd(ef);
+    dirty = true; G.events.emit('effectsChanged');
+    return true;
+  }
+  function onEffectEnd(ef) {
+    if (ef.mods && ef.mods.stealth) { G.events.emit('stealthBoy', false); G.notify('Stealth field depleted.', { kind: 'effect' }); }
+    if (ef.after) addEffect({ id: ef.id + '_after', name: ef.after.name, duration: ef.after.duration || 60, kind: 'debuff', mods: { special: ef.after.special || {}, skills: ef.after.skills || {} } });
+  }
+  function updateEffects(dt) {
+    if (dt <= 0) return;
+    const P = G.player;
+    let changed = false;
+    for (let i = S.effects.length - 1; i >= 0; i--) {
+      const ef = S.effects[i];
+      const step = Math.min(dt, Math.max(0, ef.remaining));
+      if (ef.tick && step > 0) {
+        if (ef.tick.hp && P && P.alive) P.hp = Math.min(P.maxHp, P.hp + ef.tick.hp * step);
+        if (ef.tick.rads) { if (ef.tick.rads < 0) removeRads(-ef.tick.rads * step); else addRadsDirect(ef.tick.rads * step); }
+        if (ef.tick.ap && P) P.ap = Math.min(P.maxAp, P.ap + ef.tick.ap * step);
+      }
+      if (ef.total > 0) {
+        ef.remaining -= dt;
+        if (ef.remaining <= 0) {
+          S.effects.splice(i, 1); onEffectEnd(ef); changed = true;
+          if (ef.kind === 'chem') G.notify(ef.name + ' has worn off.', { kind: 'effect' });
+        }
+      }
+    }
+    // Passive regen from perks (Solar Powered, Rad Absorption…)
+    const d = recalc();
+    if (d.M.hpRegen && P && P.alive && P.hp < P.maxHp) P.hp = Math.min(P.maxHp, P.hp + d.M.hpRegen * dt);
+    if (changed) { dirty = true; G.events.emit('effectsChanged'); }
+  }
+  function modsSummary(m) {
+    if (!m) return '';
+    const parts = [];
+    if (m.special) for (const k of SPECIAL_KEYS) if (m.special[k]) parts.push(SPECIAL_INFO[k].name.slice(0, 3).toUpperCase() + ' ' + (m.special[k] > 0 ? '+' : '') + m.special[k]);
+    if (m.skills) for (const k in m.skills) if (m.skills[k] && SKILL_INFO[k]) parts.push(SKILL_INFO[k].name + ' ' + (m.skills[k] > 0 ? '+' : '') + m.skills[k]);
+    if (m.dr) parts.push('DR ' + (m.dr > 0 ? '+' : '') + Math.round(m.dr));
+    if (m.radResist) parts.push('Rad Resist ' + (m.radResist > 0 ? '+' : '') + m.radResist + '%');
+    if (m.dmgMult) parts.push('Damage ' + (m.dmgMult > 0 ? '+' : '') + Math.round(m.dmgMult * 100) + '%');
+    if (m.critChance || m.crit) parts.push('Crit ' + ((m.crit || m.critChance) > 0 ? '+' : '') + (m.crit || m.critChance) + '%');
+    if (m.carry) parts.push('Carry ' + (m.carry > 0 ? '+' : '') + m.carry);
+    if (m.xpMult) parts.push('XP +' + Math.round(m.xpMult * 100) + '%');
+    if (m.apRegenMult) parts.push('AP Regen ' + (m.apRegenMult > 0 ? '+' : '') + Math.round(m.apRegenMult * 100) + '%');
+    if (m.speedMult) parts.push('Speed ' + (m.speedMult > 0 ? '+' : '') + Math.round(m.speedMult * 100) + '%');
+    if (m.stealth) parts.push('Stealth Field');
+    return parts.join(', ');
+  }
+  /** Everything currently affecting the player, for the Pip-Boy STAT → Status/Effects screen. */
+  function activeEffects() {
+    const out = [];
+    for (const ef of S.effects) out.push({ id: ef.id, name: ef.name, kind: ef.kind, remaining: Math.max(0, ef.remaining), total: ef.total, desc: ef.desc || modsSummary(ef.mods), mods: ef.mods });
+    const t = radTier();
+    if (t > 0) out.push({ id: 'radiation', name: RAD_TIERS[t].name, kind: 'radiation', remaining: 0, total: 0, desc: modsSummary({ special: RAD_TIERS[t].special }) });
+    const actives = {};
+    for (const ef of S.effects) if (ef.addictionId) actives[ef.addictionId] = true;
+    for (const id in S.addictions) {
+      const a = S.addictions[id];
+      out.push({ id: 'addiction_' + id, name: a.name + (actives[id] ? '' : ' (Withdrawal)'), kind: 'addiction', remaining: 0, total: 0, desc: actives[id] ? 'Satisfied — for now.' : modsSummary(a.withdrawal) });
+    }
+    recalc();
+    for (const l in D.crippled) out.push({ id: 'crippled_' + l, name: 'Crippled ' + LIMB_NAMES[l], kind: 'limb', remaining: 0, total: 0, desc: l === 'head' ? 'PER -2' : l === 'torso' ? 'AP Regen -30%' : /Leg/.test(l) ? 'Movement speed reduced' : 'Aim is unsteady' });
+    if (S.needs && S.needs.on) for (const k of NEED_KEYS) { const t = needTier(k); if (t > 0) out.push({ id: 'need_' + k, name: NEEDS[k].tiers[t].name, kind: 'need', remaining: 0, total: 0, desc: modsSummary(NEEDS[k].tiers[t].mods) }); }
+    if (isOverencumbered()) out.push({ id: 'overencumbered', name: 'Overencumbered', kind: 'debuff', remaining: 0, total: 0, desc: 'Cannot run or fast travel.' });
+    return out;
+  }
+
+  // ------------------------------------------------------------------
+  // Aid use (called by G.inventory.use for type 'aid')
+  // ------------------------------------------------------------------
+  function applyAid(def) {
+    if (!def) return false;
+    const ef = def.effects || {};
+    const P = G.player;
+    const d = recalc(); const M = d.M;
+    const tags = def.tags || [];
+    const medical = tags.indexOf('medical') >= 0;
+    const chem = tags.indexOf('chem') >= 0;
+    const food = tags.indexOf('food') >= 0 || tags.indexOf('drink') >= 0;
+    const hardcore = !!(S.needs && S.needs.on);
+    // Instant HP (Hardcore, NV: medicine heals over a few seconds instead)
+    if (ef.hp) {
+      let hp = ef.hp;
+      if (medical) hp *= (0.7 + d.skills.medicine / 100) * (1 + M.stimpakMult);
+      else if (food) hp *= 1 + d.skills.survival / 200 + M.foodHealMult;
+      if (hardcore && medical && hp > 0) addEffect({ id: 'heal_' + def.id + '_' + (++effSeq), name: def.name, kind: 'buff', duration: 6, tick: { hp: hp / 6 }, stack: true });
+      else if (P && P.heal) P.heal(Math.round(hp));
+    }
+    if (ef.hpOverTime) {
+      const amt = ef.hpOverTime[0] * (1 + d.skills.survival / 200 + M.foodHealMult), secs = Math.max(0.5, ef.hpOverTime[1]);
+      addEffect({ id: 'heal_' + def.id + '_' + (++effSeq), name: def.name, kind: 'food', duration: secs, tick: { hp: amt / secs }, stack: true });
+    }
+    if (ef.rads) {
+      if (ef.rads > 0) addRadsDirect(ef.rads * (food ? (1 + M.foodRadMult) : 1));
+      else removeRads(-ef.rads * (medical ? (0.8 + d.skills.medicine / 250) * (1 + M.radMedMult) : 1));
+    }
+    if (ef.radsOverTime) {
+      const amt = ef.radsOverTime[0] * (medical ? (0.8 + d.skills.medicine / 250) * (1 + M.radMedMult) : 1), secs = Math.max(0.5, ef.radsOverTime[1]);
+      addEffect({ id: 'rads_' + def.id, name: def.name, kind: 'chem', duration: secs, tick: { rads: amt / secs } });
+    }
+    if (ef.ap && P) P.ap = Math.min(P.maxAp + ef.ap, P.ap + ef.ap);
+    // Hardcore (NV): only a Doctor's Bag, a doctor or a night's sleep mends crippled limbs
+    if (ef.limbs && (!hardcore || def.id === 'doctors_bag')) healLimbs(ef.limbs * (medical ? (0.7 + d.skills.medicine / 100) : 1));
+    if (ef.cureAddiction) cureAddictions(true);
+    // Timed modifiers
+    if (ef.duration) {
+      const mods = {};
+      ['radResist', 'dr', 'dmgMult', 'carry', 'apRegenMult', 'speedMult', 'sneak', 'xpMult'].forEach((k) => { if (ef[k]) mods[k] = ef[k]; });
+      // Medic: Rad-X style medical protection is 25% stronger
+      if (medical && mods.radResist && M.radMedMult) mods.radResist = Math.round(mods.radResist * (1 + M.radMedMult));
+      if (ef.critChance) mods.crit = ef.critChance;
+      if (ef.special) mods.special = Object.assign({}, ef.special);
+      if (ef.skills) mods.skills = Object.assign({}, ef.skills);
+      const dur = ef.duration * (chem ? (1 + M.chemDurationMult) : 1);
+      addEffect({ id: def.id, name: def.name, kind: chem ? 'chem' : food ? 'food' : 'buff', duration: dur, mods, desc: modsSummary(mods),
+        addictionId: ef.addiction ? ef.addiction.id : null, after: ef.after || null, stealth: !!ef.stealth });
+    } else if (ef.after) {
+      addEffect({ id: def.id + '_after', name: ef.after.name, duration: ef.after.duration || 60, kind: 'debuff', mods: { special: ef.after.special || {} } });
+    }
+    // Addiction roll
+    if (ef.addiction && !S.addictions[ef.addiction.id] && !(ef.addiction.id === 'alcohol' && M.partyBoy)) {
+      const chance = ef.addiction.chance * Math.max(0, 1 + M.addictionMult);
+      if (Math.random() < chance) {
+        S.addictions[ef.addiction.id] = { name: ef.addiction.name, day: G.time.day, withdrawal: { special: (ef.addiction.withdrawal || {}).special || {}, skills: (ef.addiction.withdrawal || {}).skills || {} } };
+        S.stats.timesAddicted++;
+        G.notify('You are addicted to ' + ef.addiction.name.replace(/ Addiction$/, '') + '.', { kind: 'addiction' });
+        G.events.emit('addicted', ef.addiction.id);
+      }
+    }
+    if (def.id === 'stimpak' || def.id === 'super_stimpak') S.stats.stimpaksUsed++;
+    if (def.id === 'radaway') S.stats.radawayUsed++;
+    if (chem) S.stats.chemsTaken++;
+    // Hardcore: food feeds, drinks hydrate (water best), anything alcoholic dehydrates a little
+    if (S.needs && S.needs.on) {
+      const drink = tags.indexOf('drink') >= 0, eats = tags.indexOf('food') >= 0;
+      const water = /water/.test(def.id);
+      if (eats) S.needs.food = Math.max(0, S.needs.food - (ef.food !== undefined ? ef.food : 60 + (ef.hp || 0) * 2));
+      if (drink) S.needs.water = Math.max(0, S.needs.water - (ef.water !== undefined ? ef.water : water ? 150 : 50));
+      if (tags.indexOf('alcohol') >= 0) S.needs.water = Math.min(1000, S.needs.water + 10);
+      if (def.id === 'nuka_cola_quantum' || tags.indexOf('caffeine') >= 0) S.needs.sleep = Math.max(0, S.needs.sleep - 40);
+    }
+    dirty = true;
+    G.events.emit('effectsChanged');
+    G.events.emit('aidUsed', def.id);
+    return true;
+  }
+  function cureAddictions(silent) {
+    const n = Object.keys(S.addictions).length;
+    S.addictions = {};
+    dirty = true; G.events.emit('effectsChanged');
+    if (n && !silent) G.notify('Your addictions have been cured.', { kind: 'addiction' });
+    else if (n) G.notify('You feel your cravings fade.', { kind: 'addiction' });
+    return n;
+  }
+  /**
+   * FO3/NV: an addiction lasts until cured with Fixer or by a doctor. The Fallout 4-style
+   * "burns out after a week" rule is available behind G.rpg.options.addictionsExpire (off).
+   */
+  function updateAddictions() {
+    if (!R.options.addictionsExpire) return;
+    for (const id in S.addictions) {
+      if (G.time.day - (S.addictions[id].day || 0) >= 7) {
+        delete S.addictions[id]; dirty = true; G.events.emit('effectsChanged');
+        G.notify('You have overcome your addiction.', { kind: 'addiction' });
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Limbs
+  // ------------------------------------------------------------------
+  const PART_MAP = { head: 'head', torso: 'torso', body: 'torso', chest: 'torso', leftArm: 'leftArm', rightArm: 'rightArm', leftLeg: 'leftLeg', rightLeg: 'rightLeg',
+    left_arm: 'leftArm', right_arm: 'rightArm', left_leg: 'leftLeg', right_leg: 'rightLeg', arm: 'rightArm', leg: 'leftLeg', legs: 'leftLeg', arms: 'rightArm' };
+  function damageLimb(part, amount) {
+    const l = PART_MAP[part] || part;
+    if (!S.limbs.hasOwnProperty(l) || amount <= 0) return;
+    const before = S.limbs[l];
+    if (before <= 0) return;
+    S.limbs[l] = Math.max(0, before - amount);
+    if (S.limbs[l] <= 0) {
+      dirty = true;
+      G.notify('Your ' + LIMB_NAMES[l] + ' has been crippled.', { kind: 'limb', limb: l });
+      G.events.emit('limbCrippled', l);
+      G.events.emit('effectsChanged');
+    }
+  }
+  function healLimbs(amount) {
+    let fixed = false;
+    for (const l of LIMBS) {
+      const was = S.limbs[l];
+      S.limbs[l] = Math.min(100, S.limbs[l] + (amount === undefined ? 100 : amount));
+      if (was <= 0 && S.limbs[l] > 0) fixed = true;
+    }
+    if (fixed) { dirty = true; G.events.emit('effectsChanged'); }
+  }
+  function limbCondition(l) { return l ? (S.limbs[PART_MAP[l] || l] || 0) : Object.assign({}, S.limbs); }
+  function isCrippled(l) { return (S.limbs[PART_MAP[l] || l] || 0) <= 0; }
+
+  // ------------------------------------------------------------------
+  // Damage mitigation (called by G.player.damage)
+  // ------------------------------------------------------------------
+  const DIFFICULTY = { very_easy: 0.5, easy: 0.75, normal: 1, hard: 1.5, very_hard: 2 };
+  // Limb pool as a fraction of max HP (see mitigate)
+  const LIMB_POOL = { head: 0.6, torso: 1.2, leftArm: 0.8, rightArm: 0.8, leftLeg: 0.85, rightLeg: 0.85 };
+  function mitigate(amount, type, info) {
+    info = info || {};
+    const d = recalc(); const M = d.M;
+    let dmg = amount;
+    if (type === 'fall') {
+      dmg *= 1 + M.limbDmgMult * 0.5;
+      damageLimb('leftLeg', dmg * 1.6 * (1 + M.limbDmgMult)); damageLimb('rightLeg', dmg * 1.6 * (1 + M.limbDmgMult));
+      S.stats.damageTaken += dmg;
+      return dmg;
+    }
+    const dr = getDR(type) / 100;
+    const dt = type === 'poison' ? 0 : getDT();
+    dmg = Math.max(amount * 0.2, amount - dt) * (1 - dr);
+    dmg *= DIFFICULTY[S.difficulty] || 1;
+    // armour wear
+    try {
+      if (!G.isStub('inventory') && G.inventory.wearArmor) G.inventory.wearArmor(amount);
+    } catch (e) { /* ignore */ }
+    // Limb damage. Each limb has its own health pool sized from max HP (FO3-like: a limb soaks
+    // roughly its share of the body — arms/legs ≈ 80% of max HP, the torso is sturdier, the head
+    // more fragile). Damage reaching the limb is the mitigated damage, so armor protects limbs too.
+    const hpMax = Math.max(60, maxHp());
+    let part = info.part;
+    if (!part || !PART_MAP[part]) {
+      const r = Math.random();
+      part = r < 0.45 ? 'torso' : r < 0.55 ? 'head' : r < 0.66 ? 'leftArm' : r < 0.77 ? 'rightArm' : r < 0.885 ? 'leftLeg' : 'rightLeg';
+    }
+    const lm = 1 + M.limbDmgMult;
+    if (type === 'explosive') { for (const l of LIMBS) damageLimb(l, dmg / (hpMax * LIMB_POOL[l]) * 100 * 0.3 * lm); }
+    else if (type !== 'rad' && type !== 'poison') { const l = PART_MAP[part]; damageLimb(l, dmg / (hpMax * LIMB_POOL[l]) * 100 * lm); }
+    S.stats.damageTaken += dmg;
+    return dmg;
+  }
+
+  // ------------------------------------------------------------------
+  // Barter
+  // ------------------------------------------------------------------
+  function itemValue(def, cond) {
+    if (typeof def === 'string') def = G.items.get(def);
+    if (!def) return 0;
+    let v = def.value || 0;
+    if (def.hasCondition && cond !== undefined && cond !== null) v *= 0.15 + 0.85 * Math.pow(U.clamp(cond, 0, 1), 1.5);
+    return v;
+  }
+  function barterFactor() {
+    const d = recalc();
+    return U.clamp((d.skills.barter + (d.special.C - 5) * 2) / 100, 0, 1);
+  }
+  /**
+   * A vendor's price attitude. Quests/POIs use three knobs on actor.merchant (or a bare object):
+   *   markup     — multiplies what the player PAYS (membership discounts: 0.85–0.93)
+   *   priceMult  — the vendor's overall price level (a posh restaurant 1.4, a betrayed bartender 2):
+   *                buy × priceMult, and when > 1 the vendor also pays less (sell ÷ priceMult)
+   *   sellMult   — multiplies what the vendor PAYS the player (a fence/pawn shop 1.2)
+   */
+  function vendorAttitude(merchant) {
+    const m = merchant ? (merchant.merchant || merchant) : null;
+    const num = (v) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 1);
+    if (!m || typeof m !== 'object') return { buy: 1, sell: 1 };
+    const pm = num(m.priceMult);
+    return { buy: num(m.markup) * pm, sell: num(m.sellMult) / (pm > 1 ? pm : 1) };
+  }
+  /** Price the player pays a merchant. merchant: actor | {markup, priceMult} | undefined. cond: optional condition. */
+  function priceBuy(def, merchant, cond) {
+    if (typeof def === 'string') def = G.items.get(def);
+    if (!def) return 0;
+    if (def.id === 'caps') return 1;
+    const t = barterFactor();
+    const mult = (1.55 - 0.5 * t) * (1 + recalc().M.barterMult) * vendorAttitude(merchant).buy;
+    const v = itemValue(def, cond);
+    return v <= 0 ? 0 : Math.max(1, Math.round(v * mult));
+  }
+  /** Price a merchant pays the player (always below what they'd charge for it). */
+  function priceSell(def, merchant, cond) {
+    if (typeof def === 'string') def = G.items.get(def);
+    if (!def) return 0;
+    if (def.id === 'caps') return 1;
+    const t = barterFactor();
+    const mult = (0.45 + 0.4 * t) * vendorAttitude(merchant).sell;
+    const v = itemValue(def, cond);
+    if (v <= 0) return 0;
+    return Math.max(1, Math.min(Math.round(v * mult), priceBuy(def, merchant, cond) - 1 || 1));
+  }
+
+  // ------------------------------------------------------------------
+  // Skill / SPECIAL checks (dialogue, terminals, scripted events)
+  // ------------------------------------------------------------------
+  /** chk: {skill, value} | {special, value}. Returns {success, have, need, chance, label}. */
+  function check(chk, opts) {
+    opts = opts || {};
+    if (!chk) return { success: true, have: 0, need: 0, chance: 1, label: '' };
+    const d = recalc();
+    if (chk.special) {
+      const k = chk.special.length === 1 ? chk.special.toUpperCase() : Object.keys(SPECIAL_INFO).find((x) => SPECIAL_INFO[x].name.toLowerCase() === String(chk.special).toLowerCase());
+      const have = d.special[k] || 0, need = chk.value || 0;
+      return { success: have >= need, have, need, chance: have >= need ? 1 : 0, label: '[' + (SPECIAL_INFO[k] ? SPECIAL_INFO[k].name : chk.special) + ' ' + need + ']' };
+    }
+    const sk = chk.skill;
+    const have = d.skills[sk] || 0, need = chk.value || 0;
+    const name = SKILL_INFO[sk] ? SKILL_INFO[sk].name : sk;
+    if (opts.random && (sk === 'speech' || sk === 'barter')) { // FO3 percentage style
+      const chance = U.clamp(need > 0 ? have / need : 1, 0.02, 1);
+      const success = Math.random() < chance;
+      return { success, have, need, chance, label: '[' + name + ' ' + Math.round(chance * 100) + '%]' };
+    }
+    return { success: have >= need, have, need, chance: have >= need ? 1 : 0, label: '[' + name + ' ' + need + ']' };
+  }
+
+  // ------------------------------------------------------------------
+  // Sleep & doctors
+  // ------------------------------------------------------------------
+  function sleep(hours, opts) {
+    opts = opts || {};
+    hours = U.clamp(hours || 8, 1, 24);
+    const P = G.player;
+    passHours(hours, true);
+    if (P) { P.hp = P.maxHp = maxHp(); P.ap = maxAp(); }
+    healLimbs(100);
+    if ((opts.owned !== false || recalc().M.deepSleep) && hours >= 6) {
+      addEffect({ id: 'well_rested', name: 'Well Rested', kind: 'rest', duration: 16 * 60, mods: { xpMult: 0.1 }, desc: 'XP +10%' });
+      G.notify('You feel well rested.', { kind: 'effect' });
+    }
+    G.events.emit('slept', hours);
+    return true;
+  }
+  /**
+   * Pass game time (sleeping / waiting): advances the clock through G.atmos.advanceHours (weather,
+   * hourChanged/dayChanged events) and fast-forwards chem/food/buff timers and addictions by the
+   * equivalent world-seconds, so an 8-hour sleep really outlasts a 60-second Jet.
+   */
+  function passHours(hours, sleeping) {
+    hours = Math.max(0, Number(hours) || 0);
+    if (!hours) return;
+    growNeeds(hours, !!sleeping);
+    let viaAtmos = false;
+    try { if (!G.isStub('atmos') && typeof G.atmos.advanceHours === 'function') { G.atmos.advanceHours(hours); viaAtmos = true; } } catch (e) { G.reportError('rpg:advanceHours', e); }
+    if (!viaAtmos) {
+      let h = (G.time.hour || 0) + hours;
+      while (h >= 24) { h -= 24; G.time.day = (G.time.day || 1) + 1; G.events.emit('dayChanged', G.time.day); }
+      G.time.hour = h; G.events.emit('hourChanged', h);
+    }
+    const mps = (G.time && G.time.minutesPerSecond) || 0.5;       // game minutes per world second
+    updateEffects(hours * 60 / mps);
+    checkRadTier();
+    updateAddictions();
+    dirty = true;
+  }
+  // ------------------------------------------------------------------
+  // Hardcore needs (New Vegas Hardcore mode)
+  // ------------------------------------------------------------------
+  const NEED_KEYS = ['food', 'water', 'sleep'];
+  const NEEDS = {
+    food: { perHour: 12, tiers: [null,
+      { at: 200, name: 'Minor Starvation', mods: { special: { A: -1 } } },
+      { at: 400, name: 'Advanced Starvation', mods: { special: { A: -2, S: -1 } } },
+      { at: 600, name: 'Severe Starvation', mods: { special: { A: -2, S: -2, E: -1 } } },
+      { at: 800, name: 'Deadly Starvation', mods: { special: { A: -3, S: -3, E: -2 } } }] },
+    water: { perHour: 20, tiers: [null,
+      { at: 200, name: 'Minor Dehydration', mods: { special: { P: -1 } } },
+      { at: 400, name: 'Advanced Dehydration', mods: { special: { P: -2, E: -1 } } },
+      { at: 600, name: 'Severe Dehydration', mods: { special: { P: -2, E: -2, S: -1 } } },
+      { at: 800, name: 'Deadly Dehydration', mods: { special: { P: -3, E: -3, S: -2 } } }] },
+    sleep: { perHour: 16, tiers: [null,
+      { at: 200, name: 'Minor Sleep Deprivation', mods: { special: { I: -1 } } },
+      { at: 400, name: 'Advanced Sleep Deprivation', mods: { special: { I: -2, C: -1 } } },
+      { at: 600, name: 'Severe Sleep Deprivation', mods: { special: { I: -2, C: -2, A: -1 } } },
+      { at: 800, name: 'Deadly Sleep Deprivation', mods: { special: { I: -3, C: -3, A: -2 } } }] },
+  };
+  function needTier(k) {
+    const v = S.needs[k] || 0; const T = NEEDS[k].tiers; let t = 0;
+    for (let i = 1; i < T.length; i++) if (v >= T[i].at) t = i;
+    return t;
+  }
+  const lastNeedTier = { food: 0, water: 0, sleep: 0 };
+  /** Advance hunger/thirst/fatigue by game hours. Sleeping clears fatigue instead of adding to it. */
+  function growNeeds(hours, sleeping) {
+    const N = S.needs; if (!N || !N.on || !(hours > 0)) return;
+    N.food = Math.min(1000, N.food + NEEDS.food.perHour * hours);
+    N.water = Math.min(1000, N.water + NEEDS.water.perHour * hours * (sleeping ? 0.6 : 1));
+    if (sleeping) N.sleep = Math.max(0, N.sleep - hours * 125);
+    else N.sleep = Math.min(1000, N.sleep + NEEDS.sleep.perHour * hours);
+    let changed = false;
+    for (const k of NEED_KEYS) {
+      const t = needTier(k);
+      if (t !== lastNeedTier[k]) {
+        if (t > lastNeedTier[k]) G.notify('You are suffering from ' + NEEDS[k].tiers[t].name.toLowerCase() + '.', { kind: 'need', need: k, tier: t });
+        lastNeedTier[k] = t; changed = true;
+      }
+      if (N[k] >= 1000 && G.player && G.player.alive && G.player.die) G.player.die({ type: k === 'food' ? 'starvation' : k === 'water' ? 'dehydration' : 'exhaustion' });
+    }
+    if (changed) { dirty = true; G.events.emit('effectsChanged'); }
+  }
+  /** Per-frame hook: dt world-seconds → game hours. */
+  function updateNeeds(dt) {
+    if (!S.needs || !S.needs.on || !(dt > 0)) return;
+    growNeeds(dt * ((G.time && G.time.minutesPerSecond) || 0.5) / 60, false);
+  }
+  function setHardcore(on) {
+    S.needs = S.needs || { on: false, food: 0, water: 0, sleep: 0 };
+    S.needs.on = !!on; dirty = true; G.events.emit('effectsChanged');
+    try { if (G.inventory && G.inventory._invalidateWeight) G.inventory._invalidateWeight(); } catch (e) { /* ignore */ }
+    return S.needs.on;
+  }
+
+  /** Doctor services. what: {hp, rads, limbs, addictions} (all true by default). */
+  function doctorHeal(what) {
+    what = what || { hp: true, rads: true, limbs: true, addictions: true };
+    const P = G.player;
+    if (what.hp && P) P.hp = P.maxHp;
+    if (what.rads && P) { P.rads = 0; G.events.emit('radsChanged', 0, 0); }
+    if (what.limbs) healLimbs(100);
+    if (what.addictions) cureAddictions(false);
+    dirty = true; G.events.emit('effectsChanged');
+  }
+
+  // ------------------------------------------------------------------
+  // Character creation
+  // ------------------------------------------------------------------
+  function setSpecial(obj) {
+    if (!obj) return;
+    for (const k of SPECIAL_KEYS) {
+      const v = obj[k] !== undefined ? obj[k] : obj[SPECIAL_INFO[k].name.toLowerCase()];
+      if (v !== undefined) S.special[k] = U.clamp(Math.round(v), 1, 10);
+    }
+    dirty = true; G.events.emit('specialChanged');
+  }
+  function setSpecialStat(k, v) { if (SPECIAL_KEYS.indexOf(k) < 0) return; S.special[k] = U.clamp(Math.round(v), 1, 10); dirty = true; G.events.emit('specialChanged'); }
+  function tagSkills(arr) {
+    if (!Array.isArray(arr)) return S.tags.slice();
+    const t = [];
+    for (const s of arr) if (SKILL_INFO[s] && t.indexOf(s) < 0) t.push(s);
+    if (t.length) S.tags = t;
+    dirty = true; G.events.emit('skillsChanged');
+    return S.tags.slice();
+  }
+  function addTag(skill) { if (SKILL_INFO[skill] && S.tags.indexOf(skill) < 0) { S.tags.push(skill); dirty = true; G.events.emit('skillsChanged'); return true; } return false; }
+
+  // ------------------------------------------------------------------
+  // Bobbleheads & books
+  // ------------------------------------------------------------------
+  function collectBobblehead(def) {
+    if (typeof def === 'string') def = G.items.get(def) || G.items.get(G.items.bobbleheadId(def));
+    if (!def || !def.bobblehead) return false;
+    const b = def.bobblehead;
+    if (b.special) { S.bobble.special[b.special] = 1; }
+    if (b.skill) { S.bobble.skills[b.skill] = 10; }
+    S.stats.bobbleheads = Object.keys(S.bobble.special).length + Object.keys(S.bobble.skills).length;
+    dirty = true;
+    G.events.emit('bobblehead', def.id);
+    G.events.emit('skillsChanged');
+    G.notify(def.name.replace('Vault-Tec Bobblehead - ', '') + ' bobblehead found! ' + (b.special ? SPECIAL_INFO[b.special].name + ' +1' : SKILL_INFO[b.skill].name + ' +10'), { kind: 'bobblehead', icon: 'bobblehead' });
+    return true;
+  }
+  /**
+   * Skill magazine (NV): a temporary skill boost (+10, doubled by Comprehension) for
+   * def.magazine.duration world-seconds. Re-reading the same title refreshes the timer.
+   */
+  function readMagazine(def) {
+    if (!def || !def.magazine || !SKILL_INFO[def.magazine.skill]) return false;
+    const mg = def.magazine;
+    const bonus = (mg.bonus || 10) * (recalc().M.bookBonus ? 2 : 1);
+    addEffect({ id: 'mag_' + mg.skill, name: def.name, kind: 'buff', duration: mg.duration || 180, mods: { skills: { [mg.skill]: bonus } },
+      desc: SKILL_INFO[mg.skill].name + ' +' + bonus });
+    S.stats.magazinesRead = (S.stats.magazinesRead || 0) + 1;
+    G.notify(def.name + ': ' + SKILL_INFO[mg.skill].name + ' +' + bonus + ' for ' + Math.round((mg.duration || 180) / 60) + ' minutes.', { kind: 'effect' });
+    return true;
+  }
+  function readBook(def) {
+    if (!def || !def.book) return false;
+    const n = 1 + (recalc().M.bookBonus || 0);
+    boostSkill(def.book.skill, n, 'book');
+    S.stats.booksRead++;
+    return true;
+  }
+
+  // ------------------------------------------------------------------
+  // Save / reset
+  // ------------------------------------------------------------------
+  function serialize() {
+    return {
+      special: S.special, tags: S.tags, skillPts: S.skillPts, bookPts: S.bookPts, bobble: S.bobble,
+      level: S.level, xp: S.xp, unspent: S.unspent, perkPicks: S.perkPicks, perks: S.perks, perkChoices: S.perkChoices,
+      karma: S.karma, effects: S.effects, addictions: S.addictions, limbs: S.limbs, radTier: S.radTier,
+      gender: S.gender, difficulty: S.difficulty, stats: S.stats, needs: S.needs,
+    };
+  }
+  function deserialize(d) {
+    S = freshState();
+    if (!d) return;
+    for (const k in d) if (d[k] !== undefined && S.hasOwnProperty(k)) S[k] = d[k];
+    // backfill any fields added after the save was written
+    const f = freshState();
+    for (const k of SKILLS) { if (S.skillPts[k] === undefined) S.skillPts[k] = 0; if (S.bookPts[k] === undefined) S.bookPts[k] = 0; }
+    for (const l of LIMBS) if (S.limbs[l] === undefined) S.limbs[l] = 100;
+    S.needs = Object.assign(f.needs, S.needs || {});
+    for (const k of NEED_KEYS) lastNeedTier[k] = S.needs.on ? needTier(k) : 0;
+    S.stats = Object.assign(f.stats, S.stats || {});
+    S.bobble = S.bobble || { special: {}, skills: {} };
+    dirty = true;
+  }
+  function reset() { S = freshState(); dirty = true; for (const k of NEED_KEYS) lastNeedTier[k] = 0; }
+
+  // ------------------------------------------------------------------
+  // Public namespace
+  // ------------------------------------------------------------------
+  const R = {
+    SPECIAL_KEYS, SPECIAL_INFO, SKILLS, SKILL_INFO, LIMBS, LIMB_NAMES, LEVEL_CAP, RAD_TIERS, KILL_XP, INNOCENT_FACTIONS,
+    perks: PERKS, definePerk, perkDef: (id) => PERK_MAP.get(id) || null, perkName, perkDesc,
+    // SPECIAL & skills
+    getSpecial: (k) => recalc().special[k] || 0,
+    baseSpecial: (k) => (k ? S.special[k] : Object.assign({}, S.special)),
+    setSpecial, setSpecialStat, tagSkills, addTag, isTagged: (s) => S.tags.indexOf(s) >= 0,
+    skill: (id) => recalc().skills[id] || 0,
+    skillBase, skillName: (id) => (SKILL_INFO[id] ? SKILL_INFO[id].name : id),
+    addSkillPoints, boostSkill, unspentSkillPoints: () => S.unspent,
+    // XP / level
+    xpForLevel, addXP, skillPointsPerLevel, xpToNext: () => (S.level >= LEVEL_CAP ? 0 : xpForLevel(S.level + 1) - S.xp),
+    levelProgress: () => (S.level >= LEVEL_CAP ? 1 : (S.xp - xpForLevel(S.level)) / (xpForLevel(S.level + 1) - xpForLevel(S.level))),
+    // perks
+    perkRank, hasPerk, perksAvailable, perksEligible, perkList, takePerk, grantPerk, playerPerks, perkEligibility, declareHook,
+    hasHook: (n) => !!HOOKS[n],
+    perkPoints: () => S.perkPicks, pendingPerks: () => S.perkPicks,
+    // derived
+    maxHp, maxAp, carryWeight, critChance, critChanceBonus, critDamageMult, apRegen, speedMult, radResist,
+    getDR, getDT, isOverencumbered, inventoryWeight, isStealthed, sneakBonus, sneakAttackMult, mysteriousStrangerChance,
+    lootCapsMult, lootAmmoMult, hackAttemptsBonus, wearingPowerArmor,
+    damageMult, skillDamageMult, perkDamageMult, meleeDamageBonus, spreadMult, accuracyMult: spreadMult, vatsHitBonus, vatsAPCostMult, isOneHanded,
+    combatMods, classifyTarget, targetDamageBonus, COMBAT_SELF_APPLIES,
+    /** Options (not saved): addictionsExpire — Fallout 4-style 7-day addiction burn-out (off = FO3/NV). */
+    options: { addictionsExpire: false, levelUpHeal: true },
+    // karma
+    addKarma, karmaTitle, karmaLabel, karmaTier,
+    // effects / radiation / limbs
+    addEffect, removeEffect, activeEffects, applyAid, cureAddictions, modsSummary,
+    radTier, radSicknessName: () => RAD_TIERS[radTier()].name, addRadsDirect, removeRads,
+    damageLimb, healLimbs, limbCondition, isCrippled,
+    mitigate,
+    // barter / checks / services
+    itemValue, priceBuy, priceSell, barterFactor, vendorAttitude, check, sleep, doctorHeal, wait: passHours, passHours,
+    collectBobblehead, readBook, readMagazine, hasBobblehead: (id) => { const d = G.items.get(id); return !!(d && d.bobblehead && (d.bobblehead.special ? S.bobble.special[d.bobblehead.special] : S.bobble.skills[d.bobblehead.skill])); },
+    // aliases used by other modules
+    vatsApMult: (info) => { const m = vatsAPCostMult(); return m; },
+    cureLimbs: () => healLimbs(100),
+    getTags: () => S.tags.slice(),
+    /** Permanent +n to a skill from a non-book source (bobblehead fallbacks, quest rewards). */
+    addSkillBonus: (skillId, n) => boostSkill(skillId, n === undefined ? 10 : n, 'silent'),
+    getLevel: () => S.level,
+    getXP: () => S.xp,
+    getKarma: () => S.karma,
+    /** Generic modifier query, e.g. G.rpg.mod('animalFriend'), mod('cannibal'), mod('lightStep'). */
+    mod: (name) => recalc().M[name] || 0,
+    // misc state
+    setDifficulty: (d) => { if (DIFFICULTY[d]) S.difficulty = d; }, getDifficulty: () => S.difficulty,
+    setGender: (g) => { S.gender = g === 'f' || g === 'female' ? 'f' : 'm'; dirty = true; },
+    stat: (k) => S.stats[k], stats: () => S.stats, bumpStat: (k, n) => { S.stats[k] = (S.stats[k] || 0) + (n === undefined ? 1 : n); },
+    // internals (for the rest of the rpg module)
+    _recalc: recalc, _dirty: markDirty, _state: () => S, _serialize: serialize, _deserialize: deserialize, _reset: reset,
+    _updateEffects: updateEffects, _checkRadTier: checkRadTier, _updateAddictions: updateAddictions, _checkLevelUp: checkLevelUp,
+    _onActorDamaged: onActorDamaged, _updateNeeds: updateNeeds,
+    setHardcore, isHardcore: () => !!(S.needs && S.needs.on), needs: () => Object.assign({}, S.needs), needTier,
+  };
+  // Live read-only properties required by the contract
+  Object.defineProperties(R, {
+    level: { get: () => S.level, enumerable: true },
+    xp: { get: () => S.xp, enumerable: true },
+    karma: { get: () => S.karma, enumerable: true },
+    special: { get: () => Object.assign({}, recalc().special), enumerable: true },
+    specialBase: { get: () => Object.assign({}, S.special), enumerable: true },
+    skills: { get: () => Object.assign({}, recalc().skills), enumerable: true },
+    tags: { get: () => S.tags.slice(), enumerable: true },
+    tagged: { get: () => S.tags.slice(), enumerable: false },
+    effects: { get: () => S.effects, enumerable: true },
+    addictions: { get: () => Object.assign({}, S.addictions), enumerable: true },
+    limbs: { get: () => Object.assign({}, S.limbs), enumerable: true },
+    gender: { get: () => S.gender, enumerable: true },
+    difficulty: { get: () => S.difficulty, enumerable: true },
+  });
+  G.rpg = R;
+})();
+

@@ -1,0 +1,1160 @@
+/* src/quests/36_companions.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 36: HUMAN COMPANIONS
+ *   FO3/NV-style followers, one at a time (Borough the dog is extra):
+ *     • "Gentleman" Jim Malone — ghoul prizefighter-turned-mercenary at the
+ *       Neon's Rad-Lounge. Hired for caps; walks out on a Very Evil boss.
+ *       Personal quest "The Rematch" (Madison Square Garden).
+ *     • Ambrose Tull — expelled Brotherhood scribe in Grand Central's
+ *       waiting room. Needs Good karma; +Science/+Repair and field repairs.
+ *       Personal quest "Chapter and Verse" (the Guggenheim's Holo-Press).
+ *     • Rook — raider defector camped under the Washington Square Arch.
+ *       Needs Evil karma; +Lockpick/+Sneak. Personal quest "Severance
+ *       Package" (her stash at the Woolworth raider den).
+ *   Commands (FO3 companion wheel as dialogue): follow / wait, keep distance
+ *   near / far, melee / ranged, aggressive / passive, trade items (their own
+ *   inventory via the container UI; they wield the best weapon they carry),
+ *   part ways. Location + combat + karma-reaction barks, karma-threshold
+ *   farewell scenes, and epilogue slides (L.companionSlides for 60_finale).
+ *   All state lives in quest flags (comp_<key>) so it rides the quests save.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+
+  const KEYS = ['malone', 'tull', 'rook'];
+  const KID_SPOT = { x: -82, z: -5 };          // 34th Street, west of 7th Avenue: the ruins of the Garden
+  const now = () => (G.time ? G.time.elapsed : 0);
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const tier = () => L.karmaTier();             // 0 Very Good … 4 Very Evil
+
+  // ------------------------------------------------------------------
+  // Per-companion state (persistent, inside quest flags)
+  // ------------------------------------------------------------------
+  function st(k) {
+    let s = L.flag('comp_' + k);
+    if (!s || typeof s !== 'object') {
+      s = { met: false, rec: false, hired: false, wait: null, far: false, melee: false, passive: false, inv: null,
+        left: false, dismissed: false, hostile: false, paid: 0, n: 0, lastDay: -1 };
+      L.setFlag('comp_' + k, s);
+    }
+    return s;
+  }
+  const cfg = {};                      // roster, filled below
+  const actor = (k) => L.npc(cfg[k].id);
+  /** The human companion currently hired (following or waiting), or null. */
+  function current() { for (const k of KEYS) { const s = st(k); if (s.rec && !s.hostile) return k; } return null; }
+  function following(k) { const s = st(k); const a = actor(k); return s.rec && !s.wait && a && !a.dead ? a : null; }
+  /** Response ids that change after every command, so orders never show as "already said". */
+  const cid = (k, name) => name + '#' + (st(k).n || 0);
+  const bump = (k) => { const s = st(k); s.n = (s.n || 0) + 1; };
+
+  // ------------------------------------------------------------------
+  // Inventory & weapons
+  // ------------------------------------------------------------------
+  function resolveInv(list) {
+    const out = [];
+    for (const e of list) { const id = L.item(e[0]); if (id) out.push([id, e[1]]); }
+    return out;
+  }
+  function ensureInv(k) {
+    const s = st(k);
+    if (!Array.isArray(s.inv)) s.inv = resolveInv(cfg[k].startInv);
+    return s.inv;
+  }
+  function weaponInfo(id) {
+    if (!id || id === 'caps' || G.isStub('items') || !G.items.get) return null;
+    const d = G.items.get(id);
+    if (!d || d.type !== 'weapon') return null;
+    let w = d.weapon || null;
+    if (!w && !G.isStub('weapons') && G.weapons.getDef) { try { const wd = G.weapons.getDef(id); w = wd && (wd.weapon || wd); } catch (e) { w = null; } }
+    if (!w) return null;
+    if (w.skill === 'explosives' || /grenade|mine/.test(id)) return null;   // thrown things stay in the pack
+    const melee = !!(w.melee || w.skill === 'melee_weapons' || w.skill === 'unarmed' || w.reloadType === 'melee');
+    const dps = (w.damage || 5) * Math.max(0.3, Math.min(6, w.rof || 1)) * (w.pellets || 1);
+    return { id, melee, score: dps + (d.value || 0) * 0.02 };
+  }
+  /** FO3: companions use the best weapon they carry, of the preferred kind if they have one. */
+  function ensureWeapon(k, force) {
+    const a = actor(k); const s = st(k);
+    if (!a || a.dead || typeof a.equipWeapon !== 'function') return;
+    const ws = ensureInv(k).map((e) => weaponInfo(e[0])).filter(Boolean);
+    if (!ws.length) {
+      // everything was taken off them: fight with fists (FO3), don't keep swinging a gun they no longer carry
+      if (a.weaponId) { try { a.equipWeapon(null); } catch (e) { G.reportError('quests:companionWeapon', e); } }
+      return;
+    }
+    const pref = ws.filter((w) => w.melee === !!s.melee);
+    const pool = pref.length ? pref : ws;
+    pool.sort((x, y) => y.score - x.score);
+    const best = pool[0].id;
+    if (force || a.weaponId !== best) { try { a.equipWeapon(best); } catch (e) { G.reportError('quests:companionWeapon', e); } }
+  }
+  function openInventory(k) {
+    const a = actor(k); const s = st(k); const c0 = cfg[k];
+    if (!a || a.dead) return;
+    if (G.isStub('containers') || !G.containers.create) { L.notify(c0.short + ' shrugs. (No container system.)'); return; }
+    const cid2 = 'q_comp_inv_' + k;
+    let c = G.containers.get ? G.containers.get(cid2) : null;
+    if (!c) c = G.containers.create({ id: cid2, name: c0.short, items: [], model: false, interact: false, owner: null });
+    if (!c) return;
+    // The quest flags are authoritative: refill from them every time.
+    const items = new Map(), conds = new Map();
+    for (const e of ensureInv(k)) { if (e[1] > 0) { items.set(e[0], (items.get(e[0]) || 0) + e[1]); if (Array.isArray(e[2]) && e[2].length) conds.set(e[0], e[2].slice()); } }
+    c.items = items; c.conds = conds; c.owner = null; c.locked = 0; c.playerStored = true;
+    c.onClose = function () {
+      const before = a.weaponId;
+      s.inv = [];
+      for (const [id, n] of c.items) if (n > 0) s.inv.push(c.conds.has(id) ? [id, n, c.conds.get(id).slice()] : [id, n]);
+      a.inventory = s.inv.map((e) => [e[0], e[1]]);
+      ensureWeapon(k);
+      if (a.weaponId && a.weaponId !== before) {
+        const wn = (G.items.get(a.weaponId) || {}).name || 'this';
+        L.later(0.4, () => bark(k, c0.newWeapon(wn), 4, true));
+      }
+    };
+    if (G.ui && typeof G.ui.openContainer === 'function' && !G.isStub('ui')) G.ui.openContainer(c);
+    else if (G.containers.open) G.containers.open(c);
+  }
+
+  // ------------------------------------------------------------------
+  // Perks (companion bonuses through rpg's effect system)
+  // ------------------------------------------------------------------
+  const perkOn = {};
+  function syncPerk(k) {
+    if (G.isStub('rpg') || !G.rpg.addEffect) return;
+    const s = st(k); const want = s.rec && !s.hostile;
+    const p = cfg[k].perk();
+    const sig = want ? p.name + JSON.stringify(p.mods) : '';
+    if (perkOn[k] === sig) return;
+    try { G.rpg.removeEffect('comp_perk_' + k); } catch (e) { /* */ }
+    if (want) {
+      try { G.rpg.addEffect({ id: 'comp_perk_' + k, name: p.name, kind: 'buff', duration: 0, mods: p.mods, source: 'companion', desc: p.desc }); } catch (e) { G.reportError('quests:companionPerk', e); }
+    }
+    perkOn[k] = sig;
+  }
+
+  // ------------------------------------------------------------------
+  // Commands
+  // ------------------------------------------------------------------
+  function homeOf(k) {
+    const c0 = cfg[k];
+    if (!c0._home) c0._home = c0.home() || { x: 0, y: 0, z: 0 };
+    return c0._home;
+  }
+  function setGuard(a, x, z, r) {
+    a.aiMode = 'guard';
+    a.home = { x, z, r: r || 2 };
+    try { a.follow(null); } catch (e) { /* */ }
+  }
+  function startFollow(k) {
+    const a = actor(k); const s = st(k);
+    s.wait = null;
+    if (!a || a.dead) return;
+    a.faction = 'player'; a.essential = true;
+    try { if (a.setHostile) a.setHostile(false); } catch (e) { /* */ }
+    a.aiMode = 'follow';
+    try { a.follow('player'); } catch (e) { G.reportError('quests:follow', e); }
+  }
+  function recruit(k, how) {
+    const s = st(k); const c0 = cfg[k];
+    const other = current();
+    if (other && other !== k) return false;
+    s.rec = true; s.hired = true; s.met = true; s.left = false; s.dismissed = false; s.wait = null; s.how = how || s.how || 'hired';
+    s.hiredAt = G.time ? G.time.day : 1;
+    startFollow(k);
+    ensureWeapon(k, true);
+    syncPerk(k);
+    setBarks(k);
+    bump(k);
+    L.notify(c0.short + ' has joined you.');
+    L.hint('companions', 'Talk to your companion to give orders: wait or follow, keep your distance, switch weapons, change combat stance, or trade items. Only one hired companion can travel with you at a time.', 1.2);
+    return true;
+  }
+  function doWait(k) {
+    const a = actor(k); const s = st(k); bump(k);
+    if (!a) return;
+    s.wait = { x: +a.pos.x.toFixed(2), y: +a.pos.y.toFixed(2), z: +a.pos.z.toFixed(2) };
+    setGuard(a, s.wait.x, s.wait.z, 1.5);
+  }
+  function doFollow(k) { bump(k); startFollow(k); }
+  /** Part ways (dismiss or karma walk-out): they head home and keep their gear. */
+  function release(k, why) {
+    const a = actor(k); const s = st(k); const h = homeOf(k);
+    s.rec = false; s.wait = null; bump(k);
+    if (why === 'karma') { s.left = true; s.leftTier = tier(); } else s.dismissed = true;
+    if (a && !a.dead) {
+      a.faction = cfg[k].faction;
+      setGuard(a, h.x, h.z, 2);
+      try { if (a.moveTo) a.moveTo(h.x, h.z); } catch (e) { /* */ }
+      a._compHomeT = now();
+    }
+    syncPerk(k);
+    setBarks(k);
+  }
+  function setBarks(k) {
+    const a = actor(k); const c0 = cfg[k];
+    if (a) a.customBarks = { idle: st(k).rec ? c0.idle : c0.ambient, greet: c0.greet, alert: c0.combat, kill: c0.kill };
+  }
+
+  // ------------------------------------------------------------------
+  // Barks
+  // ------------------------------------------------------------------
+  let barkGate = 0;                      // one companion line every few seconds at most
+  function bark(k, text, dur, force) {
+    if (!text) return false;
+    const a = actor(k); if (!a || a.dead) return false;
+    if (!force && now() < barkGate) return false;
+    if (a.distToPlayer && a.distToPlayer() > 30) return false;
+    barkGate = now() + 6;
+    try { a.say(text, dur || 4.5); } catch (e) { return false; }
+    return true;
+  }
+
+  // ------------------------------------------------------------------
+  // THE ROSTER
+  // ------------------------------------------------------------------
+  cfg.malone = {
+    id: 'comp_malone', dlg: 'dlg_comp_malone', short: 'Malone', name: '"Gentleman" Jim Malone', faction: 'ghouls', quest: 'sq_malone',
+    look: { type: 'human', ghoul: true, outfit: 'merchant', gender: 'm', hat: 'fedora', voice: 'ghoul', level: 9, hp: 260, dr: 12 },
+    startInv: [[['combat_shotgun', 'sawed_off_shotgun', 'pistol_10mm'], 1], [['brass_knuckles', 'power_fist', 'lead_pipe'], 1], [['ammo_12ga'], 24], [['stimpak'], 2], [['whiskey', 'beer'], 1]],
+    home() {
+      const b = L.anchor('times_square', ['bar_patron', 'bar'], { x: -35.5, z: -301.9 });
+      return L.freeSpot(b.x - 1.6, b.z + 2.4, b.y, { maxR: 5 });
+    },
+    canHire: () => tier() <= 3,
+    leaves: () => tier() >= 4,
+    perk() {
+      const champ = !!L.flag('malone_belt_given');
+      return champ ? { name: 'Companion: The Undisputed', mods: { skills: { unarmed: 15, melee_weapons: 10 }, dr: 5 }, desc: 'Unarmed +15, Melee Weapons +10, DR +5' }
+        : { name: 'Companion: Corner Man', mods: { skills: { unarmed: 10, melee_weapons: 5 } }, desc: 'Unarmed +10, Melee Weapons +5' };
+    },
+    ambient: ['Bartender. Another. The brown one.', 'Two hundred years and my knees still hurt. Radiation fixes everything but knees.', 'For hire. Ask nice.'],
+    idle: ['You hear that? No? Good. Neither do I.', 'Two hundred years and my knees still hurt. Radiation fixes everything but knees.',
+      'I had a manager once. Sal Tortelli. Took thirty percent. You take nothing, boss. You\'re a better manager already.',
+      'Keep your chin down and your hands up. Applies to most things.', 'Smoothskins sweat. I used to sweat. I miss it, if you can believe that.'],
+    combat: ['Ding ding, round one.', 'Let\'s dance.', 'Here comes the undercard!', 'Hands up, boss!', 'I\'ll take the big one.'],
+    kill: ['Stay down.', 'Ten count. Don\'t bother getting up.', 'Split decision. Mostly split.', 'And the winner is... still me.'],
+    hurt: ['Boss, you\'re bleeding like a cut man\'s nightmare. Patch up!', 'You\'re wobbling! Stim, now!'],
+    good: ['Huh. Nice. Don\'t let it go to your head.', 'Soft touch. I respect it. Don\'t tell anybody.'],
+    bad: ['Ugly work, boss. I\'ve done uglier. Not much uglier.', 'That one\'s gonna follow you. Trust me.'],
+    newWeapon: (n) => 'A ' + n + '? Heh. I\'ll make it look good.',
+    wait: ['I\'ll hold the corner.', 'Right here. Like a lamp post.'], follow: ['Lead on, boss.', 'Round two.'],
+    loc: {
+      times_square: 'Home sweet home. Don\'t touch the signs, the Mayor counts them.',
+      grand_central: 'Grand Central. I missed a train here once, 2071. Best thing that ever happened to me. The train went to Philadelphia.',
+      macys: 'Macy\'s. I bought my fight suit here. Wore it to the Garden. Wore it out of the Garden. Wearing it now, practically.',
+      empire_state: 'They say a big green fella lives up top now. I\'d like to see his reach.',
+      radio_city: 'Vinnie called my fights once, pre-war. Different Vinnie. Same voice, somehow.',
+      rockefeller: 'Tin cans. Brotherhood don\'t like ghouls. Brotherhood don\'t like much.',
+      st_patricks: 'Glowing folks in there. They look at me like I\'m a saint. I\'m not. Ask my ex-wife.',
+      chrysler: 'Pretty building. Sniper nest. Everything pretty in this town has a gun in it.',
+      bryant_park: 'Used to do roadwork around this park. Five a.m. Pigeons were the only ones awake. Still are.',
+      nypl: 'Library. I read a book once. Liked it. Never found the second one.',
+      flatiron: 'Flatiron. Good bar in there, if you\'re not particular about what\'s in the glass.',
+      washington_square: 'Chess Charlie still playing? Don\'t bet him. I bet him. I lost a car. I didn\'t own a car.',
+      wall_street: 'Wall Street. Bunch of guys in there beat people for money. Hey, I\'m not judging.',
+      brooklyn_bridge: 'Brooklyn. Fought in Flatbush a couple times. Crowds threw chairs. Good crowds.',
+      battery_park: 'Salt air. Smells like the corner bucket after twelve rounds.',
+      liberty: 'Lady Liberty. My old man came in under her. Said she waved. She didn\'t wave.',
+      central_park: 'The park. Nobody jogs anymore. Everybody runs, though.',
+      un_hq: 'Black helmets. I\'ve fought guys in armour. You go for the joints.',
+    },
+    greet: ['Boss.', 'What\'s the plan?', 'You call it, I swing it.'],
+    farewell: 'Hold up, boss. [He stops, and doesn\'t follow when you keep walking.] I told you my one rule, first night at the bar. I\'ve done ugly work. I don\'t do yours. Whatever you\'re becoming out here, I heard it on the radio three times this week, and I\'m not gonna stand in the corner for it. Keep the change. I\'m going back to the Neon.',
+    farewellReply: '[Let him go.]',
+  };
+
+  cfg.tull = {
+    id: 'comp_tull', dlg: 'dlg_comp_tull', short: 'Tull', name: 'Ambrose Tull', faction: 'settlers', quest: 'sq_tull',
+    look: { type: 'human', outfit: 'lab_coat', gender: 'm', hair: 'balding', beard: 'stubble', skinTone: 'fair', voice: 'settler', level: 7, hp: 170, dr: 6 },
+    startInv: [[['laser_pistol', 'pistol_10mm'], 1], [['combat_knife', 'hunting_knife', 'lead_pipe'], 1], [['ammo_energy_cell', 'ammo_10mm'], 40], [['stimpak'], 2], [['radaway'], 1]],
+    home() {
+      if (L.flag('tull_library')) { const r = libSpot(); return L.freeSpot(r.x + 1.2, r.z + 1.6, r.y, { maxR: 5 }); }
+      const b = L.anchor('grand_central', ['waiting_room', 'lobby'], { x: 240, z: -199 });
+      return L.freeSpot(b.x + 7, b.z + 1.5, b.y, { maxR: 6 });
+    },
+    canHire: () => tier() <= 1,
+    leaves: () => tier() >= 3,
+    perk() {
+      const lib = !!L.flag('tull_library');
+      return lib ? { name: 'Companion: Free Press', mods: { skills: { science: 15, repair: 15, medicine: 5 } }, desc: 'Science +15, Repair +15, Medicine +5' }
+        : { name: 'Companion: Scribe\'s Marginalia', mods: { skills: { science: 10, repair: 10 } }, desc: 'Science +10, Repair +10' };
+    },
+    ambient: ['"...and the filtration membrane shall be..." no. No, that\'s wrong.', 'Page three hundred and twelve. Only nine hundred to go.', 'Please mind the books.'],
+    idle: ['Did you know the city had eleven hundred miles of water main? Had. Past tense. Mostly.', 'I\'m keeping a list of everything we find. Footnoted. Obviously.',
+      'The Codex says knowledge is a weapon. I\'ve always thought it was more of a... blanket.', 'If you see a book, any book, please do not burn it for warmth. Burn me instead. I\'m less rare.',
+      'Our boots are wearing unevenly. You favour your left side. Just an observation.'],
+    combat: ['Oh dear. Here we go.', 'Hostiles! I\'ll — I\'ll cover you!', 'Right. Right. Safety off. Safety — where is the safety?', 'For the record, I object to this!'],
+    kill: ['I... got one. I got one! That\'s going in the notes.', 'Neutralised. I hate that word. It\'s accurate.', 'Sorry. Sorry! Not really.'],
+    hurt: ['You\'re badly hurt — use a stimpak, the anatomy is not optional!', 'That\'s arterial! Stimpak! Now!'],
+    good: ['That was kind. I\'ll write that down.', 'You know, the Chapter would have called that "inefficient." I call it decent.'],
+    bad: ['I... don\'t think that was necessary.', 'I\'m writing that down too. I write everything down. I wish I didn\'t, sometimes.'],
+    newWeapon: (n) => 'A ' + n + '. I\'ve read the manual for this. Not the whole manual.',
+    wait: ['I\'ll be right here. Reading.', 'Of course. I\'ll catalogue the ceiling.'], follow: ['Coming! Coming.', 'Right behind you. Well — slightly to the left.'],
+    loc: {
+      grand_central: 'Grand Central. Forty-one people alive here because of one photocopied manual. I would do it again.',
+      rockefeller: 'Chapter Rockefeller. Please don\'t make me go inside. Stroud does a thing with his jaw when he sees me.',
+      nypl: 'The Library. Two lions: Patience and Fortitude. I\'ve needed both since the day they expelled me.',
+      guggenheim: 'The Guggenheim. A spiral. Frank Lloyd Wright wanted you to see everything in one continuous thought. Also, robots.',
+      met: 'The Metropolitan. There\'s a robot in there that cares about art more than the Brotherhood cares about people.',
+      times_square: 'The Neon. Ghouls kept the lights on for two centuries. Tell me again which of us are the monsters.',
+      empire_state: 'Structural steel, 1931. Built in thirteen months. We can\'t build a fence in thirteen months.',
+      chrysler: 'Art deco. Stainless-steel eagles. They were built to look at the future. It looked back.',
+      un_hq: 'The United Nations. A building full of people agreeing to talk instead of shoot. Look what\'s in it now.',
+      st_patricks: 'The Children of Atom. Their hymnals are riveting. Heretical, but riveting.',
+      radio_city: 'A working transmitter and a man who uses it to tell the truth. Vinnie is the closest thing this city has to a scribe.',
+      city_hall: 'City Hall. The terminals in there have tax records going back to 2031. I\'m told that\'s not exciting.',
+      brooklyn_bridge: 'Roebling\'s bridge. Wire rope, spun on site. Every strand still sings when the wind comes up.',
+      liberty: 'Liberty Island. Whatever is in that torch, we should understand it before anybody uses it.',
+      wall_street: 'The Exchange. They traded promises there. Now they trade bullets. At least the bullets are real.',
+      central_park: 'Eight hundred acres, designed so the poor had somewhere to breathe. Olmsted would like it now. Fewer carriages.',
+      flatiron: 'Triangular floorplan. Hell to furnish. Lovely to look at.',
+    },
+    greet: ['Yes? Oh — yes, of course.', 'I was just annotating. Go on.', 'Ready when you are. Mostly.'],
+    farewell: '[Tull closes his notebook, carefully, the way he does everything.] I need to stop here. I\'ve been writing down what we do, you see. All of it. And last night I read it back. [He swallows.] I don\'t want to be the footnote to that. I\'m going back to Grand Central. If you ever... if the radio ever has something kind to say about you again, I\'ll be on my bench.',
+    farewellReply: '[Let him go.]',
+  };
+
+  cfg.rook = {
+    id: 'comp_rook', dlg: 'dlg_comp_rook', short: 'Rook', name: 'Rook', faction: 'settlers', quest: 'sq_rook',
+    look: { type: 'human', outfit: 'raider', gender: 'f', hair: 'mohawk', hairColor: '#b8342a', skinTone: 'tan', voice: 'raider', level: 8, hp: 200, dr: 8 },
+    startInv: [[['hunting_rifle', 'pipe_rifle', 'pistol_32'], 1], [['switchblade', 'combat_knife', 'lead_pipe'], 1], [['ammo_308', 'ammo_32'], 24], [['jet'], 1], [['stimpak'], 1]],
+    home() {
+      const b = L.anchor('washington_square', ['arch', 'entrance'], { x: 80, z: 415 });
+      return L.freeSpot(b.x + 3.2, b.z + 1.5, b.y, { maxR: 6 });
+    },
+    canHire: () => tier() >= 3,
+    leaves: () => tier() <= 1,
+    perk() {
+      const trust = !!L.flag('rook_paid');
+      return trust ? { name: 'Companion: Honour Among Thieves', mods: { skills: { lockpick: 15, sneak: 15 }, crit: 3 }, desc: 'Lockpick +15, Sneak +15, Crit +3%' }
+        : { name: 'Companion: Street Smarts', mods: { skills: { lockpick: 10, sneak: 10 } }, desc: 'Lockpick +10, Sneak +10' };
+    },
+    ambient: ['Walk on, jumpsuit.', 'Charlie! Rematch later. Bring caps.', 'Sharp enough to shave a mole rat. Want to see?'],
+    idle: ['You ever notice how nobody in this city looks up? Easiest marks in the world.', 'I could pick that lock with my teeth. Did it once. Don\'t recommend it.',
+      'Gutter used to say I had no loyalty. I\'ve got loyalty. It\'s just expensive.', 'Stop humming. You hum when you\'re nervous. Marks can hear it.',
+      'If we see a Nuka machine, dibs.'],
+    combat: ['Fresh meat!', 'Let\'s get messy.', 'Oh, I\'ve been waiting for this.', 'Flank \'em! Or don\'t. I\'m flanking.'],
+    kill: ['Called it.', 'Hah! Dibs on the boots.', 'Should\'ve run.', 'Night night.'],
+    hurt: ['You\'re leaking, boss. Jab a stim before you embarrass me.', 'Don\'t you dare die, I\'m not carrying you.'],
+    good: ['Ugh. Were you raised by nuns?', 'You\'re going soft. I can smell it.'],
+    bad: ['Now THAT\'S how it\'s done.', 'Heh. Cold. I like cold.'],
+    newWeapon: (n) => 'Ooh, a ' + n + '. Somebody\'s gonna regret meeting this.',
+    wait: ['Fine. I\'ll count pigeons.', 'Don\'t take too long, I get bored. Bored gets bloody.'], follow: ['Finally.', 'Let\'s go make some enemies.'],
+    loc: {
+      washington_square: 'Home, such as it is. Charlie cheats at chess, by the way. I cheat better.',
+      woolworth: 'Woolworth. Gutter\'s place. Smell that? That\'s six months of my money, rotting.',
+      wall_street: 'Betty\'s crew. We don\'t go through the front. We never go through the front.',
+      brooklyn_bridge: 'Tollbooth Tony. I dated him for a week. Worst week of his life.',
+      grand_central: 'Market town. Lots of pockets. Relax, I\'m not gonna. Probably.',
+      times_square: 'Ghouls. They don\'t scare me. They don\'t steal, either, which is kind of suspicious.',
+      rockefeller: 'Tin cans. Stay close. They shoot raiders on sight and I still look like one.',
+      chrysler: 'Dolores used to run with us, back when. Best shot on the island. Worst jokes.',
+      city_hall: 'City Hall. Robots still write parking tickets in there. I have forty.',
+      flatiron: 'Trading post. I\'m banned from three stalls. Don\'t ask which.',
+      battery_park: 'Water. Lobster things. Hate it.',
+      empire_state: 'Big green guys. Big green guys don\'t pay. Why are we here?',
+      liberty: 'The Statue. When I was a kid I thought she was holding a big stick of jet.',
+      st_patricks: 'Atom freaks. I robbed their collection plate once. It was all glowing rocks.',
+      central_park: 'Too many trees. Anything could be in there. Mostly something is.',
+      un_hq: 'Black helmets. Those guys scare ME. Think about that.',
+    },
+    greet: ['What.', 'Yeah?', 'Make it quick, I\'m bored.'],
+    farewell: '[Rook stops dead in the street and spits.] Nope. I\'m done. I signed up with somebody who got their hands dirty, and now you\'re out there helping old ladies across the rubble. You\'re a SAINT now. Saints get people killed. [She shoulders her rifle.] I\'m going back to the Arch. Don\'t follow me, and don\'t come looking unless you remember who you are.',
+    farewellReply: '[Let her go.]',
+  };
+
+  // Grand Central free reading room (Tull's quest outcome) — a table + chairs + lamp.
+  function libSpot() {
+    const b = L.anchor('grand_central', ['waiting_room', 'lobby'], { x: 240, z: -199 });
+    return L.freeSpot(b.x + 9, b.z + 4, b.y, { maxR: 7 });
+  }
+  function dressLibrary() {
+    if (L.world.tullLibrary) return;
+    const p = libSpot(); if (!p) return;
+    L.world.tullLibrary = true;
+    L.dyn(L.prop('table', { x: p.x, y: p.y, z: p.z, yaw: 0 }));
+    L.dyn(L.prop('chair', { x: p.x - 1.1, y: p.y, z: p.z, yaw: Math.PI / 2 }));
+    L.dyn(L.prop('chair', { x: p.x + 1.1, y: p.y, z: p.z, yaw: -Math.PI / 2 }));
+    L.dyn(L.prop('lamp', { x: p.x, y: p.y + 0.8, z: p.z + 0.2, kind: 'desk' }));
+    L.dyn(L.prop('shelf', { x: p.x, y: p.y, z: p.z - 1.8, yaw: 0 }));
+  }
+  function dressRookCamp() {
+    if (L.world.rookCamp) return;
+    const h = homeOf('rook'); if (!h) return;
+    L.world.rookCamp = true;
+    L.dyn(L.prop('mattress', { x: h.x + 1.6, y: h.y, z: h.z + 0.8, yaw: 0.4 }));
+    L.dyn(L.prop('campfire', { x: h.x - 1.4, y: h.y, z: h.z + 1.2 }));
+    L.dyn(L.prop('crate', { x: h.x + 0.2, y: h.y, z: h.z - 1.2, kind: 'army' }));
+  }
+
+  // ------------------------------------------------------------------
+  // Items & quests
+  // ------------------------------------------------------------------
+  L.hook('init', function () {
+    const items = [
+      { id: 'q_garden_belt', type: 'misc', quest: true, name: 'Garden Championship Belt', weight: 3, value: 0,
+        desc: 'Gold plate over tin, a leather strap gone stiff as wood. "MADISON SQUARE GARDEN — HEAVYWEIGHT — 2077." The name plate was never engraved.' },
+      { id: 'q_garden_belt_trophy', type: 'misc', name: 'Garden Championship Belt (Trophy)', weight: 3, value: 400,
+        desc: 'The heavyweight belt nobody won. Worth a fortune to a collector. Worth something else entirely to one ghoul at the Neon.' },
+      { id: 'q_holo_press_core', type: 'misc', quest: true, name: 'RobCo Holo-Press Core', weight: 5, value: 0,
+        desc: 'A chrome drum etched with the words THE PRINTED WORD — GUGGENHEIM 2077. It hums faintly, as if it is reading something.' },
+      { id: 'q_holo_press_core_kept', type: 'misc', name: 'RobCo Holo-Press Core', weight: 5, value: 350,
+        desc: 'A working pre-war printing core. Somebody could print a library with this. You could also sell it.' },
+      { id: 'q_rook_lockbox', type: 'misc', quest: true, name: 'Rook\'s Lockbox', weight: 4, value: 0,
+        desc: 'A steel cashbox with a skull painted on the lid and "ROOK — TOUCH IT AND DIE" scratched underneath. It rattles like money.' },
+      { id: 'q_note_fight_card', type: 'note', name: 'Fight Card: Malone vs. Kearns', weight: 0, value: 0, title: 'MADISON SQUARE GARDEN — SATURDAY OCT. 23, 2077',
+        text: 'MAIN EVENT — 12 ROUNDS — HEAVYWEIGHT CHAMPIONSHIP OF THE EASTERN SEABOARD\n\n"GENTLEMAN" JIM MALONE (29-3, Hell\'s Kitchen)\nvs.\nDANNY "THE KID" KEARNS (18-0, Bay Ridge)\n\n' +
+          'Doors 7 p.m. · Nuka-Cola is the official refreshment of the Garden · No re-entry after the anthem\n\n[Handwritten on the back, in pencil: "Round 6. Kid dropped his left every time he threw the right. I had him. Then the sirens. — J.M."]' },
+      { id: 'q_note_tull_expulsion', type: 'note', name: 'Order of Expulsion (Tull)', weight: 0, value: 0, title: 'BROTHERHOOD OF STEEL — CHAPTER ROCKEFELLER',
+        text: 'ORDER OF EXPULSION\n\nSUBJECT: Scribe Ambrose Tull\nOFFENCE: Unauthorised dissemination of restricted technical material (Field Surgery Manual FM 8-10, one (1) copy) to non-Brotherhood civilians (Grand Central Market).\n\n' +
+          'SENTENCE: Stripped of rank, insignia and Codex access. Banned from Chapter grounds.\n\nPaladin Commander Stroud\n\n[In the margin, in tiny, careful handwriting: "41 patients treated as of this morning. 39 survived. Footnote that." — A.T.]' },
+      { id: 'q_note_rook_bounty', type: 'note', name: 'Torn Bounty Notice', weight: 0, value: 0, title: 'WANTED — BY GUTTER (WOOLWORTH BLDG)',
+        text: 'WANTED\nROOK\n(the skinny one with the red hair and the knives)\n\nFOR: running out on the crew, three dead brothers, one stolen Nuka machine key\n\nREWARD: 50 CAPS\n\n[Someone has crossed out 50 and written 5. Underneath, in a different hand: "Come and get it, Gutter. — R."]' },
+    ];
+    for (const d of items) L.defineItem(Object.assign({}, d));
+
+    L.quest({
+      id: 'sq_malone', name: 'The Rematch', giver: 'Jim Malone', location: 'Madison Square Garden',
+      desc: 'Jim Malone\'s last fight at Madison Square Garden was stopped in the sixth round by the Great War. His opponent, Danny "The Kid" Kearns, is still out there in the ruins — feral, and wearing the belt they never finished fighting for.',
+      stages: [
+        { id: 'find', text: 'Find Danny "The Kid" Kearns in the ruins of Madison Square Garden, 34th Street west of 7th Avenue.',
+          onEnter: () => spawnQuestActors(), markers: () => { const a = L.npc('msg_kid'); return a && !a.dead ? [{ npc: 'msg_kid', label: 'The Kid' }] : [{ x: KID_SPOT.x, z: KID_SPOT.z, label: 'Madison Square Garden' }]; } },
+        { id: 'belt', text: 'Take the championship belt from the Kid\'s body.', markers: () => { const a = L.npc('msg_kid'); return a ? [{ x: a.pos.x, z: a.pos.z, label: 'The Kid' }] : []; } },
+        { id: 'return', text: 'Bring the Garden championship belt to Jim Malone.', markers: () => [{ npc: 'comp_malone', label: 'Malone' }] },
+        { id: 'done', text: () => L.flag('malone_belt_given') ? 'You gave Malone the belt. After two hundred years, the fight is over.' : L.flag('malone_belt_sold') ? 'You sold Malone the belt he never got to win.' : 'You kept the Garden championship belt for yourself.', complete: true },
+      ],
+      rewards: { xp: 200 },
+    });
+    L.quest({
+      id: 'sq_tull', name: 'Chapter and Verse', giver: 'Ambrose Tull', location: 'Guggenheim Museum',
+      desc: 'Ambrose Tull was expelled from the Brotherhood for giving a medical manual to Grand Central. Now he wants to give books to everyone — and for that he needs the RobCo Holo-Press core from the Guggenheim\'s 2077 exhibition, "The Printed Word."',
+      stages: [
+        { id: 'fetch', text: 'Recover the RobCo Holo-Press core from the top of the Guggenheim\'s spiral.', onEnter: () => spawnQuestActors(),
+          markers: () => (L.pickups.tull_press ? [{ x: L.pickups.tull_press.pos.x, z: L.pickups.tull_press.pos.z, y: L.pickups.tull_press.pos.y, label: 'Holo-Press Core' }] : [{ x: 160, z: -755, label: 'Guggenheim Museum' }]) },
+        { id: 'return', text: 'Bring the Holo-Press core to Ambrose Tull.', markers: () => [{ npc: 'comp_tull', label: 'Tull' }] },
+        { id: 'done', text: () => L.flag('tull_library') ? 'The Grand Central Free Reading Room is open to anyone who can read — and Tull is teaching the rest.' : 'You kept the Holo-Press core. Tull went back to copying books by hand.', complete: true },
+      ],
+      rewards: { xp: 250 },
+    });
+    L.quest({
+      id: 'sq_rook', name: 'Severance Package', giver: 'Rook', location: 'Woolworth Building',
+      desc: 'Rook walked out on Gutter\'s raider crew at the Woolworth Building, and Gutter kept six months of her cut. She wants it back. She is prepared to share. Somewhat.',
+      stages: [
+        { id: 'stash', text: 'Recover Rook\'s lockbox from the raiders in the Woolworth Building.', onEnter: () => spawnQuestActors(),
+          markers: () => (L.pickups.rook_lockbox ? [{ x: L.pickups.rook_lockbox.pos.x, z: L.pickups.rook_lockbox.pos.z, label: 'Rook\'s Lockbox' }] : [{ x: 0, z: 603, label: 'Woolworth Building' }]) },
+        { id: 'gutter', text: '(Optional) Kill Gutter.', sideObjective: true, optional: true, doneIf: () => L.isDead('comp_gutter'),
+          markers: () => (L.alive('comp_gutter') ? [{ npc: 'comp_gutter', label: 'Gutter' }] : []) },
+        { id: 'return', text: 'Bring the lockbox to Rook.', markers: () => [{ npc: 'comp_rook', label: 'Rook' }] },
+        { id: 'done', text: () => L.flag('rook_paid') ? 'You split Rook\'s severance with her. She almost looked grateful.' : L.flag('rook_lied') ? 'You told Rook her lockbox was empty. She believed you. For now.' : 'You kept Rook\'s money. Rook did not take it well.', complete: true },
+      ],
+      rewards: { xp: 200 },
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Spawning
+  // ------------------------------------------------------------------
+  function spawnCompanion(k) {
+    const c0 = cfg[k]; const s = st(k);
+    const inv = ensureInv(k);
+    let at;
+    const P = G.player.pos;
+    if (s.rec && !s.wait && !s.hostile) at = { fallback: { x: P.x + 1.5, z: P.z + 1.5, y: P.y }, maxR: 6 };
+    else if (s.rec && s.wait) at = { fallback: { x: s.wait.x, z: s.wait.z, y: s.wait.y }, maxR: 4 };
+    else { const h = homeOf(k); at = { fallback: { x: h.x, z: h.z, y: h.y }, maxR: 3 }; }
+    const followingNow = s.rec && !s.wait && !s.hostile;
+    const a = L.spawnNPC(Object.assign({}, c0.look, {
+      id: c0.id, name: c0.name, faction: s.hostile ? 'raiders' : followingNow || s.rec ? 'player' : c0.faction,
+      ai: followingNow ? 'follow' : 'guard', home: 'here', homeR: 2, at, hostile: s.hostile ? true : false,
+      essential: !s.hostile, dialogue: s.hostile ? undefined : c0.dlg, inventory: inv.map((e) => [e[0], e[1]]), weapon: 'none', noRespawn: true,
+      barks: { idle: s.rec ? c0.idle : c0.ambient, greet: c0.greet, alert: c0.combat, kill: c0.kill },
+    }));
+    if (!a) return;
+    a.inventory = inv.map((e) => [e[0], e[1]]);
+    a.essential = !s.hostile;
+    ensureWeapon(k, true);
+    if (followingNow) startFollow(k);
+    else if (s.rec && s.wait) setGuard(a, s.wait.x, s.wait.z, 1.5);
+    else if (!s.hostile) { const h = homeOf(k); a.faction = c0.faction; setGuard(a, h.x, h.z, 2); }
+    else { a.faction = 'raiders'; try { a.setHostile(true); } catch (e) { /* */ } }
+  }
+  function spawnQuestActors() {
+    // The Rematch — Danny "The Kid" Kearns and his entourage.
+    if (Q.isActive('sq_malone') && (Q.stage('sq_malone') === 'find' || Q.stage('sq_malone') === 'belt')) {
+      const kid = L.spawnNPC({ id: 'msg_kid', type: 'feral_ghoul', name: 'Danny "The Kid" Kearns', faction: 'feral_ghouls', level: 9, hp: 230, damage: 1.5,
+        ai: 'guard', home: 'here', homeR: 7, at: { fallback: KID_SPOT, maxR: 10 }, inventory: [['q_garden_belt', 1], ['caps', 17]], noRespawn: true });
+      if (kid && !kid.dead) {
+        for (let i = 0; i < 3; i++) {
+          const ang = i * 2.1 + 0.4;
+          L.spawnNPC({ id: 'msg_feral_' + i, type: 'feral_ghoul', faction: 'feral_ghouls', level: 5, ai: 'wander', home: 'here', homeR: 8, noRespawn: true,
+            at: { fallback: { x: kid.pos.x + Math.cos(ang) * 6, z: kid.pos.z + Math.sin(ang) * 6 }, maxR: 6 } });
+        }
+      }
+    }
+    // Chapter and Verse — the Holo-Press core at the top of the Guggenheim spiral.
+    if (Q.isActive('sq_tull') && Q.stage('sq_tull') === 'fetch' && !L.has('q_holo_press_core')) {
+      const p = L.anchor('guggenheim', ['loot', 'top', 'boss'], { x: 160, z: -755 });
+      if (p) L.pickup('tull_press', 'q_holo_press_core', 1, p);
+    }
+    // Severance Package — Gutter and Rook's lockbox at the Woolworth raider den.
+    if (Q.isActive('sq_rook') && Q.stage('sq_rook') === 'stash') {
+      if (!L.has('q_rook_lockbox')) {
+        const p = L.anchor('woolworth', ['spawn2', 'spawn1', 'entrance'], { x: 5.6, z: 595 });
+        if (p) L.pickup('rook_lockbox', 'q_rook_lockbox', 1, { x: p.x + 0.8, y: p.y, z: p.z - 0.6 });
+      }
+      if (!L.isDead('comp_gutter')) {
+        L.spawnNPC({ id: 'comp_gutter', type: 'human', name: 'Gutter', outfit: 'raider_heavy', gender: 'm', hair: 'wild', faction: 'raiders', ai: 'guard', home: 'here', homeR: 5,
+          hostile: true, level: 9, hp: 240, weapon: ['combat_shotgun', 'sawed_off_shotgun'], inventory: [['caps', 60], ['psycho', 1], ['q_note_rook_bounty', 1]], noRespawn: true,
+          at: { site: 'woolworth', anchors: ['spawn4', 'spawn1', 'boss'], fallback: { x: 4.2, z: 617 } },
+          barks: { alert: ['Rook sent you? ROOK SENT YOU?', 'That\'s my money now!'], idle: ['Rook, you little... when I find her...'] } });
+      }
+    }
+  }
+
+  L.hook('spawn', function () {
+    for (const k of KEYS) cfg[k]._home = null;
+    for (const k of KEYS) { try { spawnCompanion(k); } catch (e) { G.reportError('quests:spawnCompanion:' + k, e); } }
+    spawnQuestActors();
+    if (L.flag('tull_library')) dressLibrary();
+    if (!st('rook').hostile) dressRookCamp();
+    for (const k of KEYS) perkOn[k] = null;   // rpg may have restored (or not) the effect: re-sync
+  });
+  L.hook('reset', function () {
+    for (const k of KEYS) { perkOn[k] = null; cfg[k]._home = null; }
+    L.world.tullLibrary = false; L.world.rookCamp = false;
+    barkGate = 0; tickT = 0; slowT = 0; aggroT = 0; farewellFor = null;
+  });
+
+  // ------------------------------------------------------------------
+  // Dialogue — shared companion wheel + per-character trees
+  // ------------------------------------------------------------------
+  function statusLine(k) {
+    const s = st(k);
+    return '[' + (s.far ? 'Keeping distance' : 'Staying close') + '  ·  ' + (s.melee ? 'Melee' : 'Ranged') + '  ·  ' + (s.passive ? 'Passive' : 'Aggressive') + ']';
+  }
+  function commonNodes(k, extraResponses) {
+    const c0 = cfg[k];
+    const S = () => st(k);
+    return {
+      comp: {
+        speaker: c0.name,
+        text: () => {
+          const s = S();
+          if (s.wait) return pick(c0.greet) + ' ' + pick(['Still here, like you asked.', 'Waiting, like a good little hireling.', 'Holding position.']);
+          return pick(c0.greet) + (c0.compLine ? ' ' + c0.compLine() : '');
+        },
+        responses: () => [
+          { id: cid(k, 'tac'), text: 'Let\'s talk about how you\'re handling things.', next: 'tactics' },
+          { id: cid(k, 'wait'), text: 'Wait here.', cond: () => !S().wait, action: () => { doWait(k); L.later(0.3, () => bark(k, pick(c0.wait), 3, true)); } },
+          { id: cid(k, 'fol'), text: 'Follow me.', cond: () => !!S().wait, action: () => { doFollow(k); L.later(0.3, () => bark(k, pick(c0.follow), 3, true)); } },
+          { id: cid(k, 'trade'), text: 'Let\'s trade some equipment.', action: () => { bump(k); L.later(0.1, () => openInventory(k)); } },
+        ].concat(extraResponses ? extraResponses() : []).concat([
+          { id: cid(k, 'part'), text: 'I think it\'s time we parted ways.', next: 'part' },
+          { id: cid(k, 'bye'), text: 'Never mind.', end: true },
+        ]),
+      },
+      tactics: {
+        speaker: c0.name,
+        text: () => { const s = S(); const ack = s.ack || 'How do you want it done?'; s.ack = null; return ack + '\n\n' + statusLine(k); },
+        responses: () => [
+          { id: cid(k, 'far'), text: 'Keep your distance.', cond: () => !S().far, action: () => { S().far = true; S().ack = c0.ack.far; bump(k); }, next: 'tactics' },
+          { id: cid(k, 'near'), text: 'Stay close to me.', cond: () => S().far, action: () => { S().far = false; S().ack = c0.ack.near; bump(k); }, next: 'tactics' },
+          { id: cid(k, 'mel'), text: 'Switch to your melee weapon.', cond: () => !S().melee, action: () => { S().melee = true; S().ack = c0.ack.melee; bump(k); ensureWeapon(k); }, next: 'tactics' },
+          { id: cid(k, 'rng'), text: 'Use your ranged weapon.', cond: () => S().melee, action: () => { S().melee = false; S().ack = c0.ack.ranged; bump(k); ensureWeapon(k); }, next: 'tactics' },
+          { id: cid(k, 'pas'), text: 'Be passive. Only fight if we\'re attacked.', cond: () => !S().passive, action: () => { S().passive = true; S().ack = c0.ack.passive; bump(k); }, next: 'tactics' },
+          { id: cid(k, 'agg'), text: 'Be aggressive. Engage anything hostile on sight.', cond: () => S().passive, action: () => { S().passive = false; S().ack = c0.ack.aggressive; bump(k); }, next: 'tactics' },
+          { id: cid(k, 'tdone'), text: 'That\'s all.', next: 'comp' },
+        ],
+      },
+      part: {
+        speaker: c0.name, text: c0.partAsk,
+        responses: () => [
+          { id: cid(k, 'part_y'), text: 'Yes. Go home.', action: () => { release(k, 'dismiss'); L.later(0.3, () => bark(k, c0.partBye, 4, true)); } },
+          { id: cid(k, 'part_n'), text: 'On second thought, stick around.', next: 'comp' },
+        ],
+      },
+      farewell: {
+        speaker: c0.name, text: c0.farewell, noExit: true,
+        onEnter: () => { if (S().rec) { release(k, 'karma'); L.notify(c0.short + ' has left you.'); } },
+        responses: [{ text: c0.farewellReply, end: true }],
+      },
+      full: {
+        speaker: c0.name, text: c0.fullText,
+        responses: [{ text: '[Leave.]', end: true }],
+      },
+    };
+  }
+  function makeTree(k, start, nodes, extra) {
+    const t = { start, nodes: Object.assign(commonNodes(k, extra), nodes) };
+    L.dialogue(cfg[k].dlg, t);
+  }
+  /** Shared start logic: farewell > companion wheel > (per-character) intro. */
+  // Personal-quest turn-in that must also work when the companion is NOT hired (dismissed, or left over
+  // karma after the quest started) — otherwise the quest could get stuck forever.
+  const TURN_IN = {
+    malone: { q: 'sq_malone', item: 'q_garden_belt', node: 'belt_back' },
+    tull: { q: 'sq_tull', item: 'q_holo_press_core', node: 'press_back' },
+    rook: { q: 'sq_rook', item: 'q_rook_lockbox', node: 'stash_back' },
+  };
+  function startNode(k, intro) {
+    return function () {
+      const s = st(k); const c0 = cfg[k];
+      if (s.rec && c0.leaves()) return 'farewell';
+      if (s.rec) return 'comp';
+      const t = TURN_IN[k];
+      if (t && !s.hostile) { try { if (Q.stage(t.q) === 'return' && L.has(t.item)) { s.met = true; return t.node; } } catch (e) { /* */ } }
+      const r = intro(); s.met = true; return r;
+    };
+  }
+
+  // ---- Malone ---------------------------------------------------------
+  cfg.malone.ack = {
+    far: 'Give you some room. Sure. I\'ll be the guy in the back row.', near: 'Close quarters. My kind of fight.',
+    melee: 'Now we\'re talking. [He cracks his knuckles. It sounds like a car accident.]', ranged: 'Gun it is. Less personal. Fine.',
+    passive: 'Counter-puncher. I wait, they swing, I swing harder.', aggressive: 'Swarmer. I like it. Take the fight to \'em.',
+  };
+  cfg.malone.partAsk = 'You\'re letting me go? No hard feelings, boss. Contract\'s paid. I\'ll be at the end of the bar at the Neon if you need a hand. Or two.';
+  cfg.malone.partBye = 'See you around, boss. Keep your chin down.';
+  cfg.malone.fullText = 'You\'ve already got somebody watching your back. I don\'t share a corner. Come back when you\'re flying solo.';
+  cfg.malone.compLine = () => (Q.isActive('sq_malone') ? pick(['The Kid\'s still out there. Garden\'s on 34th.', 'Still thinking about that sixth round.']) : '');
+  L.hook('register', function () {
+    const k = 'malone'; const c0 = cfg.malone; const S = () => st(k);
+    const canPay = (n) => L.caps() >= n;
+    const hireResps = (price) => [
+      { text: 'I\'d hire you, but I\'ve already got company.', cond: () => !!current() && current() !== k, next: 'full' },
+      { text: () => 'Deal. [Pay ' + price() + ' caps]', cond: () => !current() && canPay(price()), action: () => { const p = price(); if (L.pay(p)) { S().paid += p; recruit(k, 'hired'); } }, next: 'hired' },
+    ];
+    makeTree(k, startNode(k, () => {
+      const s = S();
+      if (!c0.canHire()) return 'refuse';
+      if (s.left) return 'rehire_left';
+      if (s.dismissed && s.hired) return 'rehire';
+      return s.met ? 'again' : 'intro';
+    }), {
+      intro: { speaker: c0.name, text: '[A heavyset ghoul in a threadbare three-piece suit sits alone at the end of the bar. His knuckles are the size of walnuts and about as smooth. He does not look up from his glass.] You\'re blocking my light, friend. Unless you\'re here about work.',
+        responses: [{ text: 'Who are you?', next: 'who' }, { text: 'What kind of work?', next: 'work' }, { text: '[Leave.]', end: true }] },
+      again: { speaker: c0.name, text: 'Back again. You here to hire me, or just to look? Looking\'s free. Hiring\'s two-fifty.',
+        responses: [{ text: 'Tell me about yourself.', next: 'who' }, { text: 'Let\'s talk about the job.', next: 'work' }, { text: '[Leave.]', end: true }] },
+      who: { speaker: c0.name, text: 'Jim Malone. "Gentleman" Jim, back when there were gentlemen. Heavyweight. Twenty-nine and three at the Garden. [He finally looks at you. His eyes are the only part of him that isn\'t ruined.] Now I hit things for caps. Same job, worse lighting.',
+        responses: [{ text: 'What happened at the Garden?', next: 'garden' }, { text: 'What kind of work do you do now?', next: 'work' }, { text: '[Leave.]', end: true }] },
+      garden: { speaker: c0.name, text: 'October twenty-third, 2077. Main event, me against Danny Kearns — "the Kid." Eighteen and oh, pretty as a picture, dropped his left every time he threw the right. Round six, I had him. I HAD him. Then the sirens went. Twenty thousand people and one exit. [He drinks.] Nobody ever finished that fight. Two hundred years and it still itches.',
+        responses: [{ text: 'I\'m sorry.', next: 'work' }, { text: 'So, about this work.', next: 'work' }] },
+      work: { speaker: c0.name, text: 'Mercenary. I walk with you, I hit what you point at, I don\'t ask why. Two hundred and fifty caps up front, no refunds. One rule: I don\'t work for monsters. I\'ve seen monsters. You\'re not one. Yet.',
+        responses: () => hireResps(() => 250).concat([
+          { text: 'Two-fifty for a guy who smells like a mothball? I\'ll give you one-fifty.', cond: () => !current() && !S().haggled, check: { skill: 'barter', value: 45 }, next: 'haggle_ok', failNext: 'haggle_fail' },
+          { text: 'Mayor Crowe says I\'m good for it. Neighbour\'s discount?', cond: () => !current() && (L.flag('neon_outcome') === 'crowe' || L.flag('neon_outcome') === 'repair') && !S().haggled, next: 'crowe' },
+          { text: 'I can\'t afford you right now.', cond: () => !current() && !canPay(250), next: 'broke' },
+          { text: '[Leave.]', end: true },
+        ]) },
+      haggle_ok: { speaker: c0.name, text: '[A long, wet laugh.] Hah. Fine. One-fifty. You\'d have made a decent cornerman, kid.', onEnter: () => { S().haggled = 150; },
+        responses: () => hireResps(() => 150).concat([{ text: 'I\'ll come back with the caps.', end: true }]) },
+      haggle_fail: { speaker: c0.name, text: 'Price just went up to two-fifty and a half. The half is for the insult. ...I\'m kidding. Two-fifty.',
+        responses: () => hireResps(() => 250).concat([{ text: '[Leave.]', end: true }]) },
+      crowe: { speaker: c0.name, text: 'You\'re the one who kept the lights on? [He puts his glass down.] Then I owe you one already. A hundred caps, and we\'re square.', onEnter: () => { S().haggled = 100; },
+        responses: () => hireResps(() => 100).concat([{ text: 'I\'ll come back with the caps.', end: true }]) },
+      broke: { speaker: c0.name, text: 'Then you can\'t afford me. No shame in it. Most people can\'t afford a stimpak. Come back when your pockets rattle.', responses: [{ text: '[Leave.]', end: true }] },
+      hired: { speaker: c0.name, text: '[Malone drains his glass, stands — and keeps standing; he is enormous — and cracks his neck, left, then right.] Right. Where are we going, boss?',
+        onEnter: () => { if (!L.has('q_note_fight_card') && !S().gotCard) { S().gotCard = true; L.give('q_note_fight_card', 1); } },
+        responses: [{ text: 'Let\'s go.', end: true }] },
+      rehire: { speaker: c0.name, text: 'Boss. Missed me? The contract\'s still good. I\'ll come back on for nothing — I don\'t charge twice for the same corner.',
+        responses: [{ text: 'I\'ve already got company.', cond: () => !!current(), next: 'full' }, { text: 'Come on, Jim. Let\'s go.', cond: () => !current(), action: () => recruit(k, 'rehired'), next: 'hired' }, { text: 'Not yet.', end: true }] },
+      rehire_left: { speaker: c0.name, text: '[He studies you for a long moment.] The radio\'s been saying different things about you lately. Better things. [He shrugs.] Everybody deserves a rematch. I\'ll take you back on. Don\'t make me regret it.',
+        responses: [{ text: 'I\'ve already got company.', cond: () => !!current(), next: 'full' }, { text: 'Thanks, Jim. Let\'s go.', cond: () => !current(), action: () => recruit(k, 'rehired'), next: 'hired' }, { text: 'Maybe later.', end: true }] },
+      refuse: { speaker: c0.name, text: '[He doesn\'t look up.] No. I know what you are. I heard it on the radio. I\'ve done ugly work, but I don\'t work for monsters. Walk away, friend.',
+        responses: [{ text: '[Leave.]', end: true }] },
+      // --- companion extras ---
+      about: { speaker: c0.name, text: () => pick(['Hell\'s Kitchen kid. Old man was a longshoreman, mother sang in a bar on Ninth. I learned to fight so I wouldn\'t have to learn to sing.',
+        'When the bombs dropped I was under the Garden, in the locker room. Woke up three days later, like this. The Kid was gone. So was the belt. So was everything.',
+        'I\'ve been hired by caravans, settlers, a ghoul who wanted me to beat up his own reflection. You\'re not the strangest boss I\'ve had. You\'re in the top ten.']),
+        responses: [{ text: 'Tell me more about the Kid.', cond: () => !Q.isStarted('sq_malone'), next: 'kid_offer' }, { text: 'Let\'s talk about something else.', next: 'comp' }] },
+      kid_offer: { speaker: c0.name, text: 'Caravan folk say there\'s a feral in the ruins of the Garden, on 34th, still wearing trunks with a shamrock on them. Still throwing hooks at nothing. Still wearing MY belt — he grabbed it off the judges\' table when the lights went out. [His jaw works.] I want to finish the fight, boss. Or finish him. Same thing, now.',
+        responses: [{ text: 'Let\'s go find him.', action: () => { Q.start('sq_malone'); }, next: 'kid_go' }, { text: 'Maybe another time.', next: 'comp' }] },
+      kid_go: { speaker: c0.name, text: 'Thirty-fourth Street, west of Seventh. Where the big round roof came down. [He shadowboxes, once, slow.] Sixth round, Danny. Bell\'s about to ring.', responses: [{ text: 'Let\'s go.', end: true }] },
+      belt_back: { speaker: c0.name, text: '[You hold out the belt. Malone doesn\'t take it. He just looks at it: the gold gone green, the blank name plate.] They never engraved it. Winner\'s name was supposed to go right... there.',
+        responses: () => [
+          { text: 'It\'s yours. It always was.', karma: 75, action: () => resolveBelt('given'), next: 'belt_given' },
+          { text: 'Belt like that\'s worth a fortune. What\'s it worth to you?', check: { skill: 'barter', value: 60 }, next: 'belt_sell', failNext: 'belt_sell_fail' },
+          { text: 'I think I\'ll keep it.', action: () => resolveBelt('kept'), next: 'belt_kept' },
+        ] },
+      belt_given: { speaker: c0.name, text: '[He takes it in both hands like it might break, and buckles it on over the three-piece suit. It\'s absurd. It\'s perfect.] Undisputed. Two hundred and fourteen years late. [He clears his throat, roughly.] Forget the contract, boss. From now on I work for free. And I work harder.',
+        responses: [{ text: 'You earned it, champ.', end: true }] },
+      belt_sell: { speaker: c0.name, text: '[A long silence.] Everybody\'s a promoter. [He counts out caps from an inside pocket, slow.] Two hundred. That\'s all I\'ve got. Take it.', onEnter: () => resolveBelt('sold'),
+        responses: [{ text: 'Pleasure doing business.', end: true }] },
+      belt_sell_fail: { speaker: c0.name, text: 'Nice try. I don\'t buy things from people who got \'em off my own opponent\'s corpse. You gonna give it to me or not?',
+        responses: [{ text: 'It\'s yours.', karma: 50, action: () => resolveBelt('given'), next: 'belt_given' }, { text: 'Not.', action: () => resolveBelt('kept'), next: 'belt_kept' }] },
+      belt_kept: { speaker: c0.name, text: '[He nods, slowly, like a man taking a punch he saw coming.] Sure. Keep it. Everything I ever won ended up in somebody else\'s pocket. Why should this be different? [He turns away.] We done here, boss?',
+        responses: [{ text: '[Leave.]', end: true }] },
+    }, () => [
+      { id: cid(k, 'about'), text: 'Tell me about yourself.', next: 'about' },
+      { id: cid(k, 'kid'), text: 'About the Kid...', cond: () => !Q.isStarted('sq_malone'), next: 'kid_offer' },
+      { id: cid(k, 'belt'), text: 'I got your belt back.', cond: () => Q.stage('sq_malone') === 'return' && L.has('q_garden_belt'), next: 'belt_back' },
+    ]);
+  });
+  function resolveBelt(how) {
+    L.take('q_garden_belt', 1);
+    if (how === 'given') { L.setFlag('malone_belt_given'); L.xp(100, 'The Undisputed'); L.news('Word from the Neon, folks: "Gentleman" Jim Malone was seen at the Rad-Lounge last night wearing a championship belt over his suit, buying rounds for the house. First time anybody\'s seen him smile. It was terrifying. It was beautiful.'); }
+    else if (how === 'sold') { L.setFlag('malone_belt_sold'); L.giveCaps(200); }
+    else { L.setFlag('malone_belt_kept'); L.give('q_garden_belt_trophy', 1); }
+    L.setFlag('malone_quest_done', how);
+    Q.setStage('sq_malone', 'done');
+    perkOn.malone = null;
+  }
+
+  // ---- Tull -----------------------------------------------------------
+  cfg.tull.ack = {
+    far: 'Distance. Yes. I\'m very good at distance. Ask anyone at the Chapter.', near: 'Close. Good. I\'m — good. Yes.',
+    melee: 'Melee. Oh dear. Right. Stabby end forwards.', ranged: 'Ranged. Thank you. Genuinely.',
+    passive: 'Passive. That\'s my natural state, honestly.', aggressive: 'Aggressive. I\'ll... try to be. Rarr. Sorry.',
+  };
+  cfg.tull.partAsk = 'Oh. Of course. I understand. I\'ll go back to my bench at Grand Central. If you need me, I\'ll be the one surrounded by paper.';
+  cfg.tull.partBye = 'Take care of yourself. Read something, occasionally.';
+  cfg.tull.fullText = 'You\'re already travelling with someone. I\'d only slow you both down. And I snore. In Latin.';
+  cfg.tull.compLine = () => (Q.isActive('sq_tull') ? 'The Guggenheim is on Fifth, by the park. Top of the spiral.' : '');
+  L.hook('register', function () {
+    const k = 'tull'; const c0 = cfg.tull; const S = () => st(k);
+    const joinResps = () => [
+      { text: 'Travel with me, Ambrose.', cond: () => !current() && c0.canHire(), action: () => recruit(k, 'asked'), next: 'hired' },
+      { text: 'I\'d ask you along, but I already have company.', cond: () => !!current() && current() !== k, next: 'full' },
+    ];
+    makeTree(k, startNode(k, () => {
+      const s = S();
+      if (tier() >= 3) return 'refuse';
+      if (s.left) return c0.canHire() ? 'rehire_left' : 'refuse_soft';
+      if (s.dismissed && s.hired) return c0.canHire() ? 'rehire' : 'refuse_soft';
+      return s.met ? 'again' : 'intro';
+    }), {
+      intro: { speaker: c0.name, text: '[A thin man in a Brotherhood scribe\'s robe sits on a waiting-room bench, copying one book into another by hand. Where the Chapter insignia should be there is a paler square of cloth, and a few loose threads.] Please don\'t stand in my light. Or — do. It isn\'t my light anymore. Nothing is, officially.',
+        responses: [{ text: 'Who are you?', next: 'who' }, { text: 'What are you copying?', next: 'copying' }, { text: '[Leave.]', end: true }] },
+      again: { speaker: c0.name, text: 'Oh — hello again. I\'m on page three hundred and twelve. It\'s going well. The ink isn\'t.',
+        responses: () => [{ text: 'Tell me about yourself.', next: 'who' }, { text: 'Would you like to travel with me?', next: 'ask_join' }, { text: '[Leave.]', end: true }] },
+      who: { speaker: c0.name, text: 'Ambrose Tull. Formerly Scribe Tull, Chapter Rockefeller. Expelled — for "unauthorised dissemination of restricted technical material." [He hands you a folded paper.] I gave Doc Hollis a copy of a field-surgery manual. Forty-one people are alive because of it. The Codex has a footnote for that. The footnote is: "irrelevant."',
+        onEnter: () => { if (!S().gotOrder) { S().gotOrder = true; L.give('q_note_tull_expulsion', 1); } },
+        responses: [{ text: 'That\'s rough.', next: 'rough' }, { text: 'Would you like to travel with me?', next: 'ask_join' }, { text: '[Leave.]', end: true }] },
+      copying: { speaker: c0.name, text: '"Principles of Water Purification," fourth edition. The only copy is in the Brotherhood archive, so I\'m copying it from memory. Mostly memory. Some of it I\'m improving.',
+        responses: [{ text: 'Who are you?', next: 'who' }, { text: '[Leave.]', end: true }] },
+      rough: { speaker: c0.name, text: 'It\'s fine. It\'s... no, it isn\'t fine. But I can read, and nobody can take that away. They tried. They took the library card. Metaphorically. Also literally.',
+        responses: [{ text: 'Would you like to travel with me?', next: 'ask_join' }, { text: '[Leave.]', end: true }] },
+      ask_join: { speaker: c0.name, text: () => (c0.canHire()
+        ? '[He studies you over his spectacles.] You\'re... actually decent, aren\'t you? I\'ve been listening to Vinnie. [He closes the book.] I know this city\'s machines better than anyone outside the Chapter. I can fix what you break and read what you can\'t. In exchange, you keep the ferals off me while I look at things. I\'m told that\'s called "a companion."'
+        : 'I\'m sorry. I\'ve read enough history to be careful about who I follow. The radio doesn\'t say anything about you yet — nothing good, anyway. Come back when it does.'),
+        responses: () => joinResps().concat([{ text: '[Leave.]', end: true }]) },
+      hired: { speaker: c0.name, text: '[He packs the two books, a bottle of ink, eleven pencils and a laser pistol he holds like a dead fish.] Right. Adventure. I\'ve read about it. Lead the way.', responses: [{ text: 'Let\'s go.', end: true }] },
+      rehire: { speaker: c0.name, text: 'You came back. [He looks genuinely pleased.] I kept notes while you were gone. There\'s a great deal to catch up on. Shall we?',
+        responses: () => joinResps().concat([{ text: 'Not yet.', end: true }]) },
+      rehire_left: { speaker: c0.name, text: '[He closes his book, slowly.] Vinnie\'s been saying kind things about you. I checked his sources. They hold up. [A small smile.] Everyone deserves a second edition. I\'ll come.',
+        responses: () => joinResps().concat([{ text: 'Maybe later.', end: true }]) },
+      refuse_soft: { speaker: c0.name, text: 'I\'m sorry. I can\'t follow you. Not the way things are. If the radio ever says something kind about you, I\'ll be right here.', responses: [{ text: '[Leave.]', end: true }] },
+      refuse: { speaker: c0.name, text: '[He doesn\'t look up from the page.] No. I know who you are. I\'ve read about people like you — every century has them. I\'d rather copy books in the dark.', responses: [{ text: '[Leave.]', end: true }] },
+      // --- companion extras ---
+      about: { speaker: c0.name, text: () => pick(['I was born in the Chapter. First word was "Ad." Second was "Victoriam." Third was "why," and I\'m told that\'s where the trouble started.',
+        'Knowledge is a weapon, the Codex says. I always thought it was more of a lamp. You don\'t lock a lamp in a vault. Well. You can. It just doesn\'t do anything.',
+        'I miss the archive. The smell of it. Old paper and machine oil. I don\'t miss the people who guard it.']),
+        responses: [{ text: 'You said you had a plan once.', cond: () => !Q.isStarted('sq_tull'), next: 'press_offer' }, { text: 'Let\'s talk about something else.', next: 'comp' }] },
+      press_offer: { speaker: c0.name, text: 'A plan. Yes. [He brightens alarmingly.] In 2077 the Guggenheim held an exhibition — "The Printed Word: Five Hundred Years of the Press." The centrepiece was a RobCo Holo-Press prototype. It can print a whole book from a holotape master in a minute. If I had its core, I could open a free reading room at Grand Central. Books for anyone. The Chapter would call it heresy. I call it the entire point.',
+        responses: [{ text: 'Let\'s go get it.', action: () => Q.start('sq_tull'), next: 'press_go' }, { text: 'Another time.', next: 'comp' }] },
+      press_go: { speaker: c0.name, text: 'Wonderful. It\'s on Fifth Avenue by the park — the building that looks like a teacup someone sat on. The core should be at the top of the ramp. There will be robots. There are always robots.', responses: [{ text: 'Let\'s go.', end: true }] },
+      press_back: { speaker: c0.name, text: '[You hold out the core. Tull makes a small sound, the kind people make at weddings.] That\'s it. That\'s really it. May I...?',
+        responses: () => [
+          { text: 'It\'s yours. Go build your library.', karma: 100, action: () => resolvePress('given'), next: 'press_given' },
+          { text: 'Something like this must be worth a lot of caps.', check: { skill: 'barter', value: 50 }, next: 'press_paid', failNext: 'press_paid_fail' },
+          { text: 'I\'m keeping it.', action: () => resolvePress('kept'), next: 'press_kept' },
+        ] },
+      press_given: { speaker: c0.name, text: 'The Grand Central Free Reading Room. Open to anyone. No insignia required. [He blinks, hard.] I\'ll print you a copy of everything. First edition. Footnoted. Thank you. Truly.',
+        responses: [{ text: 'You\'re welcome, Ambrose.', end: true }] },
+      press_paid: { speaker: c0.name, text: 'Oh. Yes, of course. That\'s — fair. [He empties his pockets: caps, a pencil stub, a button.] One hundred and fifty. It\'s everything I have. Well, not the button.', onEnter: () => resolvePress('paid'),
+        responses: [{ text: 'Keep the button.', end: true }] },
+      press_paid_fail: { speaker: c0.name, text: 'I... don\'t have much. I\'m an expelled scribe. My net worth is a bench. Please?',
+        responses: [{ text: 'Fine. Take it.', karma: 75, action: () => resolvePress('given'), next: 'press_given' }, { text: 'No.', action: () => resolvePress('kept'), next: 'press_kept' }] },
+      press_kept: { speaker: c0.name, text: '[The light goes out of his face, carefully, like a man turning down a lamp.] I see. Well. It was only a library. I\'ll keep copying by hand. It\'s fine. I\'m used to it.',
+        responses: [{ text: '[Leave.]', end: true }] },
+      repair: { speaker: c0.name, text: () => {
+        const n = tullRepair();
+        return n ? '[He spreads a cloth on the ground and works fast, muttering part numbers.] There. Stripped, cleaned, re-seated. It won\'t be new, but it won\'t explode. Probably.' : 'Everything you\'re carrying is in better shape than I could make it. Honestly, I\'m impressed.';
+      }, responses: [{ text: 'Thanks, Ambrose.', next: 'comp' }] },
+    }, () => [
+      { id: cid(k, 'about'), text: 'Tell me about yourself.', next: 'about' },
+      { id: cid(k, 'press'), text: 'You mentioned a plan...', cond: () => !Q.isStarted('sq_tull'), next: 'press_offer' },
+      { id: cid(k, 'rep'), text: 'Can you look at my gear?', cond: () => st(k).lastDay !== (G.time ? G.time.day : 0), next: 'repair' },
+      { id: cid(k, 'core'), text: 'I found your Holo-Press core.', cond: () => Q.stage('sq_tull') === 'return' && L.has('q_holo_press_core'), next: 'press_back' },
+    ]);
+  });
+  /** Tull's field repair (once a day): equipped weapon + armour up to 90% condition. */
+  function tullRepair() {
+    const s = st('tull'); s.lastDay = G.time ? G.time.day : 0;
+    if (G.isStub('inventory') || !G.inventory.equipped || !G.inventory.setCondition) return 0;
+    let n = 0;
+    for (const slot of ['weapon', 'body', 'head']) {
+      let id = null; try { id = G.inventory.equipped(slot); } catch (e) { id = null; }
+      if (!id) continue;
+      let c = 1; try { c = G.inventory.condition(id); } catch (e) { c = 1; }
+      if (typeof c === 'number' && c < 0.9) { try { G.inventory.setCondition(id, 0.9); n++; } catch (e) { /* */ } }
+    }
+    if (n) L.sfx('repair', { volume: 0.6 });
+    return n;
+  }
+  function resolvePress(how) {
+    L.take('q_holo_press_core', 1);
+    if (how === 'given' || how === 'paid') {
+      L.setFlag('tull_library');
+      if (how === 'paid') { L.giveCaps(150); L.setFlag('tull_paid'); }
+      else L.xp(100, 'The Free Press');
+      cfg.tull._home = null; dressLibrary();
+      L.news('Here\'s something you don\'t hear every day, New York: there\'s a free library at Grand Central. A free LIBRARY. Run by a fella named Tull who used to wear the tin-can robes. Books for anybody who asks. Vinnie checked out three. Vinnie cannot read. Vinnie is learning.');
+    } else { L.setFlag('tull_press_kept'); L.give('q_holo_press_core_kept', 1); L.karma(-50, 'Kept Tull\'s Holo-Press'); }
+    Q.setStage('sq_tull', 'done');
+    perkOn.tull = null;
+  }
+
+  // ---- Rook -----------------------------------------------------------
+  cfg.rook.ack = {
+    far: 'Sniper nest. Fine by me. Don\'t get shot, I\'m not coming down.', near: 'Up close and personal. My favourite.',
+    melee: 'Knife time. [She grins. It is not a nice grin.]', ranged: 'Rifle it is. Nice and quiet. Well. Loud. Then quiet.',
+    passive: 'Passive? Ugh. Fine. I\'ll only stab people who deserve it.', aggressive: 'Now you\'re speaking my language.',
+  };
+  cfg.rook.partAsk = 'You\'re ditching me? Heh. Everybody does, eventually. Fine. I\'ll be under the Arch. Don\'t let the rats eat you.';
+  cfg.rook.partBye = 'Later, boss. Try not to go soft without me.';
+  cfg.rook.fullText = 'You\'ve already got a pet. I don\'t share. Get rid of them and we\'ll talk.';
+  cfg.rook.compLine = () => (Q.isActive('sq_rook') && !L.has('q_rook_lockbox') ? 'My lockbox isn\'t gonna steal itself back. Woolworth. Downtown.' : '');
+  L.hook('register', function () {
+    const k = 'rook'; const c0 = cfg.rook; const S = () => st(k);
+    const joinResps = () => [
+      { text: 'Want to run with me?', cond: () => !current() && c0.canHire(), action: () => recruit(k, 'asked'), next: 'hired' },
+      { text: 'I\'d take you along, but I\'ve got company.', cond: () => !!current() && current() !== k, next: 'full' },
+    ];
+    makeTree(k, startNode(k, () => {
+      const s = S();
+      if (s.left) return c0.canHire() ? 'rehire_left' : 'refuse';
+      if (s.dismissed && s.hired) return c0.canHire() ? 'rehire' : 'refuse';
+      return s.met ? 'again' : 'intro';
+    }), {
+      intro: { speaker: c0.name, text: '[A wiry woman in patched raider leathers sits on an ammo crate under the Arch, sharpening a knife that is already very sharp. A crude tattoo of a chess castle sits under her left eye.] Walk on, jumpsuit. Unless you\'re buying, or you\'ve got a death wish. Either\'s fine by me.',
+        responses: [{ text: 'Who are you?', next: 'who' }, { text: 'What are you doing out here alone?', next: 'alone' }, { text: '[Leave.]', end: true }] },
+      again: { speaker: c0.name, text: 'You again. Buying, dying, or staring?',
+        responses: [{ text: 'Tell me about yourself.', next: 'who' }, { text: 'Want to run with me?', next: 'ask_join' }, { text: '[Leave.]', end: true }] },
+      who: { speaker: c0.name, text: 'Rook. Like the chess piece. Charlie gave me the name — said I only move in straight lines and I always take something. I ran with Gutter\'s crew at the Woolworth for four years. Now I don\'t.',
+        responses: [{ text: 'What happened with Gutter?', next: 'alone' }, { text: 'Want to run with me?', next: 'ask_join' }, { text: '[Leave.]', end: true }] },
+      alone: { speaker: c0.name, text: 'Gutter kept my cut. Six months of it. So I left. Loudly. Three of his boys aren\'t walking anymore, and there\'s a wanted poster with my face on it that I think is very flattering. [She tests the knife on her thumb.] Now I\'m between jobs.',
+        responses: [{ text: 'Want to run with me?', next: 'ask_join' }, { text: '[Leave.]', end: true }] },
+      ask_join: { speaker: c0.name, text: () => {
+        const t = tier();
+        if (t >= 3) return '[She looks you up and down, and slowly smiles.] Yeah. I heard about you. "' + (L.karmaTitle() || 'Trouble') + '," right? You get your hands dirty. I don\'t run with saints — saints get you killed being noble. You? You\'ll do.';
+        if (t === 2) return 'Nah. You\'re a fence-sitter. Can\'t trust a fence-sitter, they fall whichever way\'s easier. Come back when you\'ve made your mind up about what you are.';
+        return '[She laughs in your face.] A boy scout! Oh, that\'s precious. Run along before I take your lunchbox.';
+      }, responses: () => joinResps().concat([{ text: '[Leave.]', end: true }]) },
+      hired: { speaker: c0.name, text: '[She flips the knife, catches it by the blade, and sheathes it without looking.] Rules: I take first pick of the boots. You don\'t lecture me. We don\'t go in the front door if there\'s a window. Let\'s go.', responses: [{ text: 'Let\'s go.', end: true }] },
+      rehire: { speaker: c0.name, text: 'Knew you\'d be back. Nobody else puts up with you, huh? Fine. Let\'s go ruin somebody\'s day.', responses: () => joinResps().concat([{ text: 'Not yet.', end: true }]) },
+      rehire_left: { speaker: c0.name, text: '[She looks at you sideways.] Heard you\'ve been busy. The ugly kind of busy. [A grin.] Welcome back to the dark side. I\'m in.', responses: () => joinResps().concat([{ text: 'Maybe later.', end: true }]) },
+      refuse: { speaker: c0.name, text: '[She doesn\'t even get up.] Still a saint, huh? Walk on. I don\'t babysit.', responses: [{ text: '[Leave.]', end: true }] },
+      // --- companion extras ---
+      about: { speaker: c0.name, text: () => pick(['Grew up in a tunnel under Canal Street. Had eleven brothers and sisters. Now I have one. Don\'t ask which one I kept, it\'s a whole thing.',
+        'First thing I ever stole was a pack of Fancy Lads from a caravan. Got caught. Caravan guard laughed so hard he let me keep them. I robbed him for real a year later. Felt bad. Didn\'t give it back.',
+        'Chess Charlie taught me the game. Said I play like I fight: never defend, only trade up. He\'s the only person in this city I haven\'t robbed. Yet.']),
+        responses: [{ text: 'About that money Gutter kept...', cond: () => !Q.isStarted('sq_rook'), next: 'stash_offer' }, { text: 'Let\'s talk about something else.', next: 'comp' }] },
+      stash_offer: { speaker: c0.name, text: 'Six months of cuts in a lockbox with a skull on it. It\'s still in the Woolworth — Gutter\'s too dumb to spend it and too greedy to share it. We go in, we take it back. Split\'s sixty-forty, my favour. [She considers.] Put a bullet in Gutter while you\'re there, and I\'ll make it fifty-fifty.',
+        responses: [{ text: 'Let\'s go get your money.', action: () => Q.start('sq_rook'), next: 'stash_go' }, { text: 'Maybe later.', next: 'comp' }] },
+      stash_go: { speaker: c0.name, text: 'Woolworth Building, downtown, by City Hall. Gutter will be on the ground floor pretending he\'s a king. The box is somewhere he can look at it. He likes looking at it.', responses: [{ text: 'Let\'s go.', end: true }] },
+      stash_back: { speaker: c0.name, text: () => '[Her eyes go straight to the lockbox.] There she is. ' + (L.isDead('comp_gutter') ? 'And Gutter\'s feeding the pigeons, I hear. Fifty-fifty, like I promised.' : 'Gutter\'s still breathing, though. Sixty-forty.') + ' Hand it over.',
+        responses: () => [
+          { text: 'Here. Your money.', action: () => resolveStash('paid'), next: 'stash_paid' },
+          { text: 'Bad news. It was empty. Gutter must have spent it.', check: { skill: 'speech', value: 55 }, karma: -50, next: 'stash_lie', failNext: 'stash_lie_fail' },
+          { text: 'Finders keepers, Rook.', next: 'stash_steal' },
+        ] },
+      stash_paid: { speaker: c0.name, text: () => '[She pops the lock with a hairpin in about a second, counts with her lips moving, and slaps a stack of caps into your hand.] ' + (L.isDead('comp_gutter') ? 'Two hundred. Fifty-fifty.' : 'One-sixty. Sixty-forty.') + ' [She hesitates.] ...Nobody ever paid me what they said they would. Huh. Don\'t make it weird.',
+        responses: [{ text: 'Wouldn\'t dream of it.', end: true }] },
+      stash_lie: { speaker: c0.name, text: '[She stares at the empty box you show her for a long moment. Then she kicks it into the gutter.] That MISERABLE — [a string of words that would peel paint] — fine. FINE. It\'s just money. [She walks off a few steps and comes back.] Thanks for trying, I guess.', onEnter: () => resolveStash('lied'),
+        responses: [{ text: '[Pocket the caps later.]', end: true }] },
+      stash_lie_fail: { speaker: c0.name, text: '[Her knife is out before you finish the sentence.] Empty. Empty? It RATTLES, genius. Hand. It. Over.',
+        responses: [{ text: 'Okay, okay. Here.', action: () => resolveStash('paid'), next: 'stash_paid' }, { text: 'No.', next: 'stash_steal' }] },
+      stash_steal: { speaker: c0.name, text: '[Something closes in her face, like a door.] Yeah. I figured. You\'re exactly like Gutter. [She backs away, hand on her knife.] Next time I see you, I won\'t be saying anything.', onEnter: () => resolveStash('stolen'),
+        responses: [{ text: '[Leave.]', end: true }] },
+    }, () => [
+      { id: cid(k, 'about'), text: 'Tell me about yourself.', next: 'about' },
+      { id: cid(k, 'stash'), text: 'About that money Gutter kept...', cond: () => !Q.isStarted('sq_rook'), next: 'stash_offer' },
+      { id: cid(k, 'box'), text: 'I got your lockbox.', cond: () => Q.stage('sq_rook') === 'return' && L.has('q_rook_lockbox'), next: 'stash_back' },
+    ]);
+  });
+  function resolveStash(how) {
+    L.take('q_rook_lockbox', 1);
+    const s = st('rook');
+    if (how === 'paid') { L.setFlag('rook_paid'); L.giveCaps(L.isDead('comp_gutter') ? 200 : 160); L.give(L.item('psycho'), 1); L.xp(75, 'Honour among thieves'); }
+    else if (how === 'lied') { L.setFlag('rook_lied'); L.giveCaps(400); }
+    else {
+      L.setFlag('rook_stolen'); L.giveCaps(400);
+      // She walks out and turns on you (NV-style betrayal fallout).
+      L.later(0.2, () => {
+        release('rook', 'dismiss');
+        s.hostile = true; s.dismissed = false;
+        const a = actor('rook');
+        if (a && !a.dead) {
+          a.essential = false; a.faction = 'raiders'; a.dialogue = null;
+          try { a.setHostile(true); } catch (e) { /* */ }
+        }
+        L.notify('Rook has turned against you.');
+      });
+    }
+    Q.setStage('sq_rook', 'done');
+    perkOn.rook = null;
+  }
+
+  // ------------------------------------------------------------------
+  // Quest progression events
+  // ------------------------------------------------------------------
+  G.events.on('itemAdded', (id) => {
+    if (id === 'q_garden_belt' && Q.isActive('sq_malone') && Q.stage('sq_malone') !== 'return' && Q.stage('sq_malone') !== 'done') Q.setStage('sq_malone', 'return');
+    if (id === 'q_holo_press_core' && Q.stage('sq_tull') === 'fetch') Q.setStage('sq_tull', 'return');
+    if (id === 'q_rook_lockbox' && Q.stage('sq_rook') === 'stash') Q.setStage('sq_rook', 'return');
+  });
+  G.events.on('actorKilled', (a) => {
+    if (!a || !a.id) return;
+    if (a.id === 'msg_kid' && Q.stage('sq_malone') === 'find') {
+      Q.setStage('sq_malone', 'belt');
+      if (following('malone')) L.later(1.2, () => bark('malone', 'Stay down, Danny. Ten count. [Quietly.] It\'s over, kid. Nobody won.', 6, true));
+    }
+    if (a.id === 'comp_gutter') {
+      if (following('rook')) L.later(1.0, () => bark('rook', 'That\'s for the three hundred and twelve caps, you pig.', 5, true));
+      G.events.emit('questCounter', Q.get('sq_rook'));
+    }
+    // a companion's own kills get a line now and then
+    for (const k of KEYS) {
+      const c = following(k);
+      if (c && a.hostile && Math.random() < 0.18 && c.distTo(a.pos) < 30) L.later(0.8, () => bark(k, pick(cfg[k].kill), 3));
+    }
+  });
+  L.trigger({ id: 'comp_kid_sighted', pos: () => { const a = L.npc('msg_kid'); return a && !a.dead ? a.pos : null; }, r: 30,
+    cond: () => Q.stage('sq_malone') === 'find' && !!following('malone'),
+    fire() { bark('malone', 'That\'s him. That\'s the Kid. [He stares.] Look at him. Still bobbing. Still dropping that left.', 6, true); } });
+  L.trigger({ id: 'comp_gutter_sighted', pos: () => { const a = L.npc('comp_gutter'); return a && !a.dead ? a.pos : null; }, r: 28,
+    cond: () => Q.stage('sq_rook') === 'stash' && !!following('rook'),
+    fire() { bark('rook', 'Hey GUTTER! Remember me? I remember YOU!', 5, true); } });
+  L.trigger({ id: 'comp_gugg_sighted', x: 160, z: -755, r: 34, cond: () => Q.stage('sq_tull') === 'fetch' && !!following('tull'),
+    fire() { bark('tull', 'The spiral. The core should be at the very top. Mind the robots — they were programmed to protect the art. I suppose we\'re the vandals now.', 7, true); } });
+
+  // ------------------------------------------------------------------
+  // Karma reactions & walk-outs
+  // ------------------------------------------------------------------
+  let farewellFor = null;
+  G.events.on('karmaChanged', (k0, delta) => {
+    if (!delta || Math.abs(delta) < 40) return;
+    const k = current(); if (!k) return;
+    if (!following(k)) return;
+    L.later(1.0, () => bark(k, pick(delta > 0 ? cfg[k].good : cfg[k].bad), 4));
+  });
+  G.events.on('combatStart', () => {
+    const k = current(); if (!k || !following(k)) return;
+    if (Math.random() < 0.55) L.later(0.4, () => bark(k, pick(cfg[k].combat), 3));
+  });
+
+  // ------------------------------------------------------------------
+  // Controller (behaviour the combat AI doesn't model: distance, stance,
+  // re-following after fights, homeward walks, location comments)
+  // ------------------------------------------------------------------
+  let tickT = 0, slowT = 0, aggroT = 0;
+  const proxies = {};
+  const LOCS = () => (G.LAYOUT && G.LAYOUT.LOCATIONS) || [];
+  function farProxy(k, a) {
+    let p = proxies[k];
+    if (!p) p = proxies[k] = { pos: new THREE.Vector3(), dead: false, isProxy: true };
+    const P = G.player.pos;
+    let dx = a.pos.x - P.x, dz = a.pos.z - P.z; let d = Math.hypot(dx, dz);
+    if (d < 0.5) { dx = Math.sin(G.player.yaw); dz = Math.cos(G.player.yaw); d = 1; }
+    const want = 7.5;
+    p.pos.set(P.x + dx / d * (want - 2.2), P.y, P.z + dz / d * (want - 2.2));
+    return p;
+  }
+  function engage(a, t) {
+    if (typeof a.attack === 'function') { try { a.attack(t); return; } catch (e) { /* fall through */ } }
+    // Mirror of combat's own enterCombat for a follower (no public API yet — see NOTES).
+    try {
+      a.target = t; a.inCombat = true; a.setState('combat');
+      a.lastSeenT = now(); a.aimT = now() + 0.35 + Math.random() * 0.3;
+      a.lastKnown = (a.lastKnown || new THREE.Vector3()).copy(t.pos);
+      if (Math.random() < 0.5) a.bark('alert', 1);
+    } catch (e) { /* */ }
+  }
+  function aggressiveScan(k, a) {
+    if (a.state !== 'follow' || a.inCombat) return;
+    const P = G.player.pos;
+    let list = [];
+    try { list = G.actors.hostilesNear ? G.actors.hostilesNear(P, 32) : (G.actors.inRadius(P, 32) || []).filter((o) => o.hostile && o.hostile()); } catch (e) { list = []; }
+    let best = null, bd = 1e9;
+    for (const o of list) {
+      if (!o || o.dead || o === a || !o.inScene || o.state === 'dormant' || o.questTruce) continue;
+      const d = o.distTo(a.pos); if (d > 34 || d >= bd) continue;
+      if (G.world.lineOfSight) {
+        const e1 = a.eyePos ? a.eyePos() : new THREE.Vector3(a.pos.x, a.pos.y + 1.6, a.pos.z);
+        const e2 = o.centerPos ? o.centerPos() : new THREE.Vector3(o.pos.x, o.pos.y + 1, o.pos.z);
+        if (!G.world.lineOfSight(e1, e2)) continue;
+      }
+      best = o; bd = d;
+    }
+    if (best) engage(a, best);
+  }
+  function locationComment(k) {
+    const P = G.player.pos;
+    if (P.x >= (G.LAYOUT.INTERIOR_X_MIN || 1e9)) return;
+    const s = st(k); s.saw = s.saw || {};
+    const lines = cfg[k].loc;
+    for (const l of LOCS()) {
+      const key = l.id === 'bethesda' || l.id === 'belvedere' || l.id === 'reservoir' ? 'central_park' : l.id === 'dumbo' ? 'brooklyn_bridge' : l.id;
+      if (!lines[key] || s.saw[key]) continue;
+      if (Math.hypot(P.x - l.x, P.z - l.z) > Math.max(22, (l.r || 30) * 0.9)) continue;
+      if (bark(k, lines[key], 6)) s.saw[key] = true;
+      return;
+    }
+  }
+  /** FO-style catch-up: a follower that has made no progress towards the player for ~5 s
+   *  (wedged on geometry the steering can't route around) is moved to a free spot behind the
+   *  player, out of view. Never mid-fight. */
+  function unstick(k, a, s) {
+    const d = a.distToPlayer(); const want = s.far ? 13 : 9;
+    if (d < want || a.inCombat || a.state !== 'follow') { s._stuckN = 0; s._stuckD = d; return; }
+    if (s._stuckD !== undefined && d > s._stuckD - 1.0) s._stuckN = (s._stuckN || 0) + 1; else s._stuckN = 0;
+    s._stuckD = d;
+    if (s._stuckN < 3) return;
+    s._stuckN = 0;
+    const P = G.player; const back = s.far ? 6 : 2.5;
+    const sp = L.freeSpot(P.pos.x + Math.sin(P.yaw) * back, P.pos.z + Math.cos(P.yaw) * back, P.pos.y, { maxR: 5 });
+    if (sp && !sp.forced) { a.pos.set(sp.x, sp.y, sp.z); if (a.attach) { try { a.attach(); } catch (e) { /* */ } } s._stuckD = a.distToPlayer(); }
+  }
+  function tickCompanion(k, slow) {
+    const s = st(k); const a = actor(k);
+    if (!a || a.dead) return;
+    // Friendly fire past the warning: they turn on you (FO3).
+    if (s.rec && a.hostile && a.hostile() && !s.hostile) {
+      s.hostile = true; s.rec = false; a.essential = false; a.dialogue = null; syncPerk(k);
+      L.notify(cfg[k].short + ' has turned against you.');
+      return;
+    }
+    if (s.hostile) return;
+    if (s.rec && !s.wait) {
+      a.faction = 'player'; a.essential = true;
+      if (a.aiMode !== 'follow') a.aiMode = 'follow';
+      if (!a.knockedOut && a.state !== 'knocked' && (a.state === 'idle' || a.state === 'search' || (a.state === 'move' && !a.moveGoal) || !a.following)) {
+        try { a.follow('player'); } catch (e) { /* */ }
+      }
+      if (a.state === 'follow') {
+        if (s.far) a.followTarget = farProxy(k, a);
+        else if (a.followTarget && a.followTarget.isProxy) a.followTarget = 'player';
+      }
+      if (s.passive) a._nextFollowScan = now() + 5;       // combat's follower scan stays quiet: fight only when attacked
+      else if (a._nextFollowScan > now() + 1.5) a._nextFollowScan = 0;
+      if (!s.passive && aggroT <= 0) aggressiveScan(k, a);
+      if (slow) unstick(k, a, s);
+      if (slow) {
+        if (farewellFor === null && cfg[k].leaves() && G.state === 'play' && !(G.combat.inCombat && G.combat.inCombat()) && !L.cineActive() && a.distToPlayer() < 12) {
+          farewellFor = k;
+          L.later(0.2, () => { farewellFor = null; if (st(k).rec && cfg[k].leaves() && G.state === 'play') L.startDialogue(cfg[k].dlg, cfg[k].id); });
+        }
+        const P = G.player;
+        if (P.hp < P.maxHp * 0.25 && P.alive !== false && (!s._hurtT || now() - s._hurtT > 60)) { s._hurtT = now(); bark(k, pick(cfg[k].hurt), 3.5, true); }
+        else if (!(G.combat.inCombat && G.combat.inCombat())) {
+          locationComment(k);
+          if (!s._idleT) s._idleT = now() + 90 + Math.random() * 60;
+          if (now() > s._idleT) { s._idleT = now() + 120 + Math.random() * 120; bark(k, pick(cfg[k].idle), 5); }
+        }
+      }
+    } else if (s.rec && s.wait) {
+      if (a.aiMode !== 'guard' || !a.home || Math.hypot(a.home.x - s.wait.x, a.home.z - s.wait.z) > 1) setGuard(a, s.wait.x, s.wait.z, 1.5);
+      if (s.rec && cfg[k].leaves() && slow) { /* they refuse when next spoken to (start node → farewell) */ }
+    } else {
+      // Not hired: live at home. Walked home from far away? Arrive while the player isn't looking.
+      const h = homeOf(k);
+      a.faction = cfg[k].faction;
+      if (a.aiMode !== 'guard' || !a.home || Math.hypot(a.home.x - h.x, a.home.z - h.z) > 1) setGuard(a, h.x, h.z, 2);
+      if (slow && Math.hypot(a.pos.x - h.x, a.pos.z - h.z) > 25 && a.distToPlayer() > 70) {
+        a.pos.set(h.x, h.y || 0, h.z); if (a.attach) { try { a.attach(); } catch (e) { /* */ } }
+      }
+    }
+  }
+  L.hook('update', function (dt, realDt) {
+    if (G.isStub('actors')) return;
+    tickT -= realDt; if (tickT > 0) return; tickT = 0.25;
+    slowT -= 0.25; const slow = slowT <= 0; if (slow) slowT = 1.5;
+    aggroT -= 0.25; const doAggro = aggroT <= 0;
+    for (const k of KEYS) { try { tickCompanion(k, slow); } catch (e) { G.reportError('quests:companionTick:' + k, e); } }
+    if (doAggro) aggroT = 1;
+    if (slow) for (const k of KEYS) syncPerk(k);
+  });
+
+  // Keep followers with the player across doors, ferries and fast travel.
+  function regroup() {
+    for (const k of KEYS) {
+      const a = following(k); if (!a) continue;
+      L.later(0.2, () => {
+        if (a.dead || !following(k)) return;
+        if (Math.hypot(a.pos.x - G.player.pos.x, a.pos.z - G.player.pos.z) < 20) return;
+        try {
+          const p = G.player.pos, sp = L.freeSpot(p.x - 1.3, p.z + 1.3, p.y, { maxR: 4 });
+          a.pos.set(sp.x, sp.y, sp.z); if (a.attach) a.attach();
+          // a knocked-out companion is carried along but left to get up by itself: forcing 'follow' here
+          // would skip combat's 'knocked' recovery and leave them at 1 HP / knockedOut forever
+          if (!a.knockedOut && a.state !== 'knocked') a.follow('player');
+        } catch (e) { /* */ }
+      });
+    }
+  }
+  G.events.on('doorTransition', regroup);
+  G.events.on('teleport', regroup);
+
+  // ------------------------------------------------------------------
+  // Epilogue slides (called from 60_finale's ending)
+  // ------------------------------------------------------------------
+  L.companionSlides = function (choice, N) {
+    const out = [];
+    const f = (x) => L.flag(x);
+    // Malone
+    const m = st('malone');
+    if (m.hired || f('malone_quest_done')) {
+      let t;
+      if (choice === 'selective') t = '"Gentleman" Jim Malone was at the end of the bar in the Neon when the torch turned green. He was a ghoul. It did not matter how many rounds he had gone; the Cleaning did not go the distance. It never has to.';
+      else if (m.left) t = '"Gentleman" Jim Malone walked away from ' + N + ' the day he decided the kid from Vault 120 had become a monster. He went back to the end of the bar in the Neon and never spoke the name again, not even for money.';
+      else if (f('malone_belt_given')) t = '"Gentleman" Jim Malone hung the Garden championship belt over the bar at the Rad-Lounge, with a name finally scratched into the plate: DANNY KEARNS. He opened a boxing gym under Times Square, where ghoul kids and smoothskin kids learned to keep their chins down and their hands up. He never took another paid job.';
+      else if (f('malone_belt_kept') || f('malone_belt_sold')) t = '"Gentleman" Jim Malone went back to selling his fists by the hour. When anybody asked about the Garden, he said the fight was never finished, and changed the subject. ' + (f('malone_belt_kept') ? 'The belt turned up years later in a Brooklyn pawn shop.' : '');
+      else t = '"Gentleman" Jim Malone kept walking the wasteland for caps, a heavyweight without a title. Somewhere west of 7th Avenue, a feral in shamrock trunks is still throwing hooks at nothing, still waiting for round seven.';
+      if (m.rec && choice !== 'selective') t += ' He was standing beside ' + N + ' at the foot of Liberty when the torch lit, hands up, chin down, as always.';
+      out.push({ title: 'JIM MALONE', text: t, pose: choice === 'selective' || m.left ? 'injured' : f('malone_belt_given') ? 'thumbs_up' : 'thinking' });
+    }
+    // Tull
+    const t0 = st('tull');
+    if (t0.hired || f('tull_library') || f('tull_press_kept')) {
+      let t;
+      if (t0.left) t = 'Ambrose Tull finished his account of his travels with ' + N + ' and then, for the first time in his life, burned a book. He went back to his bench in Grand Central and copied water-purification manuals for anyone who asked, and never wrote about the vault dweller again.';
+      else if (f('tull_library')) {
+        t = 'The Grand Central Free Reading Room printed its ten-thousandth book in 2296. Ambrose Tull taught half of Manhattan to read, and the other half to argue about what they had read. ';
+        t += (choice === 'brotherhood' || L.flag('mq_faction') === 'bos') ? 'In time the Brotherhood of Steel quietly reinstated him, rank and insignia. He sewed the insignia on the inside of his robe, where only he could see it.' : 'The Brotherhood never forgave him. He never asked them to.';
+      } else if (f('tull_press_kept')) t = 'Ambrose Tull never got his library. He copied books by hand on a bench in Grand Central until his eyes gave out, and then he dictated them to children, who wrote them down wrong, beautifully.';
+      else t = 'Ambrose Tull catalogued every ruin, machine and marvel he saw at ' + N + '\'s side. The manuscript, "A Field Guide to Manhattan, Annotated," is still passed from hand to hand in the markets. Nobody has ever found the end of the footnotes.';
+      out.push({ title: 'AMBROSE TULL', text: t, pose: t0.left || f('tull_press_kept') ? 'thinking' : 'thumbs_up' });
+    }
+    // Rook
+    const r = st('rook');
+    if (r.hired || f('rook_paid') || f('rook_stolen') || f('rook_lied')) {
+      let t;
+      if (f('rook_stolen')) t = 'Rook put a price on ' + N + '\'s head: three hundred and twelve caps, the exact amount. Nobody ever collected. Some say she never really wanted them to.';
+      else if (r.left) t = 'Rook went back under the Washington Square Arch and told anyone who\'d listen that ' + N + ' had "gone saint." She meant it as the worst insult she knew. Chess Charlie swears she sounded sad about it.';
+      else if (f('rook_lied')) t = 'Rook found out about the lockbox three years later, from a fence in Brooklyn who had the skull-painted box on his shelf. She laughed until she cried, then she robbed him. She never said a word to ' + N + ' about it. She didn\'t have to.';
+      else if (f('rook_paid')) t = 'With her severance paid, Rook bought the Woolworth Building\'s ground floor outright — at knifepoint, but still. She ran the most honest dishonest crew in Lower Manhattan: they only robbed people who could afford it, and they always paid their own.';
+      else t = 'Rook stayed as sharp as her knives. She drifted between crews and cities, and never stayed anywhere long — except, for a while, at the side of the vault dweller from 120.';
+      out.push({ title: 'ROOK', text: t, pose: f('rook_paid') ? 'thumbs_up' : f('rook_stolen') ? 'injured' : 'thinking' });
+    }
+    return out;
+  };
+
+  // ------------------------------------------------------------------
+  // Debug
+  // ------------------------------------------------------------------
+  G.quests.debug.companion = function (k, opts) {
+    k = k || 'malone';
+    const a = actor(k); if (!a) return 'no actor';
+    if (opts === 'tp') { const p = a.pos; G.player.teleport(p.x + 1.5, p.y, p.z + 1.5, 0); return 'tp'; }
+    if (opts === 'recruit') { for (const o of KEYS) if (o !== k && st(o).rec) release(o, 'dismiss'); recruit(k, 'debug'); return 'recruited'; }
+    const s = st(k);
+    return { rec: s.rec, wait: s.wait, far: s.far, melee: s.melee, passive: s.passive, weapon: a.weaponId, state: a.state, dist: +a.distToPlayer().toFixed(1), inv: s.inv };
+  };
+  L.companions = { dbg: () => ({ farewellFor, tickT, slowT }), cfg, st, current, following, recruit, release, doWait, doFollow, openInventory, ensureWeapon, KEYS };
+})();
+

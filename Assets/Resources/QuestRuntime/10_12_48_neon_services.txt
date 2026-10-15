@@ -1,0 +1,652 @@
+/* src/quests/48_neon_services.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 48: THE NEON, SERVICES & MINIGAMES
+ *   Doc Broadway's Clinic   heal / rads / limbs / addictions (FO3 doctor
+ *                           menu, priced by level) + chems under the counter
+ *   The Bunkhouse Hotel     rent a bed (Well Rested), rent a storage locker
+ *   Ticker Oracle           5-cap fortunes: real hints + jokes, daily luck
+ *   Mayor's notice board    bounties & jobs → the Neon's quests (49_)
+ *   The Rad Room            Lucky Lou's "Rad Jack" (blackjack, NV-style
+ *                           daily win cap) + rumours that start quests
+ *   Ammo Annie's Gallery    30-second pop-up tin-raider shooting range
+ *   Pawn Palace             Goldie buys anything (+20 % sell price)
+ *   Radio Repair/Robo-Shop  Sprocket sells parts and "Mister Marquee",
+ *                           a Mister Handy companion (follow / wait / home)
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const THREE = window.THREE;
+  const L = G.quests.lib;
+  const Q = G.quests;
+  const N = () => L.neonTown;
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  const lvl = () => Math.max(1, L.level());
+
+  // ==================================================================
+  // Doc Broadway
+  // ==================================================================
+  const price = { hp: () => 20 + lvl() * 3, rads: () => 40 + lvl() * 5, limbs: () => 30 + lvl() * 4, add: () => 90 + lvl() * 6 };
+  function hurt() { return G.player && G.player.hp < G.player.maxHp - 0.5; }
+  function rads() { return G.player && G.player.rads > 1; }
+  function crippled() {
+    try { if (!G.isStub('rpg') && typeof G.rpg.limbCondition === 'function') { const l = G.rpg.limbCondition(); return Object.keys(l).some((k) => l[k] < 100); } } catch (e) { /* ignore */ }
+    return false;
+  }
+  function addicted() {
+    try { if (!G.isStub('rpg') && G.rpg.addictions) { const a = typeof G.rpg.addictions === 'function' ? G.rpg.addictions() : G.rpg.addictions; return !!a && Object.keys(a).length > 0; } } catch (e) { /* ignore */ }
+    return false;
+  }
+  function docHeal(what, cost) {
+    if (!L.pay(cost)) return;
+    if (!G.isStub('rpg') && G.rpg.doctorHeal) { try { G.rpg.doctorHeal(what); } catch (e) { G.reportError('quests:doctorHeal', e); } }
+    else { if (what.hp) G.player.heal(G.player.maxHp); if (what.rads) L.removeRads(); }
+    L.sfx(what.rads ? 'radaway' : 'stimpak');
+    L.incFlag('neon_doc_visits');
+  }
+  function everythingCost() { let c = 0; if (hurt()) c += price.hp(); if (rads()) c += price.rads(); if (crippled()) c += price.limbs(); return Math.round(c * 0.85); }
+  const UNDER = [['jet', 3], ['psycho', 2], ['buffout', 2], ['mentats', 2], ['ultrajet', 1], ['day_tripper', 2]];
+
+  // ==================================================================
+  // Bunkhouse
+  // ==================================================================
+  function bedPrice() { return L.skill('barter') >= 45 ? 12 : 20; }
+  function sleepAt(hours) {
+    if (!L.pay(bedPrice())) return;
+    L.setFlag('neon_bed_nights', (Number(L.flag('neon_bed_nights')) || 0) + 1);
+    G.fadeTransition(() => {
+      if (!G.isStub('rpg') && G.rpg.sleep) { try { G.rpg.sleep(hours, { owned: true }); } catch (e) { G.reportError('quests:sleep', e); } }
+      else { G.player.heal(G.player.maxHp); G.time.hour = (G.time.hour + hours) % 24; }
+    }, 1.2);
+  }
+  function hoursUntil(h) { return Math.max(1, Math.round(((h - G.time.hour) + 24) % 24) || 24); }
+
+  // ==================================================================
+  // Ticker Oracle
+  // ==================================================================
+  const JOKES = ['YOU WILL MEET A TALL DARK STRANGER. HE WILL BE A SUPER MUTANT. RUN.', 'LUCKY NUMBERS: 10, 5.56, 12-GAUGE.', 'A GREAT FORTUNE AWAITS YOU. IT IS IN A LOCKED SAFE. BRING BOBBY PINS.',
+    'BEWARE THE BRAHMIN WITH ONE HEAD. IT IS HIDING SOMETHING.', 'YOUR FUTURE IS BRIGHT. THAT IS THE RADIATION.', 'TODAY IS A GOOD DAY TO NOT DIE. CONSIDER IT.',
+    'SOMEONE THINKS OF YOU FONDLY. HE IS A FERAL GHOUL. HE THINKS OF YOU AS LUNCH.', 'YOU WILL LIVE A LONG LIFE. LONGER IF YOU BECOME A GHOUL. ASK ABOUT OUR PLAN.',
+    'THE MACHINE SEES ALL. THE MACHINE IS TIRED. PLEASE INSERT 5 CAPS.', 'ERROR 404: FUTURE NOT FOUND. TRY AGAIN AFTER THE APOCALYPSE.'];
+  function hints() {
+    const out = [];
+    try {
+      const v = Q.list().filter((q) => q.active && q.stageText);
+      if (v.length) { const q = pick(v); out.push('THE THREADS OF "' + q.name.toUpperCase() + '" PULL YOU ONWARD: ' + q.stageText.toUpperCase()); }
+    } catch (e) { /* ignore */ }
+    if (!Q.isStarted('sq_neon_ball')) out.push('THE BALL THAT DOES NOT FALL AWAITS A STEADY HAND. SEEK THE MAYOR.');
+    if (!Q.isStarted('sq_neon_power')) out.push('THE LIGHTS FLICKER BECAUSE A HAND IS ON THE SWITCH. ASK THE ENGINEER ' + (N().place('power') ? 'BELOW THE THEATRE.' : 'AT THE BREAKER CABINET.'));
+    if (!L.flag('neon_guard_member')) out.push('THE WALL NEEDS SHOULDERS. THE CAPTAIN AT THE NORTH GATE PAYS IN CAPS AND SCARS.');
+    if (!Q.isStarted('sq_neon_opry')) out.push('A STAGE STANDS EMPTY. A DIRECTOR WEEPS. YOUR NAME IN LIGHTS, IF YOU CAN CARRY A TUNE.');
+    if (!L.flag('neon_speakeasy_lore')) out.push('BENEATH THE FORTY-SECOND STREET STAIRS, A LOCKED GATE HIDES A THIRSTY SECRET. KNOCK TWICE. WAIT. KNOCK ONCE.');
+    if (!Q.isStarted('sq_neon_club')) out.push('THE VELVET ROPE PARTS FOR A GOOD JOKE AND A BAD FACE. THE BIG ONE AT THE DOOR IS SOFTER THAN HE LOOKS.');
+    if (L.flag('neon_guard_member') && !Q.isActive('sq_neon_contract') && L.flag('neon_contract_day') !== G.time.day) out.push('THE SERGEANT BELOW THE ISLAND HAS WORK. THE AVENUES HAVE TEETH. PULL THEM.');
+    const bb = Number(L.flag('bobble_count')) || 0;
+    if (bb < 20) out.push('THE LITTLE MEN WITH BIG HEADS WAIT IN HIGH PLACES. ' + (20 - bb) + ' REMAIN.');
+    return out;
+  }
+
+  // ==================================================================
+  // Rad Jack (blackjack) with Lucky Lou
+  // ==================================================================
+  const SUITS = ['♠', '♥', '♦', '♣'], RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+  const RJ = { deck: [], you: [], lou: [], bet: 0, over: true, msg: '' };
+  function newDeck() { RJ.deck = []; for (let d = 0; d < 2; d++) for (const s of SUITS) for (const r of RANKS) RJ.deck.push(r + s); for (let i = RJ.deck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = RJ.deck[i]; RJ.deck[i] = RJ.deck[j]; RJ.deck[j] = t; } }
+  function draw() { if (RJ.deck.length < 12) newDeck(); return RJ.deck.pop(); }
+  function score(h) { let s = 0, a = 0; for (const c of h) { const r = c.replace(/[♠♥♦♣]/, ''); if (r === 'A') { a++; s += 11; } else if (r === 'J' || r === 'Q' || r === 'K') s += 10; else s += Number(r); } while (s > 21 && a > 0) { s -= 10; a--; } return s; }
+  function dailyWon() { const d = L.flag('neon_rj_day') === G.time.day ? Number(L.flag('neon_rj_won')) || 0 : 0; return d; }
+  function addWon(n) { if (L.flag('neon_rj_day') !== G.time.day) { L.setFlag('neon_rj_day', G.time.day); L.setFlag('neon_rj_won', 0); } L.setFlag('neon_rj_won', (Number(L.flag('neon_rj_won')) || 0) + n); }
+  const CAP = 300;
+  function deal(bet) {
+    if (!L.pay(bet)) return 'hello';
+    RJ.bet = bet; RJ.you = [draw(), draw()]; RJ.lou = [draw(), draw()]; RJ.over = false; RJ.msg = '';
+    L.sfx('ui_select');
+    if (score(RJ.you) === 21) return settle(true);
+    return 'table';
+  }
+  function settle(natural) {
+    RJ.over = true;
+    const y = score(RJ.you);
+    if (y > 21) { RJ.msg = 'Bust. Lou rakes in your ' + RJ.bet + ' caps with a sympathetic wheeze.'; return 'result'; }
+    // Lou draws to 17 (a Luck 8+ player sometimes catches Lou "peeking" — he stands early)
+    const luck = L.special('L');
+    while (score(RJ.lou) < 17) { if (luck >= 8 && score(RJ.lou) >= 13 && Math.random() < 0.25) break; RJ.lou.push(draw()); }
+    const l = score(RJ.lou);
+    let win = 0;
+    if (natural && !(l === 21 && RJ.lou.length === 2)) { win = Math.round(RJ.bet * 2.5); RJ.msg = 'Rad Jack! Lou groans. "Somebody check this one for a Stealth Boy."'; }
+    else if (l > 21 || y > l) { win = RJ.bet * 2; RJ.msg = l > 21 ? 'Lou busts with ' + l + '. "Eh. The cards hate me today. Tomorrow they\'ll hate you."' : 'You win, ' + y + ' to ' + l + '.'; }
+    else if (y === l) { win = RJ.bet; RJ.msg = 'Push at ' + y + '. Nobody\'s happy.'; }
+    else RJ.msg = 'Lou takes it, ' + l + ' to ' + y + '. "House always wins, pal. I\'m the house."';
+    if (win) { L.giveCaps(win); if (win > RJ.bet) addWon(win - RJ.bet); }
+    return 'result';
+  }
+  function tableText() {
+    const up = RJ.lou[0];
+    return 'YOUR HAND: ' + RJ.you.join('  ') + '   (' + score(RJ.you) + ')\nLOU SHOWS: ' + up + '  [??]\nBET: ' + RJ.bet + ' caps';
+  }
+  const RUMORS = [
+    ['Talk to Sparks down in the theatre basement. Power\'s been going out at the exact same hour three nights running. That ain\'t wear and tear, that\'s a schedule.', 'neon_rumor_power'],
+    ['Lionel over at the Opry lost his leading man. The guy walked off mid-number. If you can hold a note, Lionel\'s desperate enough to hire a smoothskin.', 'neon_rumor_opry'],
+    ['Captain Kincaid is hiring guns. Not guards — guns. Bounties on the Mayor\'s board, paid in caps. Raider fingers, too, if you swing that way.', 'neon_rumor_guard'],
+    ['Crowe wants the Ball fixed. Been wanting it for eighty years. Says if the Ball drops, the Neon\'s a city again. Crowe says a lot of things.', 'neon_rumor_ball'],
+    ['Eustace at the Depot pays escorts. Grand Central run, Radio City run. Raiders hit the second wagon, never the first. Remember that.', 'neon_rumor_escort'],
+    ['Sal won\'t let smoothskins in the Club. But Sal\'s a softie for a good joke, and a sucker for manners. Just don\'t mention his ears.', 'neon_rumor_club'],
+  ];
+
+  // ==================================================================
+  // Ammo Annie's Shooting Gallery (pop-up targets)
+  // ==================================================================
+  const GAL = { active: false, t: 0, dur: 30, hits: 0, shots: 0, targets: [], mesh: null, hud: null, S: null, dir: null, right: null, lanes: [], spawnT: 0 };
+  const MAX_T = 8;
+  const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _p = new THREE.Vector3(), _s = new THREE.Vector3(1, 1, 1);
+  function buildTargetMesh() {
+    // A "tin raider" cut-out on a post: vertex-coloured, merged, one InstancedMesh = 1 draw call.
+    const parts = [];
+    const add = (geo, col, x, y, z) => { geo.translate(x, y, z); const c = new THREE.Color(col); const n = geo.attributes.position.count; const a = new Float32Array(n * 3); for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; } geo.setAttribute('color', new THREE.BufferAttribute(a, 3)); parts.push(geo); };
+    add(new THREE.CylinderGeometry(0.03, 0.03, 0.9, 6), 0x3a3a36, 0, 0.45, 0);            // post
+    add(new THREE.BoxGeometry(0.52, 0.62, 0.03), 0xb8b0a0, 0, 1.2, 0);                      // tin body
+    add(new THREE.BoxGeometry(0.4, 0.14, 0.035), 0x9a2a1a, 0, 1.36, 0.004);                 // red sash
+    add(new THREE.CylinderGeometry(0.17, 0.17, 0.03, 12).rotateX(Math.PI / 2), 0xc8c0b0, 0, 1.68, 0);  // head
+    add(new THREE.BoxGeometry(0.22, 0.05, 0.036), 0x1a1a1a, 0, 1.7, 0.004);                 // mask stripe
+    add(new THREE.CylinderGeometry(0.09, 0.09, 0.036, 12).rotateX(Math.PI / 2), 0xd0302a, 0, 1.2, 0.006); // bullseye
+    add(new THREE.CylinderGeometry(0.04, 0.04, 0.04, 8).rotateX(Math.PI / 2), 0xf0e0c0, 0, 1.2, 0.01);
+    const g = G.util.mergeGeometries ? G.util.mergeGeometries(parts) : parts[1];
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.5 });
+    const m = new THREE.InstancedMesh(g, mat, MAX_T);
+    m.frustumCulled = false; m.castShadow = false; m.name = 'neon_gallery_targets'; m.visible = false;
+    G.scene.add(m);
+    return m;
+  }
+  function galleryHud(on) {
+    if (G.SMOKE && on) return;
+    if (!on) { if (GAL.hud) { GAL.hud.remove(); GAL.hud = null; } return; }
+    if (GAL.hud) return;
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;top:12%;left:50%;transform:translateX(-50%);z-index:860;pointer-events:none;font-family:"Share Tech Mono",monospace;' +
+      'color:#ffd27a;text-shadow:0 0 6px rgba(255,160,40,.8);font-size:22px;letter-spacing:3px;text-align:center;background:rgba(20,10,0,.35);padding:6px 18px;border:1px solid rgba(255,190,90,.5)';
+    document.body.appendChild(el); GAL.hud = el;
+  }
+  function rangeSetup() {
+    const T = N();
+    const shooter = T.spot(['gallery_range', 'gallery_shooter'], { near: ['gallery_owner', 'gallery_door', 'plaza'], dx: 0, dz: 2.2 });
+    if (!shooter) return false;
+    const tgt = T.has(['gallery_targets', 'gallery_backstop']);
+    const eye = new THREE.Vector3(shooter.x, shooter.y + 1.5, shooter.z);
+    let dir = null, len = 17;
+    if (tgt && Math.hypot(tgt.x - shooter.x, tgt.z - shooter.z) > 5) { dir = new THREE.Vector3(tgt.x - shooter.x, 0, tgt.z - shooter.z); len = Math.min(22, dir.length()); dir.normalize(); }
+    else {
+      // the clearest line with a backstop wall (a building front 18–30 m away) and nobody's stall in it
+      let best = null, bs = -1e9;
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        const d = new THREE.Vector3(-Math.sin(a), 0, -Math.cos(a));
+        const h = G.world.raycast(eye, d, 32);
+        const hd = h ? h.dist : 32;
+        let sc = Math.min(hd, 20) * 2 - (hd > 30 ? 6 : 0);
+        // aim away from the plaza centre (the crowd)
+        const c = new THREE.Vector3(-40 - shooter.x, 0, -262 - shooter.z).normalize();
+        sc -= Math.max(0, d.dot(c)) * 8;
+        if (sc > bs) { bs = sc; best = { d, hd }; }
+      }
+      dir = best.d; len = Math.max(6, Math.min(19, best.hd - 1.5));
+    }
+    GAL.S = shooter; GAL.dir = dir; GAL.right = new THREE.Vector3(-dir.z, 0, dir.x);
+    GAL.lanes = [0.5, 0.72, 0.95].map((f) => f * len);
+    return true;
+  }
+  function popTarget() {
+    const free = GAL.targets.filter((t) => !t.up && t.downT <= 0);
+    if (!free.length) return;
+    const t = pick(free);
+    t.lane = Math.floor(Math.random() * GAL.lanes.length);
+    t.phase = Math.random() * 6.28; t.amp = 1.2 + Math.random() * 2.2; t.w = 0.8 + Math.random() * 1.4 + GAL.hits * 0.05;
+    t.up = true; t.life = 2.4 + Math.random() * 1.6; t.flip = 0; t.hit = false;
+  }
+  function targetPos(t, time, out) {
+    const d = GAL.lanes[t.lane], S = GAL.S;
+    const lat = Math.sin(time * t.w + t.phase) * t.amp;
+    out.set(S.x + GAL.dir.x * d + GAL.right.x * lat, 0, S.z + GAL.dir.z * d + GAL.right.z * lat);
+    out.y = G.world.groundHeight(out.x, out.z, S.y + 1, 0.2);
+    if (!isFinite(out.y)) out.y = S.y;
+    return out;
+  }
+  function startGallery() {
+    if (!N().place('gallery')) return;   // no range without the gallery (the service is hidden until it is built)
+    if (GAL.active) return;
+    if (G.isStub('weapons') || !G.weapons.current || !G.weapons.current() || G.weapons.current().id === 'unarmed') { L.say('neon_annie', 'Bring a gun, sugar. I ain\'t lending you mine.'); return; }
+    if (!rangeSetup()) return;
+    if (!L.pay(5)) return;
+    if (!GAL.mesh) GAL.mesh = buildTargetMesh();
+    GAL.targets = []; for (let i = 0; i < MAX_T; i++) GAL.targets.push({ up: false, downT: 0, flip: 0, lane: 0 });
+    GAL.active = true; GAL.t = 0; GAL.hits = 0; GAL.shots = 0; GAL.spawnT = 1.2; GAL.end = null;
+    const yaw = Math.atan2(-GAL.dir.x, -GAL.dir.z);
+    G.player.teleport(GAL.S.x, GAL.S.y, GAL.S.z, yaw); G.player.pitch = -0.02;
+    if (!G.isStub('combat') && G.combat.setSafeZoneQuiet) G.combat.setSafeZoneQuiet('times_square', true);
+    GAL.mesh.visible = true;
+    galleryHud(true);
+    L.later(0.6, () => L.say('neon_annie', 'Thirty seconds! Tin raiders pop up, you knock \'em down! Go!', 3));
+  }
+  function endGallery(silent) {
+    if (!GAL.active) return;
+    GAL.active = false;
+    if (GAL.mesh) GAL.mesh.visible = false;
+    galleryHud(false);
+    if (!G.isStub('combat') && G.combat.setSafeZoneQuiet) G.combat.setSafeZoneQuiet('times_square', false);
+    if (silent) return;
+    const h = GAL.hits;
+    L.setFlag('neon_gallery_best', Math.max(Number(L.flag('neon_gallery_best')) || 0, h));
+    let pay = 0, line;
+    if (h >= 12) { pay = 80; line = h + ' tin raiders! Now THAT\'S shootin\'! You ever want a job, the Guard\'s hiring — tell Kincaid I sent you.'; }
+    else if (h >= 8) { pay = 40; line = h + ' down. Not bad, not bad at all. Here\'s your caps.'; }
+    else if (h >= 5) { pay = 15; line = h + ' hits. You\'d survive a small raider. A very small one.'; }
+    else line = h + (h === 1 ? ' hit' : ' hits') + '. Honey, the tin raiders are laughing at you. Can\'t hear it, but they are.';
+    if (pay) L.giveCaps(pay);
+    L.say('neon_annie', line, 5);
+    L.notify('SHOOTING GALLERY: ' + h + ' hits, ' + GAL.shots + ' shots' + (pay ? ' — ' + pay + ' caps' : ''));
+    if (h >= 12 && !L.flag('neon_gallery_champ')) {
+      L.setFlag('neon_gallery_champ'); L.give('q_neon_deadeye', 1); L.xp(75, 'Ammo Annie\'s Gallery: champion');
+      const a = L.npc('neon_annie'); if (a && a.merchant) a.merchant.markup = 0.85;
+    }
+    L.incFlag('neon_gallery_rounds');
+  }
+  const _o = new THREE.Vector3(), _d = new THREE.Vector3(), _c = new THREE.Vector3();
+  function galleryShot() {
+    if (!GAL.active) return;
+    GAL.shots++;
+    G.camera.getWorldPosition(_o); G.camera.getWorldDirection(_d);
+    const wall = G.world.raycast(_o, _d, 60);
+    const maxT = wall ? wall.dist + 0.3 : 60;
+    let best = null, bt = maxT;
+    for (const t of GAL.targets) {
+      if (!t.up || t.hit) continue;
+      targetPos(t, GAL.t, _c); _c.y += 1.3;
+      // ray-sphere against the body (r .34) and the head
+      for (const [dy, r] of [[0, 0.34], [0.4, 0.2]]) {
+        const cy = _c.y + dy;
+        const ox = _o.x - _c.x, oy = _o.y - cy, oz = _o.z - _c.z;
+        const b = ox * _d.x + oy * _d.y + oz * _d.z, cc = ox * ox + oy * oy + oz * oz - r * r;
+        const disc = b * b - cc; if (disc < 0) continue;
+        const tt = -b - Math.sqrt(disc);
+        if (tt > 0 && tt < bt) { bt = tt; best = t; }
+      }
+    }
+    if (best) {
+      best.hit = true; best.flip = 0.001; GAL.hits++;
+      targetPos(best, GAL.t, _c); _c.y += 1.3;
+      L.sfx('ricochet', { pos: _c.clone(), volume: 0.9 });
+      if (!G.isStub('fx') && G.fx.sparks) try { G.fx.sparks(_c.clone()); } catch (e) { /* ignore */ }
+    }
+  }
+  function galleryUpdate(dt) {
+    if (!GAL.active) return;
+    if (G.state !== 'play' && G.state !== 'pipboy') { endGallery(true); return; }
+    GAL.t += dt;
+    const left = GAL.dur - GAL.t;
+    if (GAL.hud) GAL.hud.textContent = 'ANNIE\'S GALLERY   ' + Math.max(0, Math.ceil(left)) + 's   HITS ' + GAL.hits;
+    // leaving the firing line ends the round
+    if (GAL.t > 1.5 && Math.hypot(G.player.pos.x - GAL.S.x, G.player.pos.z - GAL.S.z) > 6) { L.say('neon_annie', 'Hey! Round\'s over when you walk off the line!', 3); endGallery(false); return; }
+    if (left <= 0) { endGallery(false); return; }
+    GAL.spawnT -= dt;
+    if (GAL.spawnT <= 0) { popTarget(); GAL.spawnT = Math.max(0.55, 1.5 - GAL.t * 0.03) * (0.7 + Math.random() * 0.6); }
+    let i = 0;
+    for (const t of GAL.targets) {
+      if (t.up) {
+        t.life -= dt;
+        if (t.hit) t.flip = Math.min(1, t.flip + dt * 5);
+        if ((t.hit && t.flip >= 1) || t.life <= 0) { t.up = false; t.downT = 0.8; }
+      } else if (t.downT > 0) t.downT -= dt;
+      if (t.up) {
+        targetPos(t, GAL.t, _p);
+        const face = Math.atan2(G.player.pos.x - _p.x, G.player.pos.z - _p.z);
+        _e.set(-t.flip * Math.PI / 2, face, 0, 'YXZ'); _q.setFromEuler(_e);
+        _m.compose(_p, _q, _s);
+      } else _m.makeScale(0, 0, 0);
+      GAL.mesh.setMatrixAt(i++, _m);
+    }
+    GAL.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // ==================================================================
+  // Mister Marquee (Robo-Shop companion)
+  // ==================================================================
+  function marquee() { return L.npc('neon_marquee'); }
+  function spawnMarquee(near) {
+    const T = N();
+    const p = near || T.spot(['robo_owner', 'robo_door'], { near: ['repairman', 'vendor2', 'plaza'], dx: 2, dz: 2 });
+    if (!p) return null;
+    const a = L.spawnNPC({ id: 'neon_marquee', type: 'mister_handy', name: 'Mister Marquee', faction: 'settlers', level: Math.max(6, lvl()), essential: true, pos: { x: p.x, y: p.y, z: p.z },
+      ai: 'guard', home: { x: p.x, z: p.z, r: 2 }, dialogue: 'dlg_neon_marquee', voice: 'protectron',
+      barks: { greet: ['Salutations, sir or madam! Mister Marquee, at your service!', 'Shall I polish something? Shall I stab something? I am equipped for both!'],
+        idle: ['Humming a little tune! ♪ Hmm-hmm-hmm ♪', 'Your posture, if I may, is abysmal.', 'I do so enjoy our little outings.'],
+        combat: ['Have at thee, ruffian!', 'Tally-ho!', 'This will sting, I\'m afraid!'] } });
+    return a;
+  }
+  function marqueeFollow(on) {
+    const a = marquee(); if (!a) return;
+    const st = L.flag('neon_marquee') || {};
+    if (on) { a.follow('player'); st.mode = 'follow'; }
+    else { a.follow(null); a.home = { x: a.pos.x, z: a.pos.z, r: 2 }; a.aiMode = 'guard'; st.mode = 'wait'; }
+    L.setFlag('neon_marquee', st);
+  }
+  function marqueeHome() {
+    const a = marquee(); if (!a) return;
+    a.follow(null);
+    const p = N().spot(['robo_owner', 'robo_door'], { near: ['repairman', 'vendor2', 'plaza'], dx: 2, dz: 2 });
+    if (p) { a.home = { x: p.x, z: p.z, r: 2 }; a.aiMode = 'guard'; a.moveTo(p.x, p.z); }
+    const st = L.flag('neon_marquee') || {}; st.mode = 'home'; L.setFlag('neon_marquee', st);
+  }
+
+  // ==================================================================
+  // World objects: notice board, oracle booth (fallback models), locker
+  // ==================================================================
+  function vcMesh(parts, mat) {
+    const geos = parts.map(([geo, col, x, y, z, ry]) => {
+      if (ry) geo.rotateY(ry); geo.translate(x, y, z);
+      const c = new THREE.Color(col), n = geo.attributes.position.count, a = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
+      geo.setAttribute('color', new THREE.BufferAttribute(a, 3));
+      return geo.index ? geo.toNonIndexed() : geo;
+    });
+    const g = G.util.mergeGeometries ? G.util.mergeGeometries(geos) : geos[0];
+    return new THREE.Mesh(g, mat);
+  }
+  function boardTexture() {
+    const c = document.createElement('canvas'); c.width = 256; c.height = 192;
+    const x = c.getContext('2d');
+    x.fillStyle = '#5a4128'; x.fillRect(0, 0, 256, 192);
+    for (let i = 0; i < 40; i++) { x.fillStyle = 'rgba(0,0,0,' + (Math.random() * 0.15) + ')'; x.fillRect(Math.random() * 256, 0, 2, 192); }
+    const notes = [['#e8dfc4', 'WANTED', '#8a1a1a'], ['#d8d0b0', 'JOBS', '#1a1a1a'], ['#e0d8b8', 'BOUNTY', '#8a1a1a'], ['#cfc7a8', 'NOTICE', '#1a3a6a'], ['#e4dcc0', 'LOST', '#1a1a1a'], ['#d4ccac', 'REWARD', '#8a1a1a']];
+    notes.forEach(([bg, t, fg], i) => {
+      const px = 12 + (i % 3) * 82 + (Math.random() - 0.5) * 8, py = 12 + Math.floor(i / 3) * 88 + (Math.random() - 0.5) * 6;
+      x.save(); x.translate(px + 34, py + 38); x.rotate((Math.random() - 0.5) * 0.12); x.fillStyle = bg; x.fillRect(-34, -38, 68, 76);
+      x.fillStyle = fg; x.font = 'bold 13px Courier New'; x.textAlign = 'center'; x.fillText(t, 0, -22);
+      x.fillStyle = 'rgba(30,30,30,.55)'; for (let l = 0; l < 6; l++) x.fillRect(-26, -12 + l * 8, 40 + Math.random() * 12, 2);
+      x.fillStyle = '#b02020'; x.beginPath(); x.arc(0, -34, 3, 0, 6.3); x.fill(); x.restore();
+    });
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace || t.colorSpace; return t;
+  }
+  function buildBoard(p) {
+    const g = new THREE.Group();
+    const frame = vcMesh([[new THREE.BoxGeometry(1.9, 1.5, 0.08), 0x3a2a1a, 0, 1.55, 0], [new THREE.BoxGeometry(0.1, 2.3, 0.1), 0x2e2418, -0.95, 1.15, 0],
+      [new THREE.BoxGeometry(0.1, 2.3, 0.1), 0x2e2418, 0.95, 1.15, 0], [new THREE.BoxGeometry(2.1, 0.12, 0.3), 0x4a3a28, 0, 2.36, 0.08]], new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }));
+    const face = new THREE.Mesh(new THREE.PlaneGeometry(1.76, 1.32), new THREE.MeshStandardMaterial({ map: boardTexture(), roughness: 0.95 }));
+    face.position.set(0, 1.55, 0.045);
+    g.add(frame, face);
+    g.position.set(p.x, p.y, p.z); g.rotation.y = p.yaw || 0;
+    G.scene.add(g);
+    try { G.world.addCollider(p.x, p.z, 2.1, 0.3, p.y, p.y + 2.4, p.yaw || 0, { tag: 'prop', walkable: false, surface: 'wood' }); } catch (e) { /* ignore */ }
+    if (G.world.addLOD) G.world.addLOD(g, 120);
+    return g;
+  }
+  function buildOracle(p) {
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.3 });
+    const body = vcMesh([[new THREE.BoxGeometry(0.9, 1.1, 0.7), 0x5a1a2a, 0, 0.55, 0], [new THREE.BoxGeometry(0.95, 0.08, 0.75), 0xb08a30, 0, 1.12, 0],
+      [new THREE.BoxGeometry(0.8, 0.9, 0.6), 0x2a1018, 0, 1.6, -0.02], [new THREE.BoxGeometry(0.95, 0.18, 0.75), 0xb08a30, 0, 2.12, 0],
+      [new THREE.BoxGeometry(0.12, 0.04, 0.02), 0x111111, 0.2, 0.9, 0.36], [new THREE.BoxGeometry(0.26, 0.06, 0.03), 0xd8d0b0, -0.18, 0.72, 0.36]], mat);
+    const glass = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.75, 0.02), new THREE.MeshStandardMaterial({ color: 0x224433, emissive: 0x33ff88, emissiveIntensity: 0.35, transparent: true, opacity: 0.55 }));
+    glass.position.set(0, 1.6, 0.29);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), new THREE.MeshStandardMaterial({ color: 0x9a8a70, emissive: 0x33ff66, emissiveIntensity: 0.25, roughness: 0.5 }));
+    head.position.set(0, 1.62, 0.02);
+    const g = new THREE.Group(); g.add(body, glass, head);
+    W.oracleMats = [glass.material, head.material];
+    g.position.set(p.x, p.y, p.z); g.rotation.y = p.yaw || 0;
+    G.scene.add(g);
+    try { G.world.addCollider(p.x, p.z, 0.95, 0.75, p.y, p.y + 2.2, p.yaw || 0, { tag: 'prop', walkable: false, surface: 'wood' }); } catch (e) { /* ignore */ }
+    if (!G.isStub('fx') && G.fx.glowSprite) try { W.oracleGlow = G.fx.glowSprite(new THREE.Vector3(p.x, p.y + 1.7, p.z), 0x44ff88, 1.2); } catch (e) { /* ignore */ }
+    if (G.world.addLOD) G.world.addLOD(g, 120);
+    return g;
+  }
+  const W = { built: false };
+  function buildWorld() {
+    if (W.built) return; W.built = true;
+    const T = N();
+    // Notice board: the exterior stream may build the board itself (anchor notice_board) — then only the interaction.
+    const nb = T.has(['notice_board']);
+    const bp = nb ? T.spot(['notice_board'], null, { maxR: 2 }) || nb : T.spot([], { near: ['mayor', 'mayor_office', 'center'], dx: 2.6, dz: 2.6 });
+    if (bp) {
+      if (!nb) { let yaw = 0; const c = T.has(['plaza_centre', 'center']); if (c) yaw = Math.atan2(c.x - bp.x, c.z - bp.z); bp.yaw = yaw; W.board = buildBoard(bp); }
+      G.world.addInteractable({ pos: L.V3(bp.x, (bp.y || 0) + 1.5, bp.z), radius: 1.1, label: 'Neon Notice Board', verb: 'Read', priority: 0.8,
+        onInteract() { L.startDialogue('dlg_neon_board', null); } });
+      W.boardPos = bp;
+    }
+    // Ticker Oracle
+    const ob = T.has(['oracle_booth', 'ticker_oracle']);
+    const op = ob ? { x: ob.x, y: ob.y, z: ob.z, yaw: ob.yaw } : T.spot([], { near: ['one_times_square', 'ball_base', 'entrance_south'], dx: 3.5, dz: 4 });
+    if (op) {
+      if (!ob) { const c = T.has(['plaza_centre', 'center']); if (c) op.yaw = Math.atan2(c.x - op.x, c.z - op.z); W.oracle = buildOracle(op); }
+      G.world.addInteractable({ pos: L.V3(op.x, (op.y || 0) + 1.3, op.z), radius: 0.9, label: 'Ticker Oracle', verb: 'Insert 5 Caps', priority: 0.8,
+        onInteract() { L.startDialogue('dlg_neon_oracle', null); } });
+      W.oraclePos = op;
+    }
+    // Bunkhouse storage locker (rented) — only once the Bunkhouse exists
+    if (!G.isStub('containers') && G.containers.create && T.place('bunkhouse')) {
+      const lk = T.has(['bunk_locker']);
+      const lp = lk || T.spot([], { near: ['bunk_keeper', 'bunk_door', 'settler6', 'entrance'], dx: -1.6, dz: 1.2 });
+      if (lp) {
+        try {
+          const c = G.containers.create({ id: 'neon_bunk_locker', name: 'Bunkhouse Locker', kind: 'locker', pos: { x: lp.x, y: lp.y, z: lp.z }, yaw: lp.yaw || 0, model: lk ? false : undefined, items: [] });
+          if (c && c.interactable) { const en = c.interactable.enabled; c.interactable.enabled = () => !!L.flag('neon_locker') && (!en || en()); }
+          W.locker = c;
+        } catch (e) { G.reportError('quests:neon locker', e); }
+      }
+    }
+  }
+
+  // ==================================================================
+  // Dialogues
+  // ==================================================================
+  L.hook('init', function () {
+    L.defineItem({ id: 'q_neon_deadeye', name: 'Annie\'s Deadeye Ribbon', type: 'misc', weight: 0, value: 50, mesh: 'paper',
+      desc: 'A blue ribbon cut from a pre-war county-fair banner. "DEADEYE — ANNIE\'S GALLERY" in shaky red paint. Annie gives you 15% off for the rest of your life. Hers or yours, whichever ends first.' });
+  });
+
+  L.hook('register', function () {
+    L.dialogue('dlg_neon_broadway', N().sleepy({
+      start: () => (L.flag('met_broadway') ? 'hello' : 'first'),
+      nodes: {
+        first: { text: 'Ah! A smoothskin, and a leaky one. Doc Broadway — surgeon, pharmacist, and for thirty-one years the understudy for the Phantom. The Phantom never missed a show. Not once. Not even the day of the bombs. Anyway! What seems to be the trouble?',
+          onEnter() { L.setFlag('met_broadway'); }, responses: [{ text: 'I need some treatment.', next: 'hello' }, { text: 'Understudy?', next: 'phantom' }] },
+        phantom: { text: 'The mask was the best part. Now I don\'t need one — the radiation did the whole half-face thing for free. Broadway giveth, Broadway taketh away. Now, you\'re dripping on my floor.', responses: [{ text: 'Let\'s talk treatment.', next: 'hello' }] },
+        hello: { text: () => (G.player.rads > 400 ? 'Good lord, you\'re practically a night-light. Sit, sit.' : hurt() || crippled() ? 'Let\'s have a look at you. Mm. Mm-hm. Yes. You\'re broken. What\'ll it be?' : pick(['Clean bill of health! Congratulations. That\'ll be nothing. I hate nothing.', 'You look fine. Disgustingly fine. Buying, then?'])),
+          responses: [
+            { text: () => 'Heal my wounds. (' + price.hp() + ' caps)', cond: hurt, action: () => docHeal({ hp: true }, price.hp()), next: 'done' },
+            { text: () => 'Remove my radiation. (' + price.rads() + ' caps)', cond: rads, action: () => docHeal({ rads: true }, price.rads()), next: 'done' },
+            { text: () => 'Fix my crippled limbs. (' + price.limbs() + ' caps)', cond: crippled, action: () => docHeal({ limbs: true }, price.limbs()), next: 'done' },
+            { text: () => 'Cure my addictions. (' + price.add() + ' caps)', cond: addicted, action: () => docHeal({ addictions: true }, price.add()), next: 'done' },
+            { text: () => 'The works — everything. (' + everythingCost() + ' caps)', cond: () => [hurt(), rads(), crippled()].filter(Boolean).length > 1, action: () => docHeal({ hp: true, rads: true, limbs: true }, everythingCost()), next: 'done' },
+            { text: 'Let me see your medical supplies.', barter: true },
+            { text: 'You got anything… stronger? Under the counter?', cond: () => !L.flag('broadway_under'), check: { skill: 'medicine', value: 40 }, next: 'under', failNext: 'under_no' },
+            { text: 'Folks say you and Candy Rourke don\'t get along.', next: 'candy', cond: () => !!L.flag('met_broadway') },
+            { text: 'I\'d like to donate — for the patients who can\'t pay. (100 caps)', karma: 50, repeatKarma: true,
+              cond: () => L.caps() >= 100 && !!L.flag('met_broadway') && (Number(G.time.day) || 0) - (Number(L.flag('broadway_donation_day')) || -99) >= 3,
+              action: () => { if (L.pay(100)) { L.setFlag('broadway_donation_day', G.time.day); L.incFlag('broadway_donations'); } }, next: 'donate' },
+            { text: 'Goodbye, Doc.' }] },
+        done: { text: () => pick(['There. Good as new. Well — good as used. Next!', 'All done. Try not to die for at least a week, it\'s bad for my reputation.', 'Finished! You were a very brave smoothskin. Here, have a lollipop. It\'s a bone.']),
+          responses: [{ text: 'Something else, Doc.', next: 'hello' }, { text: 'Thanks, Doc.' }] },
+        under: { text: '[He lowers his voice.] A professional! Medicine is medicine, friend — the dose makes the poison. I keep a little something for the long nights and the short tempers. Priced accordingly. Don\'t tell Candy, he thinks he has a monopoly.',
+          onEnter() { L.setFlag('broadway_under'); const a = L.npc('neon_broadway'); if (a && a.merchant) { const st = a.merchant.stock || (a.merchant.stock = []); for (const s of L.resolveStock(UNDER)) st.push(s); } },
+          responses: [{ text: 'Show me.', barter: true }, { text: 'Maybe later.', next: 'hello' }] },
+        donate: { text: () => (Number(L.flag('broadway_donations')) > 1 ? 'Again? [He takes the caps, then takes off his spectacles and cleans them for a very long time.] The Kearny girl\'s lungs. That\'s where the last lot went. She says thank you. She says it wetly, but she says it.'
+          : '[He stares at the caps as if they might be a trick.] For… nobody? For the ones who can\'t pay? [He clears his throat, which takes a while.] Nobody\'s done that since the Phantom\'s last matinee. I\'ll put it where it does the most good, and I\'ll never tell a soul. Especially not Candy.'),
+          responses: [{ text: 'Something else, Doc.', next: 'hello' }, { text: 'Take care, Doc.' }] },
+        under_no: { text: 'Under the counter? There\'s only gum under the counter. Old gum. Pre-war gum. [He looks at you like you\'re a rash.]', responses: [{ text: 'Right.', next: 'hello' }] },
+        candy: { text: 'Candy Rourke sells chems to children and calls it "motivation". I sell chems to patients and call it "medicine". The difference, my friend, is a medical degree and a conscience. …I have one of those.', responses: [{ text: 'Ha. Back to business.', next: 'hello' }] },
+      },
+    }));
+
+    L.dialogue('dlg_neon_dottie', {
+      start: () => 'hello',
+      nodes: {
+        hello: { text: () => pick(['Welcome to the Bunkhouse Hotel! Formerly the Hotel Astor. Formerly a hotel. Beds are ' + bedPrice() + ' caps a night.', 'You look like you could use a bed, sugar. And a bath. The bed\'s ' + bedPrice() + ' caps. The bath is a rumour.']),
+          responses: [
+            { text: () => 'Rent a bed — sleep eight hours. (' + bedPrice() + ' caps)', action: () => sleepAt(8) },
+            { text: () => 'Rent a bed — sleep until nightfall. (' + bedPrice() + ' caps)', cond: () => G.time.hour >= 5 && G.time.hour < 18, action: () => sleepAt(hoursUntil(20)) },
+            { text: () => 'Rent a bed — sleep until morning. (' + bedPrice() + ' caps)', cond: () => G.time.hour >= 18 || G.time.hour < 4, action: () => sleepAt(hoursUntil(7)) },
+            { text: 'I\'d like a storage locker. (100 caps, yours for good)', cond: () => !L.flag('neon_locker'), action: () => { if (L.pay(100)) { L.setFlag('neon_locker', true); L.notify('Bunkhouse Locker rented. Nobody else has the key. Probably.'); } } },
+            { text: 'Why so cheap?', next: 'cheap' },
+            { text: 'Maybe later.' }] },
+        cheap: { text: 'Cheap? Sugar, it\'s a bunk in a ruined hotel full of ghouls who snore like Vertibirds. Twenty caps is robbery. I\'m the robber. [She winks. An eyelid is involved, mostly.]', responses: [{ text: 'Fair enough.', next: 'hello' }] },
+      },
+    });
+
+    L.dialogue('dlg_neon_oracle', {
+      start: () => (L.caps() >= 5 ? 'insert' : 'broke'),
+      nodes: {
+        broke: { text: '[The brass automaton behind the glass stares at you. A card slot glows: INSERT 5 CAPS. You don\'t have 5 caps. The automaton seems to know.]', responses: [{ text: '[Leave.]' }] },
+        insert: { text: '[A turbaned automaton behind green glass, face cracked like an egg. The news-ticker above it spells TICKER ORACLE — THE FUTURE, 5 CAPS — over and over.]',
+          responses: [{ text: '[Insert 5 caps.]', action: () => (L.pay(5) ? 'fortune' : 'broke') }, { text: '[Leave.]' }] },
+        fortune: { text: () => {
+          L.sfx('terminal_type');
+          const today = L.flag('neon_oracle_day') === G.time.day;
+          let f;
+          if (!today && Math.random() < 0.65) { const h = hints(); f = h.length ? pick(h) : pick(JOKES); } else f = pick(JOKES);
+          { const RF = [[/THE BALL THAT DOES NOT FALL/, 'neon_rumor_ball'], [/HAND IS ON THE SWITCH/, 'neon_rumor_power'], [/THE WALL NEEDS SHOULDERS/, 'neon_rumor_guard'], [/A STAGE STANDS EMPTY/, 'neon_rumor_opry'],
+            [/FORTY-SECOND STREET STAIRS/, 'neon_rumor_speakeasy'], [/THE VELVET ROPE/, 'neon_rumor_club']];
+            for (const [re, fl] of RF) if (re.test(f) && !L.flag(fl)) L.setFlag(fl); }
+          if (!today) {
+            L.setFlag('neon_oracle_day', G.time.day);
+            if (!G.isStub('rpg') && G.rpg.addEffect) try { G.rpg.addEffect({ id: 'neon_fortune', name: 'Fortune\'s Favour', kind: 'buff', duration: 900, mods: { special: { L: 1 } }, desc: 'LCK +1' }); } catch (e) { /* ignore */ }
+          }
+          return '[The automaton\'s head swivels. Its jaw clacks. A strip of ticker tape curls out of the slot:]\n\n"' + f + '"' + (today ? '' : '\n\n[You feel a little luckier.]');
+        }, responses: [{ text: '[Insert another 5 caps.]', cond: () => L.caps() >= 5, action: () => (L.pay(5) ? 'fortune' : 'broke') }, { text: '[Pocket the ticker tape and leave.]' }] },
+      },
+    });
+
+    L.dialogue('dlg_neon_dealer', N().sleepy({
+      start: 'hello',
+      nodes: {
+        hello: { text: () => (dailyWon() >= CAP ? 'You again. No. No no no. You\'ve cleaned me out for today, pal. Come back tomorrow and let me win some back.' : pick(['Lucky Lou. Pull up a chair. Rad Jack — blackjack, but everything\'s slightly on fire. Ten, twenty-five or fifty a hand.', 'Sit, sit. Cards are warm, the deck is honest, and I\'m only lying about one of those.'])),
+          responses: [
+            { text: 'Deal me in. (10 caps)', cond: () => dailyWon() < CAP && L.caps() >= 10, action: () => deal(10) },
+            { text: 'Deal me in. (25 caps)', cond: () => dailyWon() < CAP && L.caps() >= 25, action: () => deal(25) },
+            { text: 'Deal me in. (50 caps)', cond: () => dailyWon() < CAP && L.caps() >= 50, action: () => deal(50) },
+            { text: 'Heard any rumours?', next: 'rumor' },
+            { text: 'Why "Lucky"?', next: 'lucky' },
+            { text: 'Not tonight.' }] },
+        table: { text: () => tableText(),
+          responses: [
+            { text: 'Hit me.', action: () => { RJ.you.push(draw()); L.sfx('ui_click'); const s = score(RJ.you); return s > 21 ? settle(false) : s === 21 ? settle(false) : 'table'; } },
+            { text: 'Stand.', action: () => settle(false) },
+            { text: () => 'Double down. (' + RJ.bet + ' more caps)', cond: () => RJ.you.length === 2 && L.caps() >= RJ.bet, action: () => { if (!L.pay(RJ.bet)) return 'table'; RJ.bet *= 2; RJ.you.push(draw()); return settle(false); } }] },
+        result: { text: () => 'YOUR HAND: ' + RJ.you.join('  ') + '   (' + score(RJ.you) + ')\nLOU\'S HAND: ' + RJ.lou.join('  ') + '   (' + score(RJ.lou) + ')\n\n' + RJ.msg,
+          responses: [
+            { text: () => 'Again. (' + RJ.bet + ' caps)', cond: () => dailyWon() < CAP && L.caps() >= RJ.bet, action: () => deal(RJ.bet) },
+            { text: 'Change the stakes.', next: 'hello' },
+            { text: 'I\'m done.' }] },
+        rumor: { text: () => { const left = RUMORS.filter((r) => !L.flag(r[1])); const r = left.length ? left[0] : pick(RUMORS); L.setFlag(r[1]); return r[0]; },
+          responses: [{ text: 'Anything else?', next: 'rumor' }, { text: 'Back to the cards.', next: 'hello' }] },
+        lucky: { text: 'I was dealing the midnight game at the Rad Room — well, it was the Automat back then — when the sirens went. Four of us under the counter. Three of us got up. I had a royal flush in my hand the whole time. Still got it. [He taps his breast pocket.] Never played it. Never will.', responses: [{ text: 'Deal me in.', next: 'hello' }] },
+      },
+    }));
+
+    L.dialogue('dlg_neon_annie', N().sleepy({
+      start: 'hello',
+      nodes: {
+        hello: { text: () => (L.flag('neon_gallery_champ') ? 'Well if it ain\'t my Deadeye! Back for more, champ? Your discount\'s still good.' : pick(['Ammo Annie\'s Shooting Gallery! Five caps a round, thirty seconds, tin raiders pop up — you knock \'em down. Five hits pays fifteen, eight pays forty, twelve pays eighty and a ribbon.', 'Step right up! You look like somebody who can hit a tin can. Or at least look at one.'])),
+          responses: [
+            { text: 'I\'ll take a round. (5 caps)', cond: () => !GAL.active && !!N().place('gallery'), action: () => { L.later(0.3, startGallery); } },
+            { text: 'Show me your guns.', barter: true },
+            { text: () => 'What\'s the record?', next: 'record' },
+            { text: 'How\'d you end up here?', next: 'story' },
+            { text: 'Later, Annie.' }] },
+        record: { text: () => 'House record\'s nineteen. Mine. Yours is ' + (Number(L.flag('neon_gallery_best')) || 0) + '. ' + ((Number(L.flag('neon_gallery_best')) || 0) >= 12 ? 'Respectable. Downright respectable.' : 'Keep practising. The tin raiders ain\'t going anywhere. Literally, they\'re bolted down.'), responses: [{ text: 'Back.', next: 'hello' }] },
+        story: { text: 'County fair champion, Ohio, 2076. Came to New York for the national finals. The finals were cancelled due to the end of the world. I\'ve been practising ever since. Two hundred years of practice, sugar. Don\'t ever challenge me to a real duel.', responses: [{ text: 'Noted.', next: 'hello' }] },
+      },
+    }));
+
+    L.dialogue('dlg_neon_goldie', N().sleepy({
+      start: 'hello',
+      nodes: {
+        hello: { text: () => pick(['Goldie Glass, Pawn Palace! I buy anything, sell everything, and pay twenty percent over what those stall rats pay. Where you got it? Don\'t care. Whose it was? Don\'t care more.', 'Welcome back, my favourite customer! You\'re all my favourite customer. What are we selling?']),
+          responses: [{ text: 'Let\'s deal.', barter: true, end: true }, { text: 'You buy stolen goods?', next: 'fence' }, { text: 'Why "Goldie"?', next: 'gold' }, { text: 'Goodbye.' }] },
+        fence: { text: 'Stolen? There\'s no such thing as stolen, friend. There\'s only "previously owned". Everything in New York was somebody else\'s once — they\'re just not using it anymore on account of being dead. You bring it, I pay. No questions, no karma, no Captain Kincaid.', responses: [{ text: 'Let\'s deal.', barter: true, end: true }, { text: 'Goodbye.' }] },
+        gold: { text: '[He grins. Every single tooth is gold. Some of them are clearly not his.] Take a guess.', responses: [{ text: 'Let\'s deal.', barter: true, end: true }, { text: 'Goodbye.' }] },
+      },
+    }));
+
+    L.dialogue('dlg_neon_sprocket', N().sleepy({
+      start: 'hello',
+      nodes: {
+        hello: { text: () => pick(['Sprocket\'s Radio Repair and Robotorium! If it beeps, I fix it. If it doesn\'t beep, I make it beep.', 'Mind the wires. And the tubes. And that arm — it\'s still twitchy.']),
+          responses: [
+            { text: 'Show me your parts.', barter: true },
+            { text: 'Is that a Mister Handy in the corner?', cond: () => !(L.flag('neon_marquee') || {}).owned, next: 'handy' },
+            { text: 'About Mister Marquee…', cond: () => !!(L.flag('neon_marquee') || {}).owned, next: 'after' },
+            { text: 'Goodbye.' }] },
+        handy: { text: 'That\'s Mister Marquee! Pre-war butler model, fourteen owners, reprogrammed by me with a little extra buzzsaw. Loyal, polite, flame-thrower works most of the time. Yours for five hundred caps.',
+          responses: [
+            { text: 'Sold. (500 caps)', cond: () => L.caps() >= 500, action: () => { if (L.pay(500)) buyMarquee(); }, next: 'bought' },
+            { text: 'Five hundred? For a robot with fourteen owners?', check: { skill: 'barter', value: 50 }, next: 'deal', failNext: 'nodeal' },
+            { text: '[Repair 70] I could finish his repairs myself for a discount.', check: { skill: 'repair', value: 70 }, next: 'repair' },
+            { text: 'Maybe later.', next: 'hello' }] },
+        deal: { text: 'Fourteen HAPPY owners! …Nine happy owners. Fine. Three-fifty, and you didn\'t hear it from me.', responses: [{ text: 'Deal. (350 caps)', cond: () => L.caps() >= 350, action: () => { if (L.pay(350)) buyMarquee(); }, next: 'bought' }, { text: 'Still too rich for me.', next: 'hello' }] },
+        nodeal: { text: 'Five hundred, pal. His last owner said the same thing. His last owner is fertiliser now. Unrelated! Probably.', responses: [{ text: 'Right.', next: 'hello' }] },
+        repair: { text: '[You open his access panel, re-seat two vacuum tubes and splice a servo line.] Huh. HUH. He hasn\'t hummed like that since the war. Okay, genius — two hundred and he\'s yours.', onEnter() { L.xp(40, 'Repair: Mister Marquee'); },
+          responses: [{ text: 'Deal. (200 caps)', cond: () => L.caps() >= 200, action: () => { if (L.pay(200)) buyMarquee(); }, next: 'bought' }, { text: 'Later.', next: 'hello' }] },
+        bought: { text: 'He\'s all yours! Talk to him to give orders — follow, wait, go home. He\'ll come back to the shop if you send him home. Be nice to him. He cries oil.', responses: [{ text: 'Thanks, Sprocket.' }] },
+        after: { text: 'How\'s my boy? Keeping his thrusters clean? If he ever stops talking, bring him in. If he ever STARTS singing, bring him in faster.', responses: [{ text: 'He\'s fine.', next: 'hello' }] },
+      },
+    }));
+    L.dialogue('dlg_neon_marquee', {
+      start: 'hello',
+      nodes: {
+        hello: { text: () => pick(['Mister Marquee, reporting! How may I be of assistance, sir or madam?', 'At your service! Shall I dust something? Or someone?', 'Ready and eager! Mostly eager!']),
+          responses: [
+            { text: 'Follow me.', cond: () => { const a = marquee(); return !!a && a.following !== 'player'; }, action: () => marqueeFollow(true) },
+            { text: 'Wait here.', cond: () => { const a = marquee(); return !!a && a.following === 'player'; }, action: () => marqueeFollow(false) },
+            { text: 'Go back to the Robo-Shop.', action: () => marqueeHome() },
+            { text: 'Never mind.' }] },
+      },
+    });
+
+    // ---- The notice board: bounties & jobs (quests live in 49_) ----
+    const job = (title, text, cond, act, done) => ({ title, text, cond, act, done });
+    const JOBS = () => (L.neonJobs ? L.neonJobs() : []).concat([
+      // services advertise only once their place is built (TIMES_SQUARE_PLAN: the Bunkhouse, Annie's gallery)
+      job('ROOMS — THE BUNKHOUSE', 'BEDS 20 CAPS. LOCKERS FOR RENT. NO BRAHMIN IN THE ROOMS. — DOTTIE', () => !!N().place('bunkhouse'), null),
+      job('SHARPSHOOTERS WANTED', 'ANNIE\'S SHOOTING GALLERY. 5 CAPS A ROUND. BEAT TWELVE, WIN A RIBBON AND ANNIE\'S RESPECT (RIBBON GUARANTEED).', () => !!N().place('gallery'), null),
+      job('HOTEL ASTOR — HANDS WANTED', 'CLEARING RUBBLE FROM THE OLD ASTOR SO THE NEON CAN HAVE BEDS AGAIN. PAY IN SOUP. — DOTTIE BLYTHE', () => !N().place('bunkhouse'), null),
+      job('LOST: ONE (1) NOSE', 'IF FOUND PLEASE RETURN TO GUMS GALLAGHER, RAD ROOM, 3RD STOOL. REWARD: GRATITUDE, POSSIBLY A DRINK.', () => true, null),
+    ]);
+    L.dialogue('dlg_neon_board', {
+      start: 'board',
+      nodes: {
+        board: { text: '[A scrap-wood board crowded with notices, nailed and re-nailed. "BY ORDER OF THE MAYOR" is painted across the top. Someone has added "(AND THE CAPTAIN)" underneath.]',
+          responses: () => JOBS().filter((j) => !j.cond || j.cond()).slice(0, 8).map((j, i) => ({ id: 'j' + i + j.title, text: (j.done && j.done() ? '[DONE] ' : '') + j.title, next: () => { L.world.__job = j; return 'job'; } })).concat([{ text: '[Step away.]' }]) },
+        job: { text: () => { const j = L.world.__job; return j ? j.title + '\n\n' + (typeof j.text === 'function' ? j.text() : j.text) : '…'; },
+          responses: [
+            { text: '[Take the notice.]', cond: () => { const j = L.world.__job; return !!(j && j.act && !(j.done && j.done())); }, action: () => { const j = L.world.__job; if (j && j.act) j.act(); } },
+            { text: '[Back to the board.]', next: 'board' }] },
+      },
+    });
+  });
+
+  function buyMarquee() {
+    const st = { owned: true, mode: 'follow' };
+    L.setFlag('neon_marquee', st);
+    const near = G.player.pos;
+    const a = spawnMarquee({ x: near.x + 1.5, y: near.y, z: near.z + 1.5 });
+    if (a) { a.follow('player'); a.say('Oh, splendid! A new master! I shall endeavour not to set you on fire!', 4); }
+    L.notify('Mister Marquee has joined you.');
+  }
+
+  L.hook('world', function () { try { buildWorld(); } catch (e) { G.reportError('quests:neon world', e); } });
+  L.hook('spawn', function () {
+    const st = L.flag('neon_marquee');
+    if (st && st.owned) { const a = spawnMarquee(); if (a && st.mode === 'follow') a.follow('player'); }
+    const champ = L.flag('neon_gallery_champ');
+    if (champ) { const a = L.npc('neon_annie'); if (a && a.merchant) a.merchant.markup = 0.85; }
+    if (L.flag('broadway_under')) { const a = L.npc('neon_broadway'); if (a && a.merchant) { const st2 = a.merchant.stock || (a.merchant.stock = []); for (const s of L.resolveStock(UNDER)) if (!st2.some((e) => e[0] === s[0])) st2.push(s); } }
+  });
+  L.hook('reset', function () { endGallery(true); RJ.over = true; });
+  L.hook('update', function (dt) { if (GAL.active) { try { galleryUpdate(dt); } catch (e) { G.reportError('quests:neon gallery', e); endGallery(true); } } });
+  G.events.on('weaponFired', () => { if (GAL.active) { try { galleryShot(); } catch (e) { G.reportError('quests:neon gallery shot', e); } } });
+
+  /** Black-out hook (49_ "Power to the People"): the Oracle's lamp dies with the grid. */
+  function lamps(on) {
+    for (const m of W.oracleMats || []) { if (m.userData.i0 === undefined) m.userData.i0 = m.emissiveIntensity; m.emissiveIntensity = on ? m.userData.i0 : m.userData.i0 * 0.08; }
+    if (W.oracleGlow) W.oracleGlow.visible = !!on;
+  }
+  L.neonServices = { startGallery, endGallery, gallery: () => GAL, marquee, buyMarquee, RJ, score, lamps };
+})();
+

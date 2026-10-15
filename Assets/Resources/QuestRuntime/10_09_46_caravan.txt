@@ -1,0 +1,886 @@
+/* src/quests/46_caravan.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 46: CARAVAN (the wasteland card game)
+ *
+ * A faithful take on New Vegas' Caravan, played at the Neon:
+ *   - Lucky Lou Parisi at the Rad Room card table (high stakes, sharp),
+ *   - Eustace Byrd, the Depot wagonmaster (teaches the game; honest stakes),
+ *   - Gums Gallagher, the Neon's resident drunk (low stakes, sloppy).
+ * SQ "Deal Me In" (Eustace): beat all three → the Dealer's Visor.
+ *
+ * RULES (as in New Vegas)
+ *   Each player builds three caravans opposite the other's three. A caravan
+ *   is SOLD when its value is 21–26; a lane goes to the higher sold caravan
+ *   (a sold caravan beats an unsold one; equal sold values leave the lane
+ *   open). When all three lanes have a winner, the player holding two or
+ *   more lanes wins the pot. Run out of cards and you lose.
+ *   - Opening: the first three turns each player must start one caravan
+ *     with a number card (A = 1 … 10). No drawing until the opening is done.
+ *   - Then each turn: play one card, discard one card, or disband one of
+ *     your caravans; then draw one card (hand stays at five).
+ *   - Number cards continue a caravan's DIRECTION (set by its last two
+ *     cards: ascending / descending) or match the SUIT of its last card;
+ *     never the same value as the last card.
+ *   - Face cards go on a number card on ANY caravan (yours or theirs):
+ *       J  removes that card (and its face cards);
+ *       Q  (last card only) reverses the direction, and its suit takes over;
+ *       K  doubles that card's value (a second King doubles again);
+ *       JOKER on an Ace removes every other number card of the Ace's suit
+ *       from the table; on 2–10 every other card of that value.
+ *
+ * UI: a full-screen card table (state 'caravan': world paused, cursor free).
+ * Click a hand card, then a highlighted caravan / card. Right-click (or D)
+ * discards the selected card; the DISBAND button, then one of your
+ * caravans, disbands it. Esc twice forfeits (the pot is lost).
+ *
+ * All writing and art original. Engine is pure data (no DOM) so the AI
+ * can search it, and G.quests.debug.caravanSim(n) plays AI vs AI games.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+
+  // ==================================================================
+  // ENGINE (pure data)
+  // ==================================================================
+  const SUITS = ['♠', '♥', '♦', '♣'];
+  const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+  const RED = { '♥': 1, '♦': 1 };
+  let UID = 1;
+  // Card backs = the pre-war decks cards come from (NV: Tops, Lucky 38…). A player deck may mix backs,
+  // so it can hold the same card more than once (one per back), exactly like New Vegas.
+  const BACKS = { depot: 'Neon Depot', rad: 'Rad Room', astor: 'Hotel Astor', automat: 'Horn & Hardart', ball: 'Neon New Year' };
+  const SK = { '♠': 'S', '♥': 'H', '♦': 'D', '♣': 'C' }, KS = { S: '♠', H: '♥', D: '♦', C: '♣' };
+  function mkCard(b, r, s) { return { id: UID++, r, s, b: b || 'depot', v: r === 'A' ? 1 : (r === 'J' || r === 'Q' || r === 'K' || r === '*') ? 0 : Number(r) }; }
+  /** collection key 'back:RS' (e.g. 'rad:10H', 'depot:*') */
+  function cardKey(b, r, s) { return b + ':' + r + (r === '*' ? '' : SK[s]); }
+  function parseKey(k) { const i = k.indexOf(':'), b = k.slice(0, i), rs = k.slice(i + 1); return rs === '*' ? { b, r: '*', s: '' } : { b, r: rs.slice(0, -1), s: KS[rs.slice(-1)] }; }
+  function shuffle(d) { for (let i = d.length - 1; i > 0; i--) { const k = Math.floor(Math.random() * (i + 1)); const t = d[i]; d[i] = d[k]; d[k] = t; } return d; }
+  function makeDeck(jokers, back) {
+    const d = [];
+    for (const s of SUITS) for (const r of RANKS) d.push(mkCard(back, r, s));
+    for (let j = 0; j < (jokers === undefined ? 2 : jokers); j++) d.push(mkCard(back, '*', ''));
+    return shuffle(d);
+  }
+  function deckFromKeys(keys) { return shuffle(keys.map((k) => { const c = parseKey(k); return mkCard(c.b, c.r, c.s); })); }
+  const isNum = (c) => c && c.v > 0;
+  const isFace = (c) => c && c.v === 0;
+
+  function newLane() { return { cards: [], dir: 0, suit: null }; }
+  function entryValue(e) { let v = e.c.v; for (const f of e.faces) if (f.r === 'K') v *= 2; return v; }
+  function laneValue(l) { let v = 0; for (const e of l.cards) v += entryValue(e); return v; }
+  /** direction + suit from scratch (after removals): numbers set the direction, queens flip it and set the suit. */
+  function recompute(l) {
+    let dir = 0, suit = null;
+    for (let i = 0; i < l.cards.length; i++) {
+      const e = l.cards[i];
+      if (i > 0) { const d = Math.sign(e.c.v - l.cards[i - 1].c.v); if (d) dir = d; }
+      suit = e.c.s;
+      for (const f of e.faces) if (f.r === 'Q') { dir = -dir; suit = f.s; }
+    }
+    l.dir = dir; l.suit = suit;
+  }
+  const sold = (v) => v >= 21 && v <= 26;
+
+  function newGame(opts) {
+    const g = {
+      p: [0, 1].map((i) => ({ deck: opts && opts.decks && opts.decks[i] ? deckFromKeys(opts.decks[i]) : makeDeck(2, opts && opts.backs ? opts.backs[i] : 'depot'),
+        hand: [], lanes: [newLane(), newLane(), newLane()], opened: 0 })),
+      turn: 0, n: 0, over: false, winner: null, reason: '', log: [],
+    };
+    for (const pl of g.p) for (let i = 0; i < 8 && pl.deck.length; i++) pl.hand.push(pl.deck.pop());
+    g.turn = opts && opts.first !== undefined ? opts.first : 0;
+    return g;
+  }
+  function clone(g) {
+    return {
+      p: g.p.map((pl) => ({ deck: pl.deck.slice(), hand: pl.hand.slice(), opened: pl.opened,
+        lanes: pl.lanes.map((l) => ({ dir: l.dir, suit: l.suit, cards: l.cards.map((e) => ({ c: e.c, faces: e.faces.slice() })) })) })),
+      turn: g.turn, n: g.n, over: g.over, winner: g.winner, reason: g.reason, log: [],
+    };
+  }
+  function canNumber(l, c) {
+    const n = l.cards.length;
+    if (!n) return true;
+    const last = l.cards[n - 1].c;
+    if (c.v === last.v) return false;
+    if (n === 1 && !l.dir) return true;
+    if (c.s === l.suit) return true;
+    if (l.dir > 0) return c.v > last.v;
+    if (l.dir < 0) return c.v < last.v;
+    return true;
+  }
+  function opening(g, who) { return g.p[who].opened < 3; }
+  /** every legal move for player `who` */
+  function moves(g, who) {
+    const me = g.p[who], out = [];
+    if (opening(g, who)) {
+      me.hand.forEach((c, hi) => { if (isNum(c)) me.lanes.forEach((l, li) => { if (!l.cards.length) out.push({ t: 'num', hi, lane: li }); }); });
+      if (!out.length) me.hand.forEach((c, hi) => out.push({ t: 'disc', hi }));
+      return out;
+    }
+    me.hand.forEach((c, hi) => {
+      if (isNum(c)) me.lanes.forEach((l, li) => { if (canNumber(l, c)) out.push({ t: 'num', hi, lane: li }); });
+      else {
+        for (let side = 0; side < 2; side++) {
+          const owner = side === 0 ? who : 1 - who;
+          g.p[owner].lanes.forEach((l, li) => {
+            l.cards.forEach((e, ei) => {
+              if (e.faces.length >= 3) return;
+              if (c.r === 'Q' && ei !== l.cards.length - 1) return;
+              out.push({ t: 'face', hi, owner, lane: li, e: ei });
+            });
+          });
+        }
+      }
+      out.push({ t: 'disc', hi });
+    });
+    me.lanes.forEach((l, li) => { if (l.cards.length) out.push({ t: 'disband', lane: li }); });
+    return out;
+  }
+  function removeWhere(g, keep, test) {
+    let n = 0;
+    for (const pl of g.p) for (const l of pl.lanes) {
+      const before = l.cards.length;
+      l.cards = l.cards.filter((e) => e === keep || !test(e.c));
+      if (l.cards.length !== before) { n += before - l.cards.length; recompute(l); }
+    }
+    return n;
+  }
+  /** apply move m for player `who` (mutates g). Returns a short log line. */
+  function apply(g, who, m) {
+    const me = g.p[who];
+    let line = '';
+    if (m.t === 'num') {
+      const c = me.hand.splice(m.hi, 1)[0];
+      const l = me.lanes[m.lane];
+      l.cards.push({ c, faces: [] }); recompute(l);
+      if (opening(g, who)) me.opened++;
+      line = cardName(c) + ' → caravan ' + (m.lane + 1);
+    } else if (m.t === 'face') {
+      const c = me.hand.splice(m.hi, 1)[0];
+      const l = g.p[m.owner].lanes[m.lane];
+      const e = l.cards[m.e];
+      const whose = m.owner === who ? 'own' : 'rival';
+      if (c.r === 'J') { l.cards.splice(m.e, 1); recompute(l); line = 'Jack removes ' + cardName(e.c) + ' (' + whose + ' caravan ' + (m.lane + 1) + ')'; }
+      else if (c.r === '*') {
+        e.faces.push(c);
+        const n = e.c.r === 'A' ? removeWhere(g, e, (x) => x.s === e.c.s && x.r !== 'A' || (x.s === e.c.s && x.r === 'A' && false)) : removeWhere(g, e, (x) => x.v === e.c.v);
+        line = 'JOKER on ' + cardName(e.c) + ': ' + n + ' card' + (n === 1 ? '' : 's') + ' swept off the table';
+      } else {
+        e.faces.push(c); recompute(l);
+        line = cardName(c) + ' on ' + cardName(e.c) + ' (' + whose + ' caravan ' + (m.lane + 1) + ')' + (c.r === 'K' ? ' — value doubled' : ' — direction reversed');
+      }
+    } else if (m.t === 'disc') {
+      const c = me.hand.splice(m.hi, 1)[0];
+      line = 'discards ' + cardName(c);
+    } else if (m.t === 'disband') {
+      me.lanes[m.lane] = newLane();
+      line = 'disbands caravan ' + (m.lane + 1);
+    }
+    // Opening: no drawing, except that a discard (only allowed with no number card in hand) is
+    // replaced — otherwise a number-less hand would discard itself empty and the game would stall.
+    if (opening(g, who)) { if (m.t === 'disc' && me.deck.length) me.hand.push(me.deck.pop()); }
+    else if (me.hand.length < 5 && me.deck.length) me.hand.push(me.deck.pop());
+    g.n++;
+    g.turn = 1 - who;
+    checkEnd(g);
+    return line;
+  }
+  function laneWinner(g, i) {
+    const a = laneValue(g.p[0].lanes[i]), b = laneValue(g.p[1].lanes[i]);
+    const sa = sold(a), sb = sold(b);
+    if (sa && sb) return a > b ? 0 : b > a ? 1 : null;
+    if (sa) return 0; if (sb) return 1;
+    return null;
+  }
+  function checkEnd(g) {
+    if (g.over) return;
+    const w = [0, 1, 2].map((i) => laneWinner(g, i));
+    if (w.every((x) => x !== null) && g.p[0].opened >= 3 && g.p[1].opened >= 3) {
+      const c0 = w.filter((x) => x === 0).length;
+      g.over = true; g.winner = c0 >= 2 ? 0 : 1; g.reason = 'lanes'; return;
+    }
+    const pl = g.p[g.turn];
+    if (!pl.hand.length && !pl.deck.length) { g.over = true; g.winner = 1 - g.turn; g.reason = 'cards'; return; }
+    // no legal move left (an empty hand with the opening unfinished): that player is out of the game
+    if (!moves(g, g.turn).length) { g.over = true; g.winner = 1 - g.turn; g.reason = 'cards'; return; }
+    if (g.n > 400) {
+      // (practically unreachable) — most lanes, then total sold value
+      const c0 = w.filter((x) => x === 0).length, c1 = w.filter((x) => x === 1).length;
+      g.over = true; g.winner = c0 >= c1 ? 0 : 1; g.reason = 'time';
+    }
+  }
+  function cardName(c) { return c.r === '*' ? 'Joker' : c.r + c.s; }
+
+  // ------------------------------------------------------------------
+  // AI: one-ply search with a positional heuristic (+ noise per opponent)
+  // ------------------------------------------------------------------
+  function fv(v) { if (v <= 0) return 0; if (v <= 20) return v * 1.4; if (v <= 26) return 42 + (v - 21) * 1.2; return 8 - (v - 26) * 3.5; }
+  const WORTH = { 'J': 5, 'Q': 2.5, 'K': 5, '*': 6 };
+  function evaluate(g, who) {
+    if (g.over) return g.winner === who ? 1e5 : -1e5;
+    const op = 1 - who; let s = 0;
+    for (let i = 0; i < 3; i++) {
+      const m = laneValue(g.p[who].lanes[i]), o = laneValue(g.p[op].lanes[i]);
+      s += fv(m) - fv(o) * 0.85;
+      const w = laneWinner(g, i);
+      if (w === who) s += 22; else if (w === op) s -= 22;
+      // a lane that can still be built both ways is worth a little
+      const l = g.p[who].lanes[i]; if (l.cards.length && m < 21 && !l.dir) s += 1.5;
+    }
+    // cards in hand are options
+    for (const c of g.p[who].hand) s += WORTH[c.r] || 0.6;
+    s -= (8 - Math.min(8, g.p[who].deck.length)) * 0.6;
+    return s;
+  }
+  function aiMove(g, who, noise) {
+    const ms = moves(g, who);
+    if (!ms.length) return null;
+    let best = null, bs = -Infinity;
+    for (const m of ms) {
+      const h = clone(g);
+      apply(h, who, m);
+      let s = evaluate(h, who);
+      // one look at the reply that ends the game against us
+      if (!h.over && h.p[who].opened >= 3) {
+        for (const r of moves(h, 1 - who)) { if (r.t === 'disc') continue; const k = clone(h); apply(k, 1 - who, r); if (k.over && k.winner === 1 - who) { s -= 400; break; } }
+      }
+      s += (Math.random() - 0.5) * (noise || 0);
+      if (s > bs) { bs = s; best = m; }
+    }
+    return best;
+  }
+
+  // ==================================================================
+  // OPPONENTS
+  // ==================================================================
+  const OPP = {
+    neon_dealer: { name: 'Lucky Lou', short: 'LOU', noise: 3, stakes: [25, 50, 100], cap: 400, back: 'rad',
+      open: ['Caravan. The game of kings, caravaneers and degenerates. I\'m two outta three.', 'Cut the deck. Or don\'t. I already know where every card is. Kidding. Mostly.'],
+      mine: ['Heh.', 'That\'s the business.', 'Don\'t look so sad, it\'s only caps.', 'Beautiful. Just beautiful.'],
+      yours: ['Hm.', 'Lucky.', 'Okay, okay, I see you.', 'Where\'d you learn that?'],
+      win: ['House wins. The house always wins. I\'m the house.', 'Better luck next time, pal. Luck\'s my department.'],
+      lose: ['…Well. That don\'t happen much. Don\'t tell nobody.', 'You cleaned me out, smoothskin. Enjoy it. It\'s the last time.'] },
+    neon_wagon: { name: 'Eustace Byrd', short: 'EUSTACE', noise: 9, stakes: [0, 10, 25, 50], cap: 250, back: 'depot',
+      open: ['Every caravaneer from here to the Mojave plays this. Long nights, short tempers. Let\'s see what you got.', 'Three caravans each. Sell yours between twenty-one and twenty-six. Don\'t go over. Simple as brahmin.'],
+      mine: ['There we go.', 'Steady, steady.', 'That\'s how the Depot does it.'],
+      yours: ['Good play.', 'Didn\'t see that coming.', 'Huh. You learn quick.'],
+      win: ['Good game. You\'ll get there.', 'That one\'s mine. Rematch whenever you like.'],
+      lose: ['Well, I\'ll be. Beat by a greenhorn. Good game, friend.', 'Hah! You\'ve got a caravaneer\'s head on you.'] },
+    neon_gums: { name: 'Gums Gallagher', short: 'GUMS', noise: 30, stakes: [5, 10, 25], cap: 100, back: 'rad',
+      open: ['*hic* Caravan! I love Caravan. I\'m terrible at it. Let\'s play.', 'Deal \'em, deal \'em. Which way\'s up on these?'],
+      mine: ['Ha! Did I do that?', '*hic* Genius.', 'I meant to do that.'],
+      yours: ['Hey! Rude.', 'Aw, c\'mon.', 'Which one was mine again?'],
+      win: ['I WON? Somebody write that down!', 'Drinks on me! …Drinks on you, actually, I\'m broke.'],
+      lose: ['Aw. Well. Buy me a drink and we\'re square.', 'You\'re too sober for this game, pal.'] },
+  };
+  const UNLISTED = { name: 'Stranger', short: 'RIVAL', noise: 12, stakes: [10, 25], cap: 200, back: 'depot', open: ['Let\'s play.'], mine: ['Hm.'], yours: ['Hm.'], win: ['Good game.'], lose: ['Good game.'] };
+  function oppDef(id) { return OPP[id] || UNLISTED; }
+  function dayWon(id) { const f = L.flag('cv_day_' + id); return f && f.d === G.time.day ? f.w : 0; }
+  function addDayWon(id, n) { const f = L.flag('cv_day_' + id); const w = f && f.d === G.time.day ? f.w : 0; L.setFlag('cv_day_' + id, { d: G.time.day, w: w + n }); }
+  /** caps won off Gums today that haven't been handed back yet */
+  function gumsOwed() { const f = L.flag('cv_gums_refund'); const back = f && f.d === G.time.day ? f.w : 0; return Math.max(0, dayWon('neon_gums') - back); }
+  /**
+   * Karma at the card tables (FO3/NV: small choices, visible consequences):
+   *   Lucky Lou — [Sneak 50] palm a pair of Kings (−25 karma; caught = barred for the day),
+   *   Gums — buy him a double before a staked game (−10 karma) … or hand back what you won off him (+20).
+   */
+  function tableKarma(npcId, O) {
+    const rs = [];
+    const today = G.time.day;
+    if (npcId === 'neon_dealer') rs.push({ text: '[Sneak 50] [Palm a pair of Kings before Lou deals.]', check: { skill: 'sneak', value: 50 }, karma: -25, repeatKarma: true,
+      cond: () => dayWon(npcId) < O.cap && L.flag('cv_cheat_day') !== today && !UI.pendingBoost,
+      action: () => { L.setFlag('cv_cheat_day', today); UI.pendingBoost = 22; UI.pendingFor = npcId; }, next: 'cv_marked', failNext: 'cv_caught' });
+    if (npcId === 'neon_gums') {
+      rs.push({ text: '[Buy Gums a double whiskey before the game.] (5 caps)', karma: -10, repeatKarma: true,
+        cond: () => dayWon(npcId) < O.cap && L.caps() >= 5 && L.flag('cv_gums_drink_day') !== today && !UI.pendingBoost,
+        action: () => { if (L.pay(5)) { L.setFlag('cv_gums_drink_day', today); UI.pendingBoost = 25; UI.pendingFor = npcId; } }, next: 'cv_drunk' });
+      rs.push({ text: () => '[Hand back the ' + gumsOwed() + ' caps you won off him today.]', karma: 20, repeatKarma: true, cond: () => gumsOwed() > 0 && L.caps() >= gumsOwed(),
+        action: () => { const n = gumsOwed(); const f = L.flag('cv_gums_refund'); L.setFlag('cv_gums_refund', { d: today, w: (f && f.d === today ? f.w : 0) + n }); L.pay(n); }, next: 'cv_refund' });
+    }
+    return rs;
+  }
+
+  // ==================================================================
+  // UI
+  // ==================================================================
+  const UI = { root: null, g: null, opp: null, oppId: null, stake: 0, boost: 0, pendingBoost: 0, sel: -1, disband: false, busy: false, gen: 0, escT: 0, last: null, lines: [], prevState: 'play', ended: false, hl: null };
+  const $ = (tag, cls, parent, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (parent) parent.appendChild(e); if (text !== undefined) e.textContent = text; return e; };
+  function later(ms, fn) { const gen = UI.gen; setTimeout(() => { if (gen === UI.gen && UI.root) { try { fn(); } catch (e) { G.reportError('quests:caravan', e); } } }, ms); }
+
+  function build() {
+    if (UI.root) return;
+    const r = $('div', 'cv-screen cv-hidden', document.body);
+    r.innerHTML =
+      '<div class="cv-felt"></div><div class="cv-lamp"></div>' +
+      '<div class="cv-top"><div class="cv-title">CARAVAN</div><div class="cv-vs"></div><div class="cv-pot"></div></div>' +
+      '<div class="cv-ohand"></div>' +
+      '<div class="cv-board">' +
+      [0, 1, 2].map((i) => '<div class="cv-col" data-i="' + i + '"><div class="cv-lane cv-opp" data-side="1" data-lane="' + i + '"></div>' +
+        '<div class="cv-mid"><div class="cv-val cv-oval"></div><div class="cv-state"></div><div class="cv-val cv-yval"></div></div>' +
+        '<div class="cv-lane cv-you" data-side="0" data-lane="' + i + '"></div></div>').join('') +
+      '</div>' +
+      '<div class="cv-side"><div class="cv-deck cv-odeck"></div><div class="cv-log"></div><div class="cv-help"></div>' +
+      '<div class="cv-btns"><button class="cv-btn cv-b-disc">DISCARD <b>D</b></button><button class="cv-btn cv-b-disband">DISBAND <b>X</b></button><button class="cv-btn cv-b-quit">FORFEIT <b>ESC</b></button></div>' +
+      '<div class="cv-deck cv-ydeck"></div></div>' +
+      '<div class="cv-hand"></div>' +
+      '<div class="cv-banner cv-hidden"></div>' +
+      '<div class="cv-builder cv-hidden"><div class="cv-bhead"><div class="cv-title">YOUR CARAVAN DECK</div><div class="cv-bcount"></div></div>' +
+      '<div class="cv-bgrid"></div><div class="cv-bbacks"></div>' +
+      '<div class="cv-bhelp">Click a card to add a copy to your deck, right-click to take one out. A deck needs at least ' + MIN_DECK + ' cards. ' +
+      'Cards from different decks (different backs) can sit in the same Caravan deck. Buy card packs from Lucky Lou, Eustace Byrd, Goldie\'s Pawn or Souvenir Sadie.</div>' +
+      '<div class="cv-btns"><button class="cv-btn" data-b="all">USE EVERY CARD</button><button class="cv-btn" data-b="nums">NUMBERS + KINGS/JACKS</button><button class="cv-btn" data-b="done">DONE <b>ESC</b></button></div></div>' +
+      '<div class="cv-scan"></div>';
+    UI.root = r;
+    UI.el = {
+      vs: r.querySelector('.cv-vs'), pot: r.querySelector('.cv-pot'), ohand: r.querySelector('.cv-ohand'), hand: r.querySelector('.cv-hand'),
+      log: r.querySelector('.cv-log'), help: r.querySelector('.cv-help'), banner: r.querySelector('.cv-banner'),
+      odeck: r.querySelector('.cv-odeck'), ydeck: r.querySelector('.cv-ydeck'),
+      lanes: [Array.from(r.querySelectorAll('.cv-you')), Array.from(r.querySelectorAll('.cv-opp'))],
+      oval: Array.from(r.querySelectorAll('.cv-oval')), yval: Array.from(r.querySelectorAll('.cv-yval')), st: Array.from(r.querySelectorAll('.cv-state')),
+    };
+    r.querySelector('.cv-b-disc').onclick = () => discardSel();
+    r.querySelector('.cv-b-disband').onclick = () => { if (!myTurn()) return; UI.disband = !UI.disband; UI.sel = -1; render(); };
+    r.querySelector('.cv-b-quit').onclick = () => forfeit();
+    UI.el.builder = r.querySelector('.cv-builder'); UI.el.bgrid = r.querySelector('.cv-bgrid'); UI.el.bcount = r.querySelector('.cv-bcount'); UI.el.bbacks = r.querySelector('.cv-bbacks');
+    UI.el.builder.addEventListener('click', (e) => { e.stopPropagation(); builderClick(e, 1); });
+    UI.el.builder.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); builderClick(e, -1); });
+    r.addEventListener('contextmenu', (e) => { e.preventDefault(); if (!UI.building) discardSel(); });
+    r.addEventListener('click', onClick);
+    G.events.on('state', (s) => { if (UI.root && !UI.root.classList.contains('cv-hidden') && s !== 'caravan') abort(); });
+    G.events.on('reset', () => { if (UI.root && !UI.root.classList.contains('cv-hidden')) abort(true); });
+    G.events.on('keydown', onKey);
+  }
+
+  function cardEl(c, extra) {
+    const d = $('div', 'cv-card' + (extra ? ' ' + extra : ''));
+    if (!c) { d.classList.add('cv-back', 'cv-back-' + (UI.opp ? UI.opp.back : 'rad')); d.innerHTML = '<i></i>'; return d; }
+    if (c.b) d.classList.add('cv-deck-' + c.b);
+    const red = RED[c.s];
+    if (c.r === '*') { d.classList.add('cv-joker'); d.innerHTML = '<span class="cv-c1">★</span><span class="cv-jk">JOKER</span><span class="cv-pip">☢</span><span class="cv-c2">★</span>'; return d; }
+    if (red) d.classList.add('cv-red');
+    const face = isFace(c);
+    if (face) d.classList.add('cv-face');
+    const big = face ? '<span class="cv-fl">' + c.r + '</span><span class="cv-fs">' + c.s + '</span>' : '<span class="cv-pip">' + c.s + '</span>';
+    d.innerHTML = '<span class="cv-c1">' + c.r + '<br>' + c.s + '</span>' + big + '<span class="cv-c2">' + c.r + '<br>' + c.s + '</span>';
+    return d;
+  }
+  const myTurn = () => UI.g && !UI.g.over && UI.g.turn === 0 && !UI.busy;
+
+  /** legal targets for the selected card: [{side, lane, e?}] */
+  function targetsFor(hi) {
+    const out = [];
+    if (hi < 0 || !UI.g) return out;
+    for (const m of moves(UI.g, 0)) if (m.hi === hi) {
+      if (m.t === 'num') out.push({ side: 0, lane: m.lane, m });
+      else if (m.t === 'face') out.push({ side: m.owner === 0 ? 0 : 1, lane: m.lane, e: m.e, m });
+    }
+    return out;
+  }
+
+  function render() {
+    const g = UI.g; if (!g || !UI.root) return;
+    const E = UI.el;
+    E.vs.textContent = 'YOU  vs  ' + UI.opp.name.toUpperCase();
+    E.pot.textContent = UI.stake ? 'POT ' + (UI.stake * 2) + ' CAPS' : 'FRIENDLY GAME';
+    // opponent hand (backs)
+    E.ohand.innerHTML = '';
+    g.p[1].hand.forEach(() => E.ohand.appendChild(cardEl(null, 'cv-small')));
+    E.odeck.innerHTML = '<span>' + UI.opp.short + ' DECK</span><b>' + g.p[1].deck.length + '</b>';
+    E.ydeck.innerHTML = '<span>YOUR DECK</span><b>' + g.p[0].deck.length + '</b>';
+    E.odeck.className = 'cv-deck cv-odeck cv-back-' + UI.opp.back; E.ydeck.className = 'cv-deck cv-ydeck cv-back-depot';
+    const tg = UI.disband ? [] : targetsFor(UI.sel);
+    // lanes
+    for (let side = 0; side < 2; side++) {
+      for (let i = 0; i < 3; i++) {
+        const host = E.lanes[side][i]; host.innerHTML = '';
+        const l = g.p[side].lanes[i];
+        const n = l.cards.length;
+        const H = host.clientHeight || 200, ch = cardH();
+        const step = n > 1 ? Math.min(ch * 0.3, (H - ch) / (n - 1)) : 0;
+        l.cards.forEach((e, ei) => {
+          const d = cardEl(e.c, 'cv-onlane');
+          d.style.top = (side === 1 ? ei * step : ei * step) + 'px';
+          d.style.zIndex = 10 + ei * 4;
+          if (UI.last && UI.last.id === e.c.id) d.classList.add('cv-new');
+          const isT = tg.some((t) => t.side === side && t.lane === i && t.e === ei);
+          if (isT) { d.classList.add('cv-target'); d.dataset.side = side; d.dataset.lane = i; d.dataset.e = ei; }
+          e.faces.forEach((f, fi) => {
+            const fd = cardEl(f, 'cv-attached');
+            fd.style.left = (18 + fi * 16) + 'px'; fd.style.top = (6 + fi * 7) + 'px';
+            if (UI.last && UI.last.id === f.id) fd.classList.add('cv-new');
+            d.appendChild(fd);
+          });
+          host.appendChild(d);
+        });
+        const laneT = tg.some((t) => t.side === side && t.lane === i && t.e === undefined);
+        host.classList.toggle('cv-droppable', laneT || (UI.disband && side === 0 && n > 0));
+        if (!n) { const ph = $('div', 'cv-slot', host); ph.textContent = side === 0 && g.p[0].opened < 3 ? 'START A CARAVAN' : ''; }
+        // direction / suit tag
+        if (n) { const tag = $('div', 'cv-dir', host); tag.innerHTML = (l.dir > 0 ? '▲ ASC' : l.dir < 0 ? '▼ DESC' : '◆') + ' <span class="' + (RED[l.suit] ? 'cv-rs' : '') + '">' + (l.suit || '') + '</span>'; }
+      }
+    }
+    for (let i = 0; i < 3; i++) {
+      const a = laneValue(g.p[0].lanes[i]), b = laneValue(g.p[1].lanes[i]);
+      E.yval[i].textContent = a; E.oval[i].textContent = b;
+      E.yval[i].className = 'cv-val cv-yval ' + (a > 26 ? 'cv-bust' : sold(a) ? 'cv-sold' : '');
+      E.oval[i].className = 'cv-val cv-oval ' + (b > 26 ? 'cv-bust' : sold(b) ? 'cv-sold' : '');
+      const w = laneWinner(g, i);
+      E.st[i].textContent = w === 0 ? '◀ YOURS ▶' : w === 1 ? '◀ ' + UI.opp.short + ' ▶' : (sold(a) && sold(b)) ? 'TIED' : '';
+      E.st[i].className = 'cv-state ' + (w === 0 ? 'cv-w' : w === 1 ? 'cv-l' : '');
+    }
+    // hand
+    E.hand.innerHTML = '';
+    g.p[0].hand.forEach((c, hi) => {
+      const d = cardEl(c, 'cv-inhand');
+      d.dataset.hi = hi;
+      if (hi === UI.sel) d.classList.add('cv-sel');
+      if (myTurn() && !UI.disband && !moves(g, 0).some((m) => m.hi === hi && m.t !== 'disc')) d.classList.add('cv-dead');
+      const k = $('span', 'cv-key', d); k.textContent = hi + 1;
+      E.hand.appendChild(d);
+    });
+    // help
+    let h;
+    if (g.over) h = '';
+    else if (g.turn !== 0 || UI.busy) h = UI.opp.name + ' is thinking…';
+    else if (UI.disband) h = 'Click one of YOUR caravans to disband it (all its cards are discarded). X cancels.';
+    else if (g.p[0].opened < 3) h = 'OPENING: start each of your three caravans with a number card (A–10). Select a card, then an empty caravan.';
+    else if (UI.sel >= 0) { const c = g.p[0].hand[UI.sel]; h = isNum(c) ? 'Play on one of your caravans: continue its direction, or match its suit. Right-click / D to discard.' : ({ J: 'JACK: removes the card it is played on.', Q: 'QUEEN: on the last card of a caravan — reverses its direction, sets its suit.', K: 'KING: doubles the value of the card it is played on.', '*': 'JOKER: on an Ace, removes every other card of that suit; on 2–10, every other card of that value.' })[c.r] + ' Right-click / D to discard.'; }
+    else h = 'Your turn. Select a card (1–' + g.p[0].hand.length + '). Sell caravans at 21–26 to win lanes; take two of three.';
+    E.help.textContent = h;
+    E.log.innerHTML = UI.lines.slice(-7).map((t) => '<div>' + t + '</div>').join('');
+    UI.root.classList.toggle('cv-myturn', myTurn());
+  }
+  function cardH() { return Math.min(window.innerHeight * 0.14, 118); }
+  function logLine(who, text) { UI.lines.push((who === 0 ? '<b>YOU</b> ' : '<b class="cv-o">' + UI.opp.short + '</b> ') + text); }
+
+  function onClick(e) {
+    if (!UI.g) return;
+    const t = e.target;
+    if (t.closest('.cv-banner')) {
+      const b = t.closest('[data-act]'); if (b) bannerAct(b.dataset.act);
+      return;
+    }
+    if (!myTurn()) return;
+    const hc = t.closest('.cv-inhand');
+    if (hc) { const hi = Number(hc.dataset.hi); UI.sel = UI.sel === hi ? -1 : hi; UI.disband = false; L.sfx('ui_click', { volume: 0.5 }); render(); return; }
+    const card = t.closest('.cv-target');
+    if (card && UI.sel >= 0) {
+      const side = Number(card.dataset.side), lane = Number(card.dataset.lane), ei = Number(card.dataset.e);
+      const tt = targetsFor(UI.sel).find((x) => x.side === side && x.lane === lane && x.e === ei);
+      if (tt) { play(tt.m); return; }
+    }
+    const lane = t.closest('.cv-lane');
+    if (lane) {
+      const side = Number(lane.dataset.side), li = Number(lane.dataset.lane);
+      if (UI.disband) { if (side === 0 && UI.g.p[0].lanes[li].cards.length) { UI.disband = false; play({ t: 'disband', lane: li }); } return; }
+      if (UI.sel >= 0) {
+        const tt = targetsFor(UI.sel).find((x) => x.side === side && x.lane === li && x.e === undefined);
+        if (tt) { play(tt.m); return; }
+        L.sfx('ui_error', { volume: 0.4 });
+      }
+    }
+  }
+  function onKey(code) {
+    if (G.state !== 'caravan' || !UI.root || UI.root.classList.contains('cv-hidden')) return;
+    G.input.consume(code);
+    if (UI.building) { if (code === 'Escape' || code === 'Tab' || code === 'KeyE') closeBuilder(); return; }
+    if (UI.g && UI.g.over) { if (code === 'Escape' || code === 'KeyE' || code === 'Enter') bannerAct('leave'); else if (code === 'KeyR' || code === 'Space') bannerAct('again'); return; }
+    if (code === 'Escape') { forfeit(); return; }
+    if (!myTurn()) return;
+    const m = /^Digit([1-8])$/.exec(code);
+    if (m) { const hi = Number(m[1]) - 1; if (hi < UI.g.p[0].hand.length) { UI.sel = UI.sel === hi ? -1 : hi; UI.disband = false; L.sfx('ui_click', { volume: 0.5 }); render(); } return; }
+    if (code === 'KeyD' || code === 'Delete' || code === 'Backspace') { discardSel(); return; }
+    if (code === 'KeyX') { UI.disband = !UI.disband; UI.sel = -1; render(); }
+  }
+  function discardSel() {
+    if (!myTurn() || UI.sel < 0) return;
+    const ok = moves(UI.g, 0).find((m) => m.t === 'disc' && m.hi === UI.sel);
+    if (!ok) { L.sfx('ui_error', { volume: 0.5 }); UI.lines.push('You can\'t discard during the opening while you hold a number card.'); render(); return; }
+    play(ok);
+  }
+  function play(m) {
+    const g = UI.g;
+    const c = m.hi !== undefined ? g.p[0].hand[m.hi] : null;
+    const line = apply(g, 0, m);
+    UI.last = c; UI.sel = -1; UI.disband = false;
+    logLine(0, line);
+    L.sfx(m.t === 'disc' || m.t === 'disband' ? 'ui_back' : 'ui_select', { volume: 0.6 });
+    render();
+    afterMove(0);
+  }
+  function afterMove(who) {
+    const g = UI.g;
+    if (g.over) { finish(); return; }
+    if (g.turn === 1) {
+      UI.busy = true; render();
+      later(700 + Math.random() * 600, oppTurn);
+    }
+  }
+  function oppTurn() {
+    const g = UI.g; if (!g || g.over) return;
+    const m = aiMove(g, 1, UI.opp.noise + (UI.boost || 0));   // boost: a marked deck / a drunker opponent (karma choices)
+    UI.busy = false;
+    if (!m) { g.over = true; g.winner = 0; g.reason = 'cards'; finish(); return; }
+    const c = m.hi !== undefined ? g.p[1].hand[m.hi] : null;
+    const before = [0, 1, 2].map((i) => laneWinner(g, i));
+    const line = apply(g, 1, m);
+    UI.last = c;
+    logLine(1, line);
+    L.sfx('ui_select', { volume: 0.45, pitch: 0.9 });
+    // table talk: a quip when a lane changes hands
+    const after = [0, 1, 2].map((i) => laneWinner(g, i));
+    if (!g.over && before.some((b, i) => b !== after[i]) && Math.random() < 0.6) {
+      const mine = after.some((a, i) => a === 1 && before[i] !== 1);
+      UI.lines.push('<i>' + UI.opp.short + ': "' + pick(mine ? UI.opp.mine : UI.opp.yours) + '"</i>');
+    }
+    render();
+    afterMove(1);
+  }
+  function finish() {
+    const g = UI.g; UI.busy = false;
+    const won = g.winner === 0;
+    let pay = '';
+    if (won && UI.stake) { L.giveCaps(UI.stake * 2); addDayWon(UI.oppId, UI.stake); pay = '+' + (UI.stake * 2) + ' caps'; }
+    else if (!won && UI.stake) pay = '−' + UI.stake + ' caps';
+    L.sfx(won ? 'quest_update' : 'ui_error', { volume: 0.6 });
+    const rec = L.flag('cv_rec') || {}; const r = rec[UI.oppId] || { w: 0, l: 0 };
+    if (won) r.w++; else r.l++;
+    rec[UI.oppId] = r; L.setFlag('cv_rec', rec);
+    if (won) { L.incFlag('cv_wins'); if (UI.stake) L.xp(UI.stake >= 50 ? 30 : 15, 'Caravan'); onWin(UI.oppId); }
+    G.events.emit('caravanResult', { opponent: UI.oppId, won, stake: UI.stake });
+    const lanes = [0, 1, 2].map((i) => laneWinner(g, i));
+    const why = g.reason === 'cards' ? (won ? UI.opp.name + ' ran out of cards.' : 'You ran out of cards.') : 'Lanes: ' + lanes.map((w) => (w === 0 ? 'YOU' : UI.opp.short)).join(' · ');
+    const canAgain = (!UI.stake || L.caps() >= UI.stake) && dayWon(UI.oppId) < UI.opp.cap;
+    const B = UI.el.banner;
+    B.innerHTML = '<div class="cv-bt ' + (won ? 'cv-w' : 'cv-l') + '">' + (won ? 'YOU WIN' : 'YOU LOSE') + '</div>' +
+      '<div class="cv-bs">' + why + (pay ? '<br><b>' + pay + '</b>' : '') + '</div>' +
+      '<div class="cv-bq">' + UI.opp.name + ': "' + pick(won ? UI.opp.lose : UI.opp.win) + '"</div>' +
+      '<div class="cv-bb">' + (canAgain ? '<button class="cv-btn" data-act="again">PLAY AGAIN' + (UI.stake ? ' (' + UI.stake + ' CAPS)' : '') + ' <b>R</b></button>' : '') +
+      '<button class="cv-btn" data-act="leave">LEAVE TABLE <b>E</b></button></div>';
+    B.classList.remove('cv-hidden');
+    render();
+  }
+  function bannerAct(act) {
+    if (act === 'again') {
+      if (UI.stake && !L.pay(UI.stake)) return;
+      if (dayWon(UI.oppId) >= UI.opp.cap) return;
+      startTable();
+    } else close();
+  }
+  function forfeit() {
+    if (!UI.g || UI.g.over) { close(); return; }
+    const now = performance.now();
+    if (now - UI.escT > 2500) { UI.escT = now; UI.lines.push('<i>Press Esc again to forfeit' + (UI.stake ? ' (you lose the ' + UI.stake + '-cap stake)' : '') + '.</i>'); render(); return; }
+    UI.g.over = true; UI.g.winner = 1; UI.g.reason = 'forfeit';
+    const rec = L.flag('cv_rec') || {}; const r = rec[UI.oppId] || { w: 0, l: 0 }; r.l++; rec[UI.oppId] = r; L.setFlag('cv_rec', rec);
+    close();
+    L.say(UI.oppId, pick(['Walking away? Pot stays with me.', 'Folding? Suit yourself.', 'Hey, the caps stay on the table.']), 3);
+  }
+  /** the table closed by something else (cheat menu, load, reset): the pot is returned */
+  function abort(silent) {
+    if (UI.g && !UI.g.over && UI.stake) { if (!silent) { L.giveCaps(UI.stake); L.notify('The Caravan game was called off. Your stake is returned.'); } }
+    UI.g = null; UI.gen++;
+    if (UI.root) UI.root.classList.add('cv-hidden');
+  }
+  function close() {
+    UI.gen++; UI.g = null; UI.building = false;
+    if (UI.el && UI.el.builder) UI.el.builder.classList.add('cv-hidden');
+    if (UI.root) UI.root.classList.add('cv-hidden');
+    if (G.state === 'caravan') G.setState('play');
+  }
+  function startTable() {
+    UI.g = newGame({ first: Math.random() < 0.5 ? 0 : 1, decks: [deckKeys(), null], backs: ['depot', UI.opp.back] });
+    UI.sel = -1; UI.disband = false; UI.busy = false; UI.last = null; UI.escT = 0; UI.gen++;
+    UI.lines = ['<i>' + UI.opp.name + ': "' + pick(UI.opp.open) + '"</i>', UI.g.turn === 0 ? 'You go first.' : UI.opp.name + ' goes first.'];
+    UI.el.banner.classList.add('cv-hidden');
+    L.sfx('container_open', { volume: 0.5 });
+    render();
+    later(60, render);   // lane heights are known after the first layout
+    if (UI.g.turn === 1) afterMove(0);
+  }
+  /** Open the table against `oppId` for `stake` caps (already validated by the caller; paid here). */
+  function open(oppId, stake) {
+    if (G.state !== 'play') return false;
+    build();
+    if (!L.has('q_caravan_deck')) L.give('q_caravan_deck', 1);
+    ensureColl();
+    if (deckKeys().length < MIN_DECK) {
+      L.notify('Your Caravan deck has only ' + deckKeys().length + ' cards — it needs at least ' + MIN_DECK + '.'); L.sfx('ui_error');
+      openBuilder(); return false;
+    }
+    UI.oppId = oppId; UI.opp = oppDef(oppId); UI.stake = stake || 0;
+    UI.boost = UI.pendingFor === oppId ? UI.pendingBoost || 0 : 0; UI.pendingBoost = 0; UI.pendingFor = null;
+    if (UI.stake && !L.pay(UI.stake)) return false;
+    UI.building = false; UI.el.builder.classList.add('cv-hidden'); UI.root.classList.remove('cv-building');
+    UI.root.classList.remove('cv-hidden');
+    G.setState('caravan');
+    startTable();
+    return true;
+  }
+
+  // ==================================================================
+  // CARD COLLECTION + DECK BUILDER (New Vegas: collect cards, build a deck of 30+)
+  //   flag cv_coll {key:n} = every card owned, flag cv_deck {key:n} = the playing deck.
+  //   Eustace's starter deck: A–10 of every suit + four court cards (44, Neon Depot backs).
+  //   Card packs (5 cards, any back) from Lou, Eustace, Goldie and Sadie; a first win against
+  //   each of the Neon's players earns that player's signature card and a pack.
+  // ==================================================================
+  const MIN_DECK = 30;
+  function ensureColl() {
+    let c = L.flag('cv_coll');
+    if (c && typeof c === 'object') return c;
+    c = {};
+    for (const s of SUITS) for (const r of ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10']) c[cardKey('depot', r, s)] = 1;
+    for (const k of ['depot:JS', 'depot:QH', 'depot:KD', 'depot:JC']) c[k] = 1;
+    L.setFlag('cv_coll', c); L.setFlag('cv_deck', Object.assign({}, c));
+    return c;
+  }
+  /** the playing deck as a list of keys, clamped to what the collection holds */
+  function deckKeys() {
+    const c = ensureColl(), d = L.flag('cv_deck') || c, out = [];
+    for (const k in d) { const n = Math.min(d[k] || 0, c[k] || 0); for (let i = 0; i < n; i++) out.push(k); }
+    return out;
+  }
+  function collSize() { const c = ensureColl(); let n = 0; for (const k in c) n += c[k]; return n; }
+  function prettyKey(k) { const c = parseKey(k); return (c.r === '*' ? 'Joker' : c.r + c.s) + ' (' + BACKS[c.b] + ')'; }
+  /** add cards to the collection (and straight into the deck, NV-style convenience) */
+  function addCards(keys, why) {
+    const c = ensureColl(), d = Object.assign({}, L.flag('cv_deck') || c);
+    for (const k of keys) { c[k] = (c[k] || 0) + 1; d[k] = (d[k] || 0) + 1; }
+    L.setFlag('cv_coll', c); L.setFlag('cv_deck', d);
+    L.notify((why ? why + ': ' : 'Caravan cards added: ') + keys.map(prettyKey).join(', '));
+  }
+  function randomCard(back) {
+    const x = Math.random();
+    const r = x < 0.05 ? '*' : x < 0.33 ? pick(['J', 'Q', 'K']) : pick(['A', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
+    return cardKey(back, r, r === '*' ? '' : pick(SUITS));
+  }
+  function openPack() {
+    const back = pick(['rad', 'astor', 'automat', 'ball', 'depot']);
+    const keys = []; for (let i = 0; i < 5; i++) keys.push(randomCard(back));
+    L.sfx('pickup_note', { volume: 0.6 });
+    addCards(keys, 'You open a ' + BACKS[back] + ' card pack');
+  }
+  const SIGNATURE = { neon_dealer: 'rad:*', neon_wagon: 'depot:*', neon_gums: 'rad:KH' };
+
+  function openBuilder() {
+    if (G.state !== 'play' && G.state !== 'caravan') return false;
+    build(); ensureColl();
+    UI.building = true; UI.g = null;
+    UI.el.builder.classList.remove('cv-hidden'); UI.el.banner.classList.add('cv-hidden');
+    UI.root.classList.add('cv-building');
+    UI.root.classList.remove('cv-hidden');
+    if (G.state !== 'caravan') G.setState('caravan');
+    renderBuilder();
+    return true;
+  }
+  function closeBuilder() {
+    UI.building = false;
+    UI.el.builder.classList.add('cv-hidden'); UI.root.classList.remove('cv-building');
+    const n = deckKeys().length;
+    if (n < MIN_DECK) L.notify('Your Caravan deck has ' + n + ' cards. You need ' + MIN_DECK + ' to sit down at a table.');
+    close();
+  }
+  function renderBuilder() {
+    const c = ensureColl(), d = L.flag('cv_deck') || {}, E = UI.el;
+    const total = deckKeys().length;
+    E.bcount.innerHTML = 'DECK <b class="' + (total < MIN_DECK ? 'cv-bad' : 'cv-ok') + '">' + total + '</b> / MIN ' + MIN_DECK + ' &nbsp;·&nbsp; COLLECTION ' + collSize();
+    let h = '';
+    for (const row of SUITS.concat(['*'])) {
+      h += '<div class="cv-brow">';
+      for (const r of row === '*' ? ['*'] : RANKS) {
+        const s = row === '*' ? '' : row;
+        let own = 0, inD = 0;
+        for (const b in BACKS) { const k = cardKey(b, r, s); own += c[k] || 0; inD += Math.min(d[k] || 0, c[k] || 0); }
+        const mc = mkCard('depot', r, s); mc.b = null;   // no deck stamp: a cell sums every back
+        const card = cardEl(mc, 'cv-mini' + (own ? '' : ' cv-none') + (inD ? ' cv-in' : ''));
+        card.dataset.r = r; card.dataset.s = s;
+        const b = $('span', 'cv-own', card); b.textContent = own ? inD + '/' + own : '';
+        h += card.outerHTML;
+      }
+      h += '</div>';
+    }
+    E.bgrid.innerHTML = h;
+    const per = {}; for (const k in c) { const b = parseKey(k).b; per[b] = (per[b] || 0) + c[k]; }
+    E.bbacks.innerHTML = Object.keys(per).map((b) => '<span class="cv-bk"><i class="cv-card cv-back cv-back-' + b + ' cv-tiny"><i></i></i>' + BACKS[b] + ' ×' + per[b] + '</span>').join('');
+  }
+  function builderClick(e, dir) {
+    const btn = e.target.closest('[data-b]');
+    const c = ensureColl();
+    if (btn) {
+      const act = btn.dataset.b;
+      if (act === 'done') { closeBuilder(); return; }
+      const d = {};
+      for (const k in c) { const r = parseKey(k).r; if (act === 'all' || (r !== 'Q' && r !== '*')) d[k] = c[k]; }
+      L.setFlag('cv_deck', d); L.sfx('ui_select', { volume: 0.5 }); renderBuilder(); return;
+    }
+    const card = e.target.closest('.cv-mini'); if (!card) return;
+    const r = card.dataset.r, s = card.dataset.s, d = Object.assign({}, L.flag('cv_deck') || c);
+    const keys = Object.keys(BACKS).map((b) => cardKey(b, r, s)).filter((k) => c[k]);
+    let done = false;
+    if (dir > 0) { for (const k of keys) if ((d[k] || 0) < c[k]) { d[k] = (d[k] || 0) + 1; done = true; break; } }
+    else { for (const k of keys.reverse()) if ((d[k] || 0) > 0) { d[k]--; done = true; break; } }
+    L.sfx(done ? 'ui_click' : 'ui_error', { volume: 0.5 });
+    if (done) { L.setFlag('cv_deck', d); renderBuilder(); }
+  }
+
+  // ==================================================================
+  // CONTENT: dialogue hooks + SQ "Deal Me In"
+  // ==================================================================
+  const TRIO = ['neon_gums', 'neon_wagon', 'neon_dealer'];
+  function beat(id) { const r = (L.flag('cv_rec') || {})[id]; return !!(r && r.w > 0); }
+  function onWin(id) {
+    const got = L.flag('cv_sig') || {};
+    if (SIGNATURE[id] && !got[id]) {
+      got[id] = true; L.setFlag('cv_sig', got);
+      L.later(0.5, () => { addCards([SIGNATURE[id]], oppDef(id).name + ' pays up with a card off their own deck'); L.give('q_caravan_pack', 1); });
+    }
+    if (Q.isActive('sq_neon_caravan')) {
+      L.notify('Deal Me In: beat ' + oppDef(id).name + (TRIO.every(beat) ? '.' : ' (' + TRIO.filter(beat).length + '/3).'));
+      if (TRIO.every(beat) && Q.stage('sq_neon_caravan') === 'play') Q.setStage('sq_neon_caravan', 'report');
+    }
+  }
+  L.hook('init', function () {
+    L.defineItem({ id: 'q_caravan_deck', type: 'misc', name: 'Caravan Deck', weight: 0, value: 5, quest: false, noLoot: true, mesh: 'paper',
+      desc: 'Forty-four battered cards held together with a rubber band and faith — aces to tens and a few court cards. The backs are stamped NEON DEPOT — PROPERTY OF E. BYRD. Build it out with card packs; a Caravan deck needs at least thirty cards.' });
+    L.defineItem({ id: 'q_caravan_pack', type: 'misc', name: 'Caravan Card Pack', weight: 0, value: 30, noLoot: true, mesh: 'paper',
+      desc: 'Five pre-war playing cards in a wax-paper sleeve, sold by the Neon\'s card sharps as Caravan cards. Opened as soon as you get it; the cards join your Caravan collection.' });
+    L.defineItem({ id: 'q_dealer_visor', type: 'apparel', slot: 'head', name: 'Dealer\'s Visor', weight: 0, value: 120, dr: 0, special: { L: 1 }, skills: { barter: 5 },
+      desc: 'A green celluloid dealer\'s visor from the pre-war Automat card room, signed on the brim by Lucky Lou, Eustace Byrd and — illegibly — Gums Gallagher. +1 LCK, +5 Barter.' });
+    L.quest({
+      id: 'sq_neon_caravan', name: 'Deal Me In', giver: 'Eustace Byrd', location: 'The Neon (Times Square)',
+      desc: 'Eustace Byrd says no caravaneer is worth their salt until they can hold their own at Caravan — and that the three toughest tables in the Neon belong to a drunk, a wagonmaster and a card sharp.',
+      stages: [
+        { id: 'play', text: 'Beat the Neon\'s three Caravan players.', markers: () => TRIO.filter((id) => !beat(id)).map((id) => ({ npc: id, label: oppDef(id).name })) },
+        { id: 'beat_gums', sideObjective: true, text: 'Beat Gums Gallagher at Caravan.', doneIf: () => beat('neon_gums') },
+        { id: 'beat_wagon', sideObjective: true, text: 'Beat Eustace Byrd at Caravan.', doneIf: () => beat('neon_wagon') },
+        { id: 'beat_dealer', sideObjective: true, text: 'Beat Lucky Lou at Caravan.', doneIf: () => beat('neon_dealer') },
+        { id: 'report', text: 'Tell Eustace Byrd you\'ve beaten all three.', markers: [{ npc: 'neon_wagon', label: 'Eustace Byrd' }] },
+      ],
+      rewards: { xp: 150, caps: 0 },
+    });
+  });
+
+  /** dialogue nodes offering a game, merged into an existing tree. `entry` = the node that gets the "Caravan?" line. */
+  function addTable(dlgId, npcId, entry) {
+    const tree = L.DIALOGUES.get(dlgId);
+    if (!tree || !tree.nodes || !tree.nodes[entry]) return;
+    const O = oppDef(npcId);
+    const node = tree.nodes[entry];
+    const base = node.responses;
+    const offer = { text: () => (npcId === 'neon_gums' ? 'Up for a game of Caravan?' : 'How about a game of Caravan?'), next: 'cv_offer' };
+    node.responses = typeof base === 'function' ? (a, A) => [offer].concat(base(a, A) || []) : [offer].concat(base || []);
+    tree.nodes.cv_offer = {
+      text: () => (dayWon(npcId) >= O.cap ? pick(['No more today. You\'ve taken enough of my caps for one day. Come back tomorrow.', 'Not tonight. My wallet needs a lie-down.']) : pick(O.open)),
+      responses: () => {
+        const rs = [];
+        if (dayWon(npcId) < O.cap) for (const s of O.stakes) rs.push({ text: s ? 'Play for ' + s + ' caps.' : 'A friendly game. No caps.', cond: () => !s || L.caps() >= s, action: () => { L.later(0.15, () => open(npcId, s)); } });
+        for (const r of tableKarma(npcId, O)) rs.push(r);
+        if (npcId !== 'neon_gums') rs.push({ text: 'Sell me a pack of cards. (30 caps)', cond: () => L.caps() >= 30, action: () => { if (L.pay(30)) L.give('q_caravan_pack', 1); }, next: 'cv_pack' });
+        rs.push({ text: () => 'Give me a minute to sort my deck. (' + deckKeys().length + ' cards)', action: () => { L.later(0.15, openBuilder); } });
+        rs.push({ text: 'How do you play?', next: 'cv_rules' });
+        rs.push({ text: 'Maybe later.' });
+        return rs;
+      },
+    };
+    tree.nodes.cv_marked = { text: '[Two Kings slide into your cuff while ' + O.name + ' squares the deck. Nobody saw. You\'re almost sure nobody saw.]', responses: () => tree.nodes.cv_offer.responses().filter((r) => !r.check) };
+    tree.nodes.cv_caught = { text: '[Lou\'s hand clamps on your wrist. He turns it over. Two Kings fall on the felt.] …In MY room? Two hundred years I\'ve been dealing, pal. Out. Come back tomorrow, and bring your OWN Kings.',
+      onEnter() { L.karma(-5, 'Caught cheating at cards'); addDayWon(npcId, O.cap); }, responses: [{ text: '[Leave the table.]' }] };
+    tree.nodes.cv_drunk = { text: '[Gums knocks it back in one.] Oh, you\'re a PRINCE. A prince among smoothskins. [He squints at the deck. He squints at the other deck, which is the same deck.] Deal \'em, your highness.',
+      responses: () => tree.nodes.cv_offer.responses().filter((r) => !r.karma) };
+    tree.nodes.cv_refund = { text: '[Gums stares at the caps in his palm, then at you.] You\'re giving… back? Nobody gives back. Not since the Astor. [He sniffs, wetly.] Next round\'s on me. …When I have a next round.',
+      responses: [{ text: 'Keep it, Gums.' }] };
+    tree.nodes.cv_pack = { text: () => pick(npcId === 'neon_dealer'
+      ? ['Five cards, fresh outta the Rad Room drawer. Some of \'em even got all their corners.', 'Don\'t say I never gave you nothin\'. I sold it to you. Different thing.']
+      : ['Five cards off the Depot pile. Could be a Joker in there. Could be a two of clubs. That\'s Caravan.', 'Here. Every caravaneer\'s deck started as somebody else\'s junk.']),
+      responses: () => tree.nodes.cv_offer.responses() };
+    tree.nodes.cv_rules = {
+      text: 'First, your deck: thirty cards or more, any backs you like — collect \'em, buy packs, win \'em. Three caravans each, facing the other fella\'s three. Start each one with a number card — aces are one. Keep building: every card has to keep going the same way, up or down, or match the suit of the last one. A caravan\'s SOLD between twenty-one and twenty-six. Higher sold caravan takes the lane; take two lanes, take the pot.\n\nFace cards go on anybody\'s caravan: a Jack knocks a card out, a Queen flips the direction, a King doubles a card, and a Joker… a Joker makes a mess of everybody.',
+      responses: [{ text: 'Got it. Let\'s play.', next: 'cv_offer' }, { text: 'Maybe later.' }],
+    };
+    L.dialogue(dlgId, tree);
+  }
+  /**
+   * Attach the tables. Eustace's (49_), Lou's (48_) and the townsfolk (47_) trees are registered by files that load
+   * AFTER this one, so this runs on every 'spawn' too and is idempotent per tree.
+   */
+  function attachAll() {
+    // quest giver lines on Eustace's tree (added before the table so they sit above it)
+    const t = L.DIALOGUES.get('dlg_neon_wagon');
+    if (t && t.nodes && t.nodes.hello && !t.nodes.cv_quest) {
+      const base = t.nodes.hello.responses;
+      const lines = [
+        { text: 'Your crew plays cards?', cond: () => !Q.isStarted('sq_neon_caravan'), next: 'cv_quest' },
+        { text: 'I\'ve beaten all three: Gums, Lou, and you.', cond: () => Q.isActive('sq_neon_caravan') && (Q.stage('sq_neon_caravan') === 'report' || TRIO.every(beat)), next: 'cv_done' },
+      ];
+      t.nodes.hello.responses = typeof base === 'function' ? (a, A) => lines.concat(base(a, A) || []) : lines.concat(base || []);
+      t.nodes.cv_quest = {
+        text: 'Cards? Friend, Caravan\'s the only thing keeps a wagon crew from killing each other between here and the Hudson. Named after us, you know. Or we\'re named after it. Nobody remembers.\n\nTell you what: you want to be taken serious around the Depot, you beat the three best tables in the Neon. Gums — don\'t laugh, he\'s better drunk. Me. And Lucky Lou at the Rad Room, if you\'ve got the caps and the stomach. Do that, and I\'ve got something for you.',
+        responses: [{ text: 'Deal me in.', action: () => { Q.start('sq_neon_caravan'); if (!L.has('q_caravan_deck')) L.give('q_caravan_deck', 1); if (TRIO.every(beat)) Q.setStage('sq_neon_caravan', 'report'); }, next: 'hello' }, { text: 'Not a card player.', next: 'hello' }],
+      };
+      t.nodes.cv_done = {
+        text: '[He squints at you a long moment, then laughs.] Lou too? Well, dang. [He reaches under the wagon seat.] This here visor\'s from the old Automat card room. Every dealer in the Neon\'s signed it. Figure it\'s yours now. Wear it and the whole square\'ll know you can count.',
+        responses: [{ text: 'Thanks, Eustace.', action: () => { L.give('q_dealer_visor', 1); Q.complete('sq_neon_caravan'); L.news('Word from the Neon Depot: a newcomer has beaten Lucky Lou Parisi at Caravan. Lou says it was luck. Lou would know.'); }, next: 'hello' }],
+      };
+      L.dialogue('dlg_neon_wagon', t);
+    }
+    for (const [dlg, id] of [['dlg_neon_dealer', 'neon_dealer'], ['dlg_neon_wagon', 'neon_wagon']]) { const tr = L.DIALOGUES.get(dlg); if (tr && tr.nodes && !tr.nodes.cv_offer) addTable(dlg, id, 'hello'); }
+    // Gums shares the generic townsfolk tree: the offer only shows for him
+    const f = L.DIALOGUES.get('dlg_neon_folk');
+    if (f && f.nodes && f.nodes.hello && !f.nodes.cv_offer) {
+      addTable('dlg_neon_folk', 'neon_gums', 'hello');
+      const h = f.nodes.hello, base = h.responses;
+      h.responses = (a, A) => { const rs = typeof base === 'function' ? base(a, A) : base; return a && a.id === 'neon_gums' ? rs : rs.filter((r) => r.next !== 'cv_offer'); };
+      L.dialogue('dlg_neon_folk', f);
+    }
+  }
+  L.hook('register', attachAll);
+  // Card packs open as soon as they reach the inventory (after a barter screen closes: game time).
+  G.events.on('itemAdded', (id) => {
+    if (id === 'q_caravan_deck') ensureColl();
+    if (id !== 'q_caravan_pack' || UI.packPending) return;
+    UI.packPending = true;
+    L.later(0.2, () => { UI.packPending = false; let n = L.count('q_caravan_pack'); while (n-- > 0 && L.take('q_caravan_pack', 1)) openPack(); });
+  });
+  L.hook('spawn', attachAll);
+  L.hook('reset', function () { if (UI.root && !UI.root.classList.contains('cv-hidden')) abort(true); });
+
+  // ==================================================================
+  // Public + debug
+  // ==================================================================
+  /** debug: fast-forward the open table by n moves (both sides play the AI), e.g. for screenshots */
+  Q.debug.caravanPlay = function (n) {
+    const g = UI.g; if (!g) return null;
+    for (let i = 0; i < (n || 10) && !g.over; i++) { const who = g.turn; const m = aiMove(g, who, 6); if (!m) break; const c = m.hi !== undefined ? g.p[who].hand[m.hi] : null; logLine(who, apply(g, who, m)); UI.last = c; }
+    UI.busy = false; UI.gen++;
+    if (g.over) finish(); else render();
+    return { over: g.over, n: g.n, lanes: [0, 1].map((w) => g.p[w].lanes.map(laneValue)) };
+  };
+  G.quests.caravan = { open, openBuilder, deckKeys, addCards, openPack, ensureColl, isOpen: () => !!(UI.root && !UI.root.classList.contains('cv-hidden')), engine: { newGame, moves, apply, laneValue, laneWinner, aiMove, clone } };
+  /** AI vs AI self-play: validates the rules engine. → {games, p0wins, avgTurns, errors} */
+  Q.debug.caravanSim = function (n, noiseA, noiseB) {
+    let w0 = 0, turns = 0, errs = 0, reasons = {};
+    for (let k = 0; k < (n || 20); k++) {
+      const g = newGame({ first: k % 2 });
+      let guard = 0;
+      while (!g.over && guard++ < 600) {
+        const who = g.turn;
+        const m = aiMove(g, who, who === 0 ? (noiseA || 0) : (noiseB || 0));
+        if (!m) { errs++; break; }
+        apply(g, who, m);
+        // invariants
+        for (const pl of g.p) { if (pl.hand.length > 8) errs++; for (const l of pl.lanes) for (let i = 1; i < l.cards.length; i++) if (!l.cards[i].c || l.cards[i].c.v <= 0) errs++; }
+      }
+      if (!g.over) errs++;
+      if (g.winner === 0) w0++;
+      turns += g.n; reasons[g.reason] = (reasons[g.reason] || 0) + 1;
+    }
+    return { games: n || 20, p0wins: w0, avgTurns: Math.round(turns / (n || 20)), reasons, errors: errs };
+  };
+})();
+

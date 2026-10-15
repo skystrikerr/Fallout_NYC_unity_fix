@@ -1,0 +1,900 @@
+/* src/quests/47_neon_people.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 47: THE NEON, POPULATION
+ *   (TIMES_SQUARE_PLAN.md — "NPCs / gameplay" + "Population & safety")
+ *
+ * The busiest, safest place in the game: ~40 named residents of the ghoul
+ * trade town in Times Square.
+ *   - Neon Guards: Captain Mercy Kincaid, two guards at every gate, two
+ *     patrols, two rooftop sharpshooters (tagged for combat's SAFE ZONE,
+ *     45_safezone.js: they engage anything hostile at the gates and tell
+ *     you to put your gun away);
+ *   - the Marquee Market: eight stall merchants with real stock (weapons,
+ *     ammo, armour & clothes, junk, noodles, grill, chems, water & booze);
+ *   - the places: Doc Broadway (clinic), Ammo Annie (gallery), Sprocket
+ *     (Robo-Shop), Goldie Glass (Pawn Palace), the Opry's director and its
+ *     star, the Rad Room's card dealer, the power plant's engineer, the
+ *     caravan master, the Bunkhouse keeper (their services and quests:
+ *     48_neon_services.js / 49_neon_quests.js);
+ *   - hawkers and townsfolk with ghoul-hours day/night routines: market,
+ *     the Opry, drinks at the Rad Room, benches, bunks; FO3-style ambient
+ *     two-person conversations, greetings and hawker cries.
+ *
+ * Placement: ONLY the shared anchor names of the plan, resolved at newGame
+ * (G.landmarks.getAnchor('times_square', n), then G.pois.getAnchor(
+ * 'neon_interiors', n)); if the exterior / interior streams haven't built a
+ * place yet, a validated free spot near the older Neon anchors / the gates /
+ * the plaza is used (never inside geometry). NPCs whose place only exists
+ * indoors (speakeasy) are skipped until their anchor exists.
+ *
+ * Performance: the routine scheduler ticks at 2 Hz and only while the player
+ * is within ~260 m of the square or inside the Neon's interior cell; combat
+ * already detaches actors beyond 175 m and hides them beyond 130 m.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+
+  const TS = { x: -40, z: -262 };
+  const IXM = () => (G.LAYOUT ? G.LAYOUT.INTERIOR_X_MIN : 2500);
+  const isInt = (x) => x >= IXM();
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  const NEON_CELL = () => (G.LAYOUT.INTERIORS && G.LAYOUT.INTERIORS.neon_interiors ? G.LAYOUT.INTERIORS.neon_interiors.origin : { x: 11000, z: 0 });
+
+  // ------------------------------------------------------------------
+  // Anchor resolution (plan names first, then older Neon anchors, then a safe spot)
+  // ------------------------------------------------------------------
+  const cache = new Map();
+  /**
+   * Plan name → the equivalent spot the exterior stream has ALREADY BUILT under its older anchor names
+   * (landmarks_a/40_times_square.js: stalls merchant1..4 / vendor1..2 / noodles / butcher / water / repairman,
+   * the red-cross clinic shack `doctor`, gate posts guard1..4, the Rad-Lounge stage `singer` …).
+   * [builtName, lateral m, forward m] in the built anchor's own frame (forward = the way it faces).
+   * A real plan anchor always wins; the alias is only read when the plan name is not registered.
+   */
+  const ALIAS = (function () {
+    const A = {
+      gate_n: ['guard1'], gate_s: ['guard2'], gate_w: ['guard3'], gate_e: ['guard4'],
+      guard_captain: ['guard1', 2.4, -3.2],
+      market_stall_1: ['merchant1'], market_stall_2: ['merchant3'], market_stall_3: ['merchant4'], market_stall_4: ['vendor2'],
+      market_stall_5: ['noodles'], market_stall_6: ['butcher'], market_stall_7: ['merchant2'], market_stall_8: ['water'],
+      plaza_centre: ['center'], clinic_doctor: ['doctor'], robo_owner: ['repairman'], pawn_owner: ['vendor1'],
+      opry_stage: ['singer'], opry_director: ['lounge', 1.4, 0.8], radroom_cards: ['rad_room'],
+      caravan_master: ['entrance_south', -6, 1.5],
+      hawker_1: ['plaza', 2.5, 3], hawker_2: ['totem', -1.5, 2.2], hawker_3: ['doorman', 0, 2.8],
+      sniper_1: ['lookout'], sniper_2: ['guard5'],
+    };
+    for (const d of ['n', 's', 'e', 'w']) { A['gate_' + d + '_guard1'] = [A['gate_' + d][0], -1.8, 0]; A['gate_' + d + '_guard2'] = [A['gate_' + d][0], 1.8, 0]; }
+    const C = ['settler1', 'settler2', 'settler3', 'settler4', 'settler6', 'plaza', 'center', 'totem'];
+    for (let n = 1; n <= 20; n++) A['crowd_' + n] = [C[(n - 1) % C.length], ((n * 37) % 7 - 3) * 1.1, ((n * 53) % 5 - 2) * 1.1];
+    return A;
+  })();
+  function lookup(n) {
+    let v = null;
+    try { if (!G.isStub('landmarks') && typeof G.landmarks.getAnchor === 'function') v = G.landmarks.getAnchor('times_square', n); } catch (e) { v = null; }
+    if (!v || !isFinite(v.x)) {
+      try { if (G.pois && !G.isStub('pois') && typeof G.pois.getAnchor === 'function') v = G.pois.getAnchor('neon_interiors', n); } catch (e) { v = null; }
+    }
+    return v && isFinite(v.x) && isFinite(v.z) ? v : null;
+  }
+  function rawAnchor(n) {
+    const v = lookup(n);
+    if (v) return { x: v.x, y: v.y || 0, z: v.z, yaw: v.yaw || 0, name: n };
+    const al = ALIAS[n];
+    if (al) {
+      const b = lookup(al[0]);
+      if (b) {
+        const yaw = b.yaw || 0, lat = al[1] || 0, fwd = al[2] || 0;
+        return { x: b.x + Math.cos(yaw) * lat + Math.sin(yaw) * fwd, y: b.y || 0, z: b.z - Math.sin(yaw) * lat + Math.cos(yaw) * fwd, yaw, name: n + '→' + al[0], alias: al[0] };
+      }
+    }
+    return null;
+  }
+  /**
+   * The Neon's PLACES (TIMES_SQUARE_PLAN.md "The 18 places") and the anchors that prove one is built.
+   * A service whose place is missing is hidden (its NPC is not spawned when the NPC IS the service — `needsPlace`),
+   * never faked in the open street.
+   */
+  const PLACES = {
+    clinic: ['clinic_doctor', 'clinic_door'], gallery: ['gallery_owner', 'gallery_range', 'gallery_door'], robo: ['robo_owner', 'robo_door'],
+    pawn: ['pawn_owner', 'pawn_door'], opry: ['opry_stage', 'opry_director', 'opry_door'], radroom: ['radroom_cards', 'rad_room'],
+    power: ['power_engineer', 'power_generator', 'power_door'], depot: ['caravan_master', 'caravan_arrive', 'depot_door'],
+    bunkhouse: ['bunk_keeper', 'bunk_door', 'bunk_1'], club: ['club_host', 'club_stage'], club_door: ['club_door', 'club_bouncer'],
+    speakeasy: ['speakeasy_bar', 'speakeasy_bartender'], board: ['notice_board'], oracle: ['oracle_booth', 'ticker_oracle'],
+  };
+  function placeOf(k) { return has(PLACES[k] || []); }
+  /** true once the interior stream has built the Opry itself (not the Rad-Lounge stand-in stage) */
+  function realOpry() { const a = rawAnchor('opry_stage'); return !!(a && !a.alias); }
+  /** First existing anchor of `names` (raw, unvalidated) or null. */
+  function has(names) { for (const n of [].concat(names || [])) { const a = rawAnchor(n); if (a) return a; } return null; }
+  /**
+   * Resolve a standing spot. names: anchor candidates; fb: {near:[anchor names], dx, dz, yaw} or {x,z};
+   * opts: {requireAnchor, maxR}. → {x,y,z,yaw,name,anchored,fallback} | null
+   */
+  function spot(names, fb, opts) {
+    opts = opts || {};
+    const key = [].concat(names || []).join(',') + '|' + JSON.stringify(fb || null) + '|' + (opts.requireAnchor ? 1 : 0);
+    if (cache.has(key)) { const c = cache.get(key); return c ? Object.assign({}, c) : null; }
+    let out = null;
+    for (const n of [].concat(names || [])) {
+      const a = rawAnchor(n); if (!a) continue;
+      const s = L.freeSpot(a.x, a.z, a.y, { maxR: opts.maxR || 3 });
+      out = s && !s.forced ? { x: s.x, y: s.y, z: s.z, yaw: a.yaw, name: a.name, anchored: true } : { x: a.x, y: a.y, z: a.z, yaw: a.yaw, name: a.name, anchored: true };
+      break;
+    }
+    if (!out && fb && !opts.requireAnchor) {
+      let base = null;
+      if (fb.near) base = has(fb.near);
+      if (!base) base = { x: fb.x !== undefined ? fb.x : TS.x, y: fb.y || 0, z: fb.z !== undefined ? fb.z : TS.z, yaw: 0 };
+      // fallbacks are street-level: an elevated reference anchor (a roof, a catwalk) only gives x/z
+      const by = (base.y || 0) > 3 ? 0 : base.y;
+      const s = L.freeSpot(base.x + (fb.dx || 0), base.z + (fb.dz || 0), by, { maxR: 12 });
+      if (s) out = { x: s.x, y: s.y, z: s.z, yaw: fb.yaw !== undefined ? fb.yaw : base.yaw || 0, name: 'fallback', fallback: true };
+    }
+    cache.set(key, out ? Object.assign({}, out) : null);
+    return out;
+  }
+  /** Numbered anchors that exist: base_1..n → [{…}] */
+  function series(base, n) { const out = []; for (let i = 1; i <= n; i++) { const a = rawAnchor(base + i); if (a) out.push(a); } return out; }
+
+  // ------------------------------------------------------------------
+  // Stock (resolved through lib.resolveStock: unknown ids are dropped)
+  // ------------------------------------------------------------------
+  const STOCK = {
+    guns: [['pistol_10mm', 2], ['pistol_32', 1], ['magnum_44', 1], ['smg_10mm', 1], ['hunting_rifle', 1], ['combat_shotgun', 1], ['sawed_off_shotgun', 1], ['assault_rifle', 1],
+      ['laser_pistol', 1], ['combat_knife', 2], ['switchblade', 1], ['baseball_bat', 1], ['lead_pipe', 1], ['brass_knuckles', 1], ['frag_grenade', 4], ['ammo_10mm', 40]],
+    ammo: [['ammo_10mm', 180], ['ammo_32', 120], ['ammo_308', 40], ['ammo_556', 120], ['ammo_5mm', 200], ['ammo_44', 36], ['ammo_12ga', 60], ['ammo_energy_cell', 80],
+      ['ammo_mf_cell', 40], ['ammo_flamer_fuel', 40], ['frag_grenade', 3], ['frag_mine', 2], ['ammo_missile', 2]],
+    armor: [['leather_armor', 1], ['leather_armor_reinforced', 1], ['metal_armor', 1], ['metal_helmet', 1], ['combat_armor', 1], ['combat_helmet', 1], ['road_leathers', 1],
+      ['merc_grunt_outfit', 1], ['merc_troublemaker', 1], ['prewar_formal', 1], ['prewar_spring_dress', 1], ['showgirl_costume', 1], ['fedora', 1], ['top_hat', 1],
+      ['bowler_hat', 1], ['newsboy_cap', 1], ['sunglasses', 1], ['gas_mask', 1], ['radiation_suit', 1], ['ghoul_wear', 2]],
+    junk: [['scrap_metal', 10], ['scrap_electronics', 5], ['duct_tape', 5], ['wonderglue', 3], ['conductor', 3], ['vacuum_tube', 4], ['fission_battery', 3], ['sensor_module', 2],
+      ['surgical_tubing', 2], ['pilot_light', 2], ['turpentine', 2], ['abraxo_cleaner', 3], ['lighter', 2], ['bobby_pin', 15], ['tin_can', 6], ['toy_car', 1], ['teddy_bear', 1], ['lunchbox', 1]],
+    noodles: [['noodle_cup', 8], ['blamco_mac', 3], ['instamash', 4], ['salisbury_steak', 3], ['cram', 5], ['pork_n_beans', 4], ['egg_cream', 2], ['bodega_pretzel', 4],
+      ['coney_dog', 3], ['mirelurk_chowder', 2], ['purified_water', 4], ['nuka_cola', 5], ['sunset_sarsaparilla', 3], ['beer', 4]],
+    grill: [['brahmin_steak', 5], ['brahmin_meat', 4], ['iguana_on_a_stick', 6], ['squirrel_on_a_stick', 4], ['molerat_meat', 3], ['mirelurk_cake', 3], ['radroach_meat', 6],
+      ['milk_brahmin', 3], ['mutfruit', 4], ['dirty_water', 5]],
+    chems: [['jet', 4], ['psycho', 3], ['buffout', 3], ['mentats', 3], ['med_x', 3], ['rad_x', 4], ['radaway', 3], ['day_tripper', 3], ['rocket', 2], ['ultrajet', 1], ['fixer', 2], ['stealth_boy', 1]],
+    water: [['purified_water', 10], ['dirty_water', 6], ['nuka_cola', 8], ['nuka_cola_cherry', 3], ['nuka_cola_ice_cold', 2], ['sunset_sarsaparilla', 5], ['beer', 8], ['whiskey', 3],
+      ['vodka', 3], ['wine', 2], ['scotch', 2]],
+    robo: [['scrap_electronics', 8], ['sensor_module', 4], ['fission_battery', 5], ['vacuum_tube', 6], ['conductor', 5], ['pilot_light', 2], ['ammo_energy_cell', 90],
+      ['ammo_mf_cell', 50], ['ammo_ecp', 20], ['laser_pistol', 1], ['laser_rifle', 1], ['plasma_pistol', 1]],
+    pawn: [['q_caravan_pack', 2], ['gold_bar', 1], ['prewar_money', 8], ['snow_globe_nyc', 1], ['souvenir_statue', 2], ['stock_certificate', 3], ['typewriter', 1], ['microscope', 1], ['pool_ball', 3],
+      ['baseball', 1], ['broken_camera', 1], ['cigarette_carton', 2], ['prewar_book', 3], ['subway_token', 6], ['ashtray', 1], ['sunglasses', 1], ['prewar_businesswear', 1]],
+    annie: [['hunting_rifle', 1], ['sniper_rifle', 1], ['magnum_44', 1], ['pistol_10mm', 1], ['ammo_308', 60], ['ammo_44', 48], ['ammo_10mm', 100], ['ammo_bb', 200], ['bb_gun', 1], ['shooting_glasses', 1]],
+    doc: [['stimpak', 8], ['super_stimpak', 2], ['radaway', 6], ['rad_x', 5], ['med_x', 3], ['doctors_bag', 2], ['blood_pack', 4], ['fixer', 1], ['healing_powder', 2]],
+  };
+
+  // ------------------------------------------------------------------
+  // Routines (ghoul hours: the Neon wakes at dusk). [fromHour, activity]
+  // ------------------------------------------------------------------
+  const ROUTINES = {
+    stall_day: [[7, 'work'], [23.5, 'drink'], [1.5, 'sleep']],
+    stall_late: [[10, 'work'], [2, 'drink'], [4, 'sleep']],
+    stall_night: [[16, 'work'], [8, 'sleep']],
+    shop_keep: [[8, 'work'], [22, 'drink'], [0.5, 'sleep']],
+    hawker: [[9, 'work'], [22.5, 'party'], [1, 'sleep']],
+    reveler: [[15, 'shop'], [18.5, 'eat'], [20, 'show'], [23, 'party'], [2.5, 'drink'], [5, 'bench'], [9, 'sleep']],
+    drunk: [[18, 'drink'], [5, 'bench'], [11, 'sleep']],
+    porter: [[6, 'depot'], [12, 'eat'], [13, 'depot'], [18, 'drink'], [22, 'party'], [0, 'sleep']],
+    shopper: [[8, 'shop'], [12, 'eat'], [13, 'bench'], [15, 'shop'], [19, 'show'], [22.5, 'drink'], [0.5, 'sleep']],
+    singer: [[12, 'shop'], [19.5, 'perform'], [23.5, 'drink'], [3, 'sleep']],
+    director: [[13, 'work'], [3, 'drink'], [5, 'sleep']],
+    // 47b residents (club / speakeasy regulars, night watch, venue staff, buskers)
+    // (club / speakeasy people live indoors: they only cross the square between the Bunkhouse and their venue,
+    //  so the street crowd — the busiest view in the game — doesn't grow with them)
+    clubber: [[20.5, 'work'], [4.5, 'sleep']],
+    barfly: [[17, 'work'], [3.5, 'sleep']],
+    nightwatch: [[19, 'work'], [7, 'barracks']],
+    venue: [[18, 'work'], [5, 'sleep']],
+    busker: [[16, 'perform'], [1.5, 'drink'], [4, 'sleep']],
+  };
+  function activityAt(routine, h) {
+    const r = ROUTINES[routine]; if (!r) return 'work';
+    // entries are in daily order starting at r[0][0]; find the last entry whose start <= h (wrapping)
+    let best = r[r.length - 1][1], bestD = 99;
+    for (const [from, act] of r) { const d = (h - from + 24) % 24; if (d < bestD) { bestD = d; best = act; } }
+    return best;
+  }
+
+  // ------------------------------------------------------------------
+  // Barks (all original)
+  // ------------------------------------------------------------------
+  const GUARD_DAY = {
+    greet: ['Welcome to the Neon. Keep it friendly.', 'Rules are simple: no shooting, no stealing, no eating the residents.', 'Captain\'s at the north gate if you need her.',
+      'Smoothskin, huh? Relax. We only bite paying customers.', 'You\'re fine. You got a face like a person. Mostly.'],
+    idle: ['Eyes on the avenues.', 'Quiet day. I hate quiet days.', 'If it walks like a feral and moans like a feral…', 'Shift ends at sundown. Sundown ends never.',
+      'Anybody seen my other glove? It had a finger in it.', 'Keep that lane clear, folks!'],
+    alert: ['Contact!', 'Hostile at the gate!', 'Light it up!'],
+  };
+  const GUARD_NIGHT = {
+    greet: ['Evening. Lights are on, so behave.', 'Night market\'s open. So are my eyes.', 'Stay in the light, smoothskin.'],
+    idle: ['Neon\'s bright tonight. Makes the dark look darker.', 'Something moved on Forty-Second. …Rat. Big rat.', 'Night shift. Best shift. Nobody smells you coming.',
+      'Hear that? That\'s the Opry. Poor bastards.', 'Keep your eyes off the billboards, they\'ll burn your eyes out. What\'s left of \'em.'],
+    alert: ['Contact in the dark!', 'Movement at the gate!', 'Hit the spotlight!'],
+  };
+  const SLEEP_BARKS = { idle: ['Zzz…', '*wheezy snore*', '…turn the neon down…', '…five more years…', 'Mmh… caps… so many caps…'],
+    greet: ['Hrrn? Come back after dark, kid.', 'Daytime\'s for smoothskins. Let a ghoul sleep.', 'Unless the square\'s on fire, go away.'] };
+  const HAWK = {
+    neon_newsie: ['Extra! Extra! Mutant king still up the Empire State! Read all about it!', 'Neon Gazette, one cap! Now with forty percent fewer typos!',
+      'EXTRA! Local ghoul finds nose! Owner still missing!', 'Get your Gazette! Horoscopes, obituaries, and the obituaries of horoscopes!'],
+    neon_doomer: ['The end is NIGH! …Again! It keeps being nigh!', 'Repent! The bombs were only the OPENING ACT!', 'It\'s not the end of the world, friends. That was two hundred years ago. This is the ENCORE.',
+      'The sky is falling! Slowly! One rad at a time!'],
+    neon_tout: ['Tickets! Tickets for tonight\'s Revue! Best seats in the house — the house has three!', 'Velvet Maloney, live at the Opry! Still alive, technically!',
+      'Two caps a seat! Standing room\'s free, but you gotta stand next to Gums!', 'Tonight only! And every other night!'],
+  };
+  const EAT_BARKS = ['One bowl. Extra broth. Hold the… whatever that is.', 'Mm. Tastes like 2077.', 'Is this iguana? Don\'t tell me. I don\'t want to know. Tell me.', 'Put it on my tab. What do you mean I don\'t have a tab?',
+    'Hot! Hot hot hot! …I can\'t actually feel heat. Force of habit.', 'Same as yesterday. Same as the last hundred years.'];
+  const SINGING = ['♪ Oh the lights on Broadway never go out… ♪', '♪ …and my heart glows green for you, darling, green for you… ♪', '♪ Two hundred years, and I\'m still waiting on my cue… ♪',
+    '♪ Don\'t mind my face, just mind the song… ♪', '♪ Neon, neon, burnin\' through the night… ♪', '♪ …shine on, shine on, you radioactive moon… ♪'];
+
+  // ------------------------------------------------------------------
+  // Roster
+  // ------------------------------------------------------------------
+  const gh = (o) => Object.assign({ type: 'human', ghoul: true, faction: 'ghouls' }, o);
+  const GATES = [['n', 'guard1', 0, 4], ['s', 'guard2', 0, -4], ['e', 'guard4', -4, 0], ['w', 'guard3', 4, 0]];
+  const GUARD_W = ['assault_rifle', 'hunting_rifle', 'combat_shotgun', 'smg_10mm', 'assault_rifle', 'hunting_rifle', 'combat_shotgun', 'chinese_assault_rifle'];
+
+  function roster() {
+    const R = [];
+    // ---- Neon Guards ----
+    R.push(gh({ id: 'neon_capt', name: 'Captain Mercy Kincaid', role: 'captain', outfit: 'combat_armor', gender: 'f', hat: 'beret', hatColor: 0x7a1c1c, level: 14, essential: true,
+      weapon: ['assault_rifle'], ai: 'guard', voice: 'guard', dialogue: 'dlg_neon_capt', guard: true,
+      where: [['guard_captain'], { near: ['gate_n', 'guard1', 'entrance'], dx: 3, dz: 5 }],
+      barks: { greet: ['Kincaid. Captain of the Neon Guard. You behave, we get along.', 'Smoothskin. Welcome. Keep your hands where I can see them.'],
+        idle: ['Guard rotation in ten. Look sharp.', 'Nobody sleeps on my wall.', 'Two gates quiet, two gates lying.'] } }));
+    GATES.forEach(([d, old, ox, oz], gi) => {
+      for (let k = 1; k <= 2; k++) {
+        R.push(gh({ id: 'neon_g' + d + k, name: 'Neon Guard', role: 'gate', gate: d, outfit: k === 1 ? 'combat_armor' : 'leather_armor', gender: (gi + k) % 3 ? 'm' : 'f',
+          hat: k === 1 ? 'helmet' : 'beret', hatColor: k === 1 ? 0x44463a : 0x7a1c1c, level: 9, weapon: [GUARD_W[gi * 2 + k - 1], 'hunting_rifle'], ai: 'guard', voice: 'guard',
+          dialogue: 'dlg_neon_guard', guard: true,
+          where: [['gate_' + d + '_guard' + k], { near: ['gate_' + d, old], dx: ox * 0.5 + (k === 1 ? -1.8 : 1.8) * (oz ? 1 : 0), dz: oz * 0.5 + (k === 1 ? -1.8 : 1.8) * (ox ? 1 : 0) }] }));
+      }
+    });
+    for (let k = 1; k <= 2; k++) {
+      R.push(gh({ id: 'neon_pat' + k, name: 'Neon Guard', role: 'patrol', outfit: 'leather_armor', gender: k === 1 ? 'm' : 'f', hat: 'beret', hatColor: 0x7a1c1c, level: 9,
+        weapon: [k === 1 ? 'smg_10mm' : 'combat_shotgun', 'pistol_10mm'], ai: 'patrol', voice: 'guard', dialogue: 'dlg_neon_guard', guard: true,
+        where: [['crowd_' + (k * 5)], { near: ['plaza_centre', 'center'], dx: k === 1 ? -8 : 8, dz: 4 }] }));
+    }
+    for (let k = 1; k <= 2; k++) {
+      R.push(gh({ id: 'neon_snp' + k, name: 'Neon Sharpshooter', role: 'sniper', outfit: 'combat_armor', gender: k === 1 ? 'f' : 'm', hat: 'helmet', hatColor: 0x44463a, level: 11,
+        weapon: ['sniper_rifle', 'hunting_rifle'], ai: 'guard', voice: 'guard', guard: true, holdPos: true, sniper: true,
+        where: [['sniper_' + k, k === 1 ? 'lookout' : 'guard5'], null], maxR: 1.5 }));
+    }
+    // ---- The Marquee Market ----
+    const stall = (id, name, n, oldNames, o) => R.push(gh(Object.assign({ id, name, role: 'merchant', ai: 'merchant', voice: 'merchant', level: 6,
+      where: [['market_stall_' + n].concat(o.alt || []), { near: oldNames, dx: 0, dz: 0 }], homeR: 1.2 }, o)));
+    stall('neon_tillie', 'Two-Gun Tillie', 1, ['merchant1'], { outfit: 'leather_armor', gender: 'f', hat: 'cowboy', hatColor: 0x3a2a1a, weapon: ['magnum_44', 'pistol_10mm'], routine: 'stall_day',
+      merchant: { caps: 700, stock: STOCK.guns, restock: 3 }, dialogue: 'dlg_neon_tillie',
+      barks: { greet: ['Tillie\'s Iron. You break it, you bought it. You shoot it at me, you bought it twice.', 'Looking for something that goes bang, sugar?'],
+        idle: ['Guns! Guns that mostly work!', 'Every piece here\'s been fired at least once. By me. At raiders.', 'Ask about the layaway plan! There is no layaway plan.'] } });
+    stall('neon_brass', 'Brass Beaumont', 2, ['merchant3', 'merchant2'], { outfit: 'merchant', gender: 'm', hat: 'fedora', hatColor: 0x6a5a30, routine: 'stall_day',
+      merchant: { caps: 500, stock: STOCK.ammo, restock: 2 }, dialogue: 'dlg_neon_brass',
+      barks: { greet: ['Brass Beaumont, purveyor of fine ammunition. Every round hand-counted. Twice.', 'Running low? Nobody leaves Brass running low.'],
+        idle: ['Ammo! Ten-mil, five-five-six, shells, cells! Bullets for every occasion!', 'Buy in bulk, die less!', 'I reload my own brass. That\'s where the name comes from. Also my face.'] } });
+    stall('neon_mags', 'Mags Delacroix', 3, ['merchant4', 'vendor1'], { outfit: 'merchant', gender: 'f', hat: 'bandana', hatColor: 0x6a2a5a, routine: 'stall_day',
+      merchant: { caps: 550, stock: STOCK.armor, restock: 3 }, dialogue: 'dlg_neon_mags',
+      barks: { greet: ['Mags Delacroix. Armour, clothes, hats. I dress the living and the mostly-living.', 'Oh, honey. We need to talk about that outfit.'],
+        idle: ['Leather, metal, silk! Protect your hide in style!', 'Pre-war formals! Bullet holes pre-mended!', 'Hats! A hat hides a multitude of sins. And scalps.'] } });
+    stall('neon_joe', 'Scrapper Joe', 4, ['repairman', 'vendor2'], { outfit: 'wastelander', gender: 'm', hat: 'cap', hatColor: 0x4a4030, routine: 'stall_late',
+      merchant: { caps: 350, stock: STOCK.junk, restock: 2 }, dialogue: 'dlg_neon_joe',
+      barks: { greet: ['Scrapper Joe. I buy junk, I sell junk, I AM junk. What\'ll it be?', 'Got tin cans, got duct tape, got a lunchbox that hums. Don\'t ask about the lunchbox.'],
+        idle: ['Scrap! Parts! Treasures of the ancients!', 'Bring me your broken toasters!', 'One ghoul\'s trash is another ghoul\'s… also trash. But I\'ll buy it.'] } });
+    stall('neon_noodle', 'Old Sato', 5, ['noodles', 'noodles_customer'], { outfit: 'merchant', gender: 'm', hat: 'cap', hatColor: 0xdddddd, routine: 'stall_night', alt: ['noodles'],
+      merchant: { caps: 220, stock: STOCK.noodles, restock: 2 }, dialogue: 'dlg_neon_noodle',
+      barks: { greet: ['Sit, sit. Noodles are hot. Everything else is cold. Especially the customers.', 'You want noodles? Two. Two is enough. Trust me.'],
+        idle: ['Noodles! Hot noodles!', 'Real broth! Almost real!', 'Rain, no rain, the noodle man is open.'] } });
+    stall('neon_bev', 'Brahmin Bev', 6, ['butcher'], { outfit: 'settler', gender: 'f', hat: 'bandana', hatColor: 0x8a2a1a, routine: 'stall_day', alt: ['butcher'],
+      merchant: { caps: 250, stock: STOCK.grill, restock: 2 }, dialogue: 'dlg_neon_bev',
+      barks: { greet: ['Bev\'s Grill! Both heads, grilled to order.', 'Steak\'s fresh. The brahmin was named Gerald. He was a good boy.'],
+        idle: ['Brahmin steak! Iguana bits! Hot off the hubcap!', 'Get it while it\'s cooked!', 'Radroach kebabs, three for a cap! Legs extra!'] } });
+    stall('neon_candy', 'Candy Rourke', 7, ['merchant2', 'merchant1'], { outfit: 'wastelander', gender: 'm', hat: 'fedora', hatColor: 0x2a2a3a, routine: 'stall_night',
+      merchant: { caps: 450, stock: STOCK.chems, restock: 3 }, dialogue: 'dlg_neon_candy',
+      barks: { greet: ['Candy\'s the name, chems are the game. Doc Broadway hates me. That\'s how you know I\'m good.', 'Need a pick-me-up? A put-me-down? A take-me-somewhere-else?'],
+        idle: ['Jet! Psycho! Buffout! Legal as the day is long!', 'Candy for the soul, friends!', 'First hit\'s full price. Second hit too. I\'m not a charity.'] } });
+    stall('neon_willie', 'Wet Willie', 8, ['water', 'vendor1'], { outfit: 'settler', gender: 'm', hat: 'cowboy', hatColor: 0x5a4028, routine: 'stall_late', alt: ['water'],
+      merchant: { caps: 300, stock: STOCK.water, restock: 2 }, dialogue: 'dlg_neon_willie',
+      barks: { greet: ['Wet Willie! Water, booze, and Nuka — if it pours, I sell it.', 'Thirsty? Course you are. Everybody\'s thirsty. It\'s the apocalypse.'],
+        idle: ['Clean water! Only lightly glowing!', 'Ice-cold Nuka! Well. Cool-ish.', 'Whiskey! For medicinal purposes! The medicine is whiskey!'] } });
+    // ---- The places ----
+    R.push(gh({ id: 'neon_broadway', name: 'Doc Broadway', role: 'doctor', outfit: 'doctor', gender: 'm', ai: 'merchant', voice: 'merchant', level: 8, essential: true,
+      where: [['clinic_doctor', 'clinic_door'], { near: ['doctor'], dx: 1.6, dz: 0.8 }], dialogue: 'dlg_neon_broadway', merchant: { caps: 600, stock: STOCK.doc, restock: 3 },
+      barks: { greet: ['Doc Broadway. Surgeon, pharmacist, and understudy. What seems to be the trouble?', 'Sit down, sit down. You\'re bleeding on my lobby.'],
+        idle: ['Next patient!', 'The limb goes back on the OTHER way.', 'Scalpel. Scalpel! …Where did I put the scalpel.'] } }));
+    R.push(gh({ id: 'neon_annie', name: 'Ammo Annie', role: 'shop', outfit: 'combat_armor', gender: 'f', hat: 'cowboy', hatColor: 0x6a3a1a, ai: 'merchant', voice: 'merchant', level: 10,
+      weapon: ['hunting_rifle'], where: [['gallery_owner', 'gallery_door'], { near: ['plaza', 'center'], dx: -3, dz: 10 }], dialogue: 'dlg_neon_annie', routine: 'shop_keep',
+      place: 'gallery', needsPlace: true,
+      merchant: { caps: 600, stock: STOCK.annie, restock: 3 },
+      barks: { greet: ['Step right up! Annie\'s Shooting Gallery! Hit the cans, win the caps!', 'You look like somebody who can hit a tin can at twenty paces. Prove it.'],
+        idle: ['Five caps a round! Knock down the tin raiders!', 'Sharpshooters wanted! Also targets. Mostly targets.', 'Step right up, step right up!'] } }));
+    R.push(gh({ id: 'neon_sprocket', name: 'Sprocket', role: 'shop', outfit: 'wastelander', gender: 'f', hat: 'hardhat', hatColor: 0xc8a020, ai: 'merchant', voice: 'merchant', level: 7,
+      where: [['robo_owner', 'robo_door'], { near: ['repairman', 'vendor2'], dx: 3, dz: 2 }], dialogue: 'dlg_neon_sprocket', routine: 'shop_keep',
+      merchant: { caps: 500, stock: STOCK.robo, restock: 3 },
+      barks: { greet: ['Radio repair, robot repair, heart repair — two outta three, anyway.', 'Careful, that one bites. That one too. Actually, touch nothing.'],
+        idle: ['Tubes! Sensors! Gently used robot brains!', 'Your Mister Handy making that noise again? Bring him in!', 'Fixed radios, fixed prices!'] } }));
+    R.push(gh({ id: 'neon_goldie', name: 'Goldie Glass', role: 'shop', outfit: 'merchant', gender: 'm', hat: 'fedora', hatColor: 0xb08a20, ai: 'merchant', voice: 'merchant', level: 7,
+      where: [['pawn_owner', 'pawn_door'], { near: ['merchant4', 'vendor1'], dx: -3, dz: 3 }], dialogue: 'dlg_neon_goldie', routine: 'stall_late',
+      merchant: { caps: 2000, stock: STOCK.pawn, restock: 2, sellMult: 1.2 },
+      barks: { greet: ['Goldie Glass, Pawn Palace. I buy anything. ANYTHING. Don\'t test me, the last guy sold me his shadow.', 'Welcome, welcome! Where you got it is none of my business.'],
+        idle: ['Cash for junk! Caps for trash!', 'No questions asked! No answers given!', 'Gold, silver, pre-war money, suspiciously warm wallets!'] } }));
+    R.push(gh({ id: 'neon_director', name: 'Lionel Fairweather', role: 'director', outfit: 'merchant', gender: 'm', hat: 'bowler', hatColor: 0x222222, ai: 'static', voice: 'settler', level: 5,
+      routine: 'director', where: [['opry_director', 'opry_door'], { near: ['stage', 'singer'], dx: 3, dz: 2 }], dialogue: 'dlg_neon_director',
+      barks: { greet: ['Lionel Fairweather, artistic director of the Neon Opry. The Neon Opry, dear. The only theatre left in New York with a running show AND a running audience.'],
+        idle: ['From the top! No — from the bottom! We ARE the bottom!', 'Where is my lead? Where is my LEAD?', 'Art never dies. It just smells a bit.'] } }));
+    R.push(gh({ id: 'neon_velvet', name: 'Velvet Maloney', role: 'singer', outfit: 'ghoul_wear', gender: 'f', ai: 'static', voice: 'settler', level: 4, routine: 'singer',
+      where: [['opry_stage', 'singer', 'stage'], { near: ['stage'], dx: 0, dz: 1 }], dialogue: 'dlg_neon_velvet',
+      barks: { greet: ['Velvet Maloney. Yes, THE Velvet Maloney. Well — one of them. The others didn\'t make it.', 'Autographs after the show, darling.'],
+        idle: ['Mi-mi-mi-miiii… oh, my larynx.', 'Somebody fetch my good wig.', 'Two hundred and twelve years of standing ovations. Well, standing. Ovations pending.'] } }));
+    R.push(gh({ id: 'neon_dealer', name: 'Lucky Lou Parisi', role: 'dealer', outfit: 'merchant', gender: 'm', hat: 'fedora', hatColor: 0x3a1a1a, ai: 'static', voice: 'settler', level: 6,
+      where: [['radroom_cards', 'rad_room_cards', 'rad_room'], { near: ['bar', 'bar_patron', 'rad_room'], dx: -2.2, dz: 1.5 }], dialogue: 'dlg_neon_dealer', routine: 'stall_late',
+      barks: { greet: ['Lucky Lou. Pull up a chair, lose some caps, tell your friends.', 'Cards? Cards. Sit.'],
+        idle: ['House always wins. I\'m the house. Look at me — I\'m winning.', 'Shuffle up and deal!', 'Who wants to lose some money?'] } }));
+    R.push(gh({ id: 'neon_sparks', name: 'Sparks Malloy', role: 'engineer', outfit: 'wastelander', gender: 'f', hat: 'hardhat', hatColor: 0xd0a020, ai: 'static', voice: 'settler', level: 8,
+      where: [['power_engineer', 'power_generator', 'power_door'], { near: ['stage', 'totem'], dx: -4, dz: -3 }], dialogue: 'dlg_neon_sparks', routine: 'shop_keep',
+      barks: { greet: ['Sparks Malloy, chief engineer. Don\'t touch anything that hums.', 'You smell that? That\'s ozone. That\'s the smell of the lights staying on.'],
+        idle: ['Load\'s spiking again…', 'Who plugged a toaster into Circuit Nine?!', 'Come on, baby, hold together…'] } }));
+    R.push({ id: 'neon_wagon', type: 'human', faction: 'settlers', name: 'Eustace Byrd', role: 'caravan', outfit: 'wastelander', gender: 'm', hat: 'cowboy', hatColor: 0x5a4028, ai: 'guard',
+      voice: 'merchant', level: 10, weapon: ['hunting_rifle'], where: [['caravan_master', 'depot_door', 'caravan_arrive'], { near: ['entrance_south', 'subway'], dx: -6, dz: 2 }],
+      dialogue: 'dlg_neon_wagon', homeR: 3,
+      barks: { greet: ['Eustace Byrd, wagonmaster of the Neon Depot. You looking for work or looking for trouble? We pay for one of those.'],
+        idle: ['Brahmin don\'t load themselves!', 'Caravan out at sixteen hundred sharp!', 'Tighten that strap. No, the OTHER strap.'] } });
+    R.push(gh({ id: 'neon_dottie', name: 'Dottie Blythe', role: 'innkeeper', outfit: 'settler', gender: 'f', hat: 'bandana', hatColor: 0x3a5a8a, ai: 'static', voice: 'settler', level: 5,
+      where: [['bunk_keeper', 'bunk_door'], { near: ['settler6', 'entrance'], dx: 2, dz: 2 }], dialogue: 'dlg_neon_dottie', place: 'bunkhouse', needsPlace: true,
+      barks: { greet: ['Welcome to the Bunkhouse! Clean sheets, mostly! Twenty caps a night.', 'Room for one? We\'ve got room for one. We\'ve got room for forty.'],
+        idle: ['Checkout\'s whenever you wake up, sugar.', 'Beds! Real beds! Springs optional!'] } }));
+    R.push(gh({ id: 'neon_whisper', name: 'Whisper', role: 'speakeasy', outfit: 'merchant', gender: 'm', ai: 'merchant', voice: 'merchant', level: 6, requireAnchor: true,
+      where: [['speakeasy_bar', 'speakeasy_bartender'], null], dialogue: 'dlg_neon_whisper', merchant: { caps: 300, stock: STOCK.water.concat([['nuka_cola_quantum', 1]]), restock: 3 },
+      barks: { greet: ['…Password? Kidding. Nobody remembers the password. Sit.'], idle: ['Shh.', 'Keep it down. The walls have ears. Mine, mostly.'] } }));
+    // ---- Hawkers ----
+    R.push(gh({ id: 'neon_newsie', name: 'Scoop Doolan', role: 'hawker', outfit: 'ghoul_wear', gender: 'm', hat: 'cap', hatColor: 0x4a3a2a, ai: 'static', voice: 'settler', routine: 'hawker',
+      where: [['hawker_1'], { near: ['plaza_centre', 'center'], dx: -9, dz: -6 }], dialogue: 'dlg_neon_hawker' }));
+    R.push(gh({ id: 'neon_doomer', name: 'Brother Tick-Tock', role: 'hawker', outfit: 'wastelander', gender: 'm', ai: 'static', voice: 'settler', routine: 'hawker',
+      where: [['hawker_2'], { near: ['plaza', 'totem'], dx: 3, dz: 6 }], dialogue: 'dlg_neon_hawker' }));
+    R.push(gh({ id: 'neon_tout', name: 'Tickets Tessie', role: 'hawker', outfit: 'ghoul_wear', gender: 'f', hat: 'cap', hatColor: 0x8a1a1a, ai: 'static', voice: 'settler', routine: 'hawker',
+      where: [['hawker_3'], { near: ['stage', 'singer'], dx: -4, dz: 4 }], dialogue: 'dlg_neon_hawker' }));
+    // ---- Townsfolk ----
+    const folk = (id, name, routine, o) => R.push(gh(Object.assign({ id, name, role: 'folk', routine, ai: 'wander', voice: 'settler', level: 3, dialogue: 'dlg_neon_folk',
+      where: [['crowd_' + (R.length % 20 + 1)], { near: ['plaza_centre', 'center', 'plaza'], dx: (Math.random() - 0.5) * 18, dz: (Math.random() - 0.5) * 18 }] }, o)));
+    folk('neon_gums', 'Gums Gallagher', 'drunk', { outfit: 'ghoul_wear', gender: 'm', hat: 'cap', hatColor: 0x3a3a2a });
+    folk('neon_ruby', 'Ruby Fontaine', 'reveler', { outfit: 'ghoul_wear', gender: 'f' });
+    folk('neon_stan', 'Stan Hollis', 'porter', { outfit: 'wastelander', gender: 'm', hat: 'cap', hatColor: 0x5a4a2a });
+    folk('neon_pearl', 'Grandma Pearl', 'shopper', { outfit: 'settler', gender: 'f', hat: 'bandana', hatColor: 0x6a5a8a });
+    folk('neon_nicky', 'Nicky Two-Thumbs', 'reveler', { outfit: 'ghoul_wear', gender: 'm', hat: 'fedora', hatColor: 0x2a2a2a });
+    folk('neon_dusty', 'Dusty Mae Carver', 'shopper', { ghoul: false, faction: 'settlers', outfit: 'wastelander', gender: 'f', hat: 'cowboy', hatColor: 0x6a5030 });
+    return R;
+  }
+  const ROSTER = roster();
+  const BY_ID = {}; for (const r of ROSTER) BY_ID[r.id] = r;
+
+  // ------------------------------------------------------------------
+  // Spawning (newGame / load)
+  // ------------------------------------------------------------------
+  const town = { recs: new Map(), bunks: [], spawned: false };
+  function spawnAll() {
+    town.recs.clear(); town.bunks = series('bunk_', 16); town.bunkUsed = new Set(); town.skipped = [];
+    for (const def of ROSTER) {
+      try {
+        // an NPC who IS a place's service (Annie's gallery, Dottie's beds) only exists once that place is built
+        if (def.needsPlace && !placeOf(def.place)) { town.skipped.push(def.id + ' (no ' + def.place + ')'); continue; }
+        const w = def.where || [[], null];
+        const s = spot(w[0], w[1], { requireAnchor: !!def.requireAnchor || !w[1], maxR: def.maxR });
+        if (!s) { town.skipped.push(def.id + ' (no anchor)'); continue; }
+        const d = Object.assign({}, def);
+        for (const k of ['role', 'where', 'routine', 'guard', 'sniper', 'gate', 'requireAnchor', 'maxR', 'homeR', 'place', 'needsPlace']) delete d[k];
+        d.pos = { x: s.x, y: s.y, z: s.z };
+        d.yaw = s.yaw || 0; d.lookYaw = s.yaw || 0;
+        d.home = { x: s.x, z: s.z, r: def.homeR || (def.ai === 'wander' ? 6 : def.ai === 'patrol' ? 3 : 1.5) };
+        if (def.ai === 'patrol') d.patrol = patrolRoute(def.id === 'neon_pat2');
+        if (def.sniper) { d.holdPos = true; d.aggroRange = 150; }
+        const a = L.spawnNPC(d);
+        if (!a) continue;
+        if (def.guard) { a.safeGuard = 'times_square'; a.neonGuard = true; }
+        if (def.sniper) a.accuracy = 1.4;
+        // crowd LOD budget: the square shows ~30 people at once; step down to the light body mesh beyond 12 m
+        // (characters' default is ~34 m; faces keep their close-up LOD within 10 m either way)
+        if (a.char && typeof a.char.lodDist === 'number') a.char.lodDist = Math.min(a.char.lodDist, def.sniper ? 40 : 12);
+        const rec = { id: def.id, def, a, post: s, act: null, dest: null, leg: null, door: null, moveT: 0, lastX: s.x, lastZ: s.z, greetT: 0, hawkT: 0, pickT: 0 };
+        const sm = /^market_stall_(\d+)(?:→|$)/.exec(s.name || ''); if (sm && def.role === 'merchant') rec.stall = Number(sm[1]);
+        town.recs.set(def.id, rec);
+      } catch (e) { G.reportError('quests:neon spawn ' + def.id, e); }
+    }
+    town.spawned = true;
+  }
+  function patrolRoute(reverse) {
+    const pts = series('crowd_', 20).map((a) => ({ x: a.x, z: a.z }));
+    let out = pts.length >= 4 ? (reverse ? pts.filter((p, i) => i % 2) : pts.filter((p, i) => !(i % 2))) : [];
+    if (out.length < 3) {
+      // fallback loop through the bow-tie plazas and past each gate (validated, off geometry)
+      const raw = [['plaza', -2, 0], ['center', 0, 12], ['entrance_south', 3, -4], ['center', 14, 0], ['center', 0, -20], ['entrance', 4, 6], ['plaza', -6, -10]];
+      out = [];
+      for (const [n, dx, dz] of raw) { const s = spot([], { near: [n], dx, dz }); if (s) out.push({ x: s.x, z: s.z }); }
+      if (reverse) out.reverse();
+    }
+    return out.length ? out : [{ x: TS.x - 8, z: TS.z }, { x: TS.x + 8, z: TS.z }];
+  }
+
+  // ------------------------------------------------------------------
+  // Destinations per activity
+  // ------------------------------------------------------------------
+  function freeBunk(rec) {
+    if (rec.bunk && !rec.bunk.gone) return rec.bunk;
+    for (let i = 0; i < town.bunks.length; i++) if (!town.bunkUsed.has(i)) { town.bunkUsed.add(i); const b = town.bunks[i]; rec.bunk = { x: b.x, y: b.y, z: b.z, yaw: b.yaw, i, real: true }; return rec.bunk; }
+    // every cot taken: a bedroll on the Bunkhouse floor between the cots (never out in the street)
+    if (town.bunks.length) {
+      for (let k = 0; k < 4; k++) {
+        const b = pick(town.bunks);
+        const s = L.freeSpot(b.x + (Math.random() - 0.5) * 2.4, b.z + (Math.random() - 0.5) * 2.4, b.y, { maxR: 2.5 });
+        if (s && !s.forced) { rec.bunk = { x: s.x, y: s.y, z: s.z, yaw: Math.random() * 6.28, real: false, floor: true }; return rec.bunk; }
+      }
+    }
+    // no bunk anchors (yet): sleep in a quiet corner of the bunkhouse / the NW shacks
+    const s = spot([], { near: ['bunk_door', 'settler6', 'entrance'], dx: (Math.random() - 0.5) * 10, dz: 4 + Math.random() * 6 });
+    rec.bunk = s ? { x: s.x, y: s.y, z: s.z, yaw: Math.random() * 6.28, real: false } : null;
+    return rec.bunk;
+  }
+  function randomOf(names, fb) {
+    const pool = [];
+    for (const n of names) { const a = rawAnchor(n); if (a) pool.push(a); }
+    const a = pool.length ? pick(pool) : null;
+    if (a) { const s = L.freeSpot(a.x, a.z, a.y, { maxR: 3 }); if (s && !s.forced) return { x: s.x, y: s.y, z: s.z, yaw: a.yaw, real: true }; }
+    if (!fb) return null;
+    const s = spot([], { near: fb.near, dx: fb.dx + (Math.random() - 0.5) * (fb.spread || 8), dz: fb.dz + (Math.random() - 0.5) * (fb.spread || 8) });
+    return s ? { x: s.x, y: s.y, z: s.z, yaw: Math.random() * 6.28, real: false } : null;
+  }
+  const nums = (b, n) => { const o = []; for (let i = 1; i <= n; i++) o.push(b + i); return o; };
+  /** Which stall number each market merchant keeps (filled at spawn) — customers queue at stalls that are open. */
+  const FOOD_STALLS = [5, 6, 12];
+  /**
+   * Customer spot in front of stall n: the exterior's `market_stall_<n>_customer` anchor when it exists,
+   * else ~2 m in front of the merchant's spot (actor yaw faces (-sin, -cos)). Faces the counter.
+   */
+  function customerSpot(n, openOnly) {
+    const m = rawAnchor('market_stall_' + n); if (!m) return null;
+    if (openOnly) {
+      const keeper = Array.from(town.recs.values()).find((r) => r.stall === n);
+      if (keeper && !(keeper.act === 'work' && keeper.leg === 'at')) return null;
+    }
+    const c = rawAnchor('market_stall_' + n + '_customer');
+    const jit = (Math.random() - 0.5) * 1.4;
+    const bx = c ? c.x : m.x - Math.sin(m.yaw) * 2.1 + Math.cos(m.yaw) * jit, bz = c ? c.z : m.z - Math.cos(m.yaw) * 2.1 - Math.sin(m.yaw) * jit;
+    const s = L.freeSpot(bx, bz, m.y || 0, { maxR: 1.6 });
+    if (!s || s.forced) return null;
+    return { x: s.x, y: s.y, z: s.z, yaw: Math.atan2(-(m.x - s.x), -(m.z - s.z)), real: true, stall: n };
+  }
+  function stallVisit(list, openOnly) {
+    const order = list.slice().sort(() => Math.random() - 0.5);
+    for (const n of order) { const s = customerSpot(n, openOnly); if (s) return s; }
+    return null;
+  }
+  function destFor(rec, act) {
+    const def = rec.def;
+    switch (act) {
+      case 'work': return Object.assign({}, rec.post, { mode: def.ai === 'wander' ? 'static' : def.ai, r: 1.2 });
+      case 'perform': return Object.assign({}, rec.post, { mode: 'static', r: 1, perform: true });
+      case 'sleep': { const b = freeBunk(rec); return b ? Object.assign({}, b, { mode: 'sit', r: 0.8, sleep: true }) : null; }
+      case 'barracks': {
+        // off-shift Neon Guards sleep in the barracks bunks (subway kiosk), not the Bunkhouse
+        const d = randomOf(nums('barracks_bunk_', 4), null);
+        if (d) return Object.assign(d, { mode: 'sit', r: 0.8, sleep: true });
+        const b = freeBunk(rec); return b ? Object.assign({}, b, { mode: 'sit', r: 0.8, sleep: true }) : null;
+      }
+      case 'eat': {
+        // queue at an OPEN food stall (Sato's noodles, Bev's grill, the hot-dog cart), face the counter, eat, move on
+        const d = stallVisit(FOOD_STALLS, true) || stallVisit(FOOD_STALLS, false);
+        if (d) return Object.assign(d, { mode: 'static', r: 1, repick: 45, eating: true });
+        return destFor(rec, 'shop');
+      }
+      case 'shop': {
+        // FO3 market life: browse at a stall counter (facing the trader) or mill about the plaza
+        if (Math.random() < 0.65) { const d = stallVisit(nums('', 12).map(Number).filter((n) => FOOD_STALLS.indexOf(n) < 0), true); if (d) return Object.assign(d, { mode: 'static', r: 1, repick: 35 }); }
+        const d = randomOf(nums('crowd_', 20), { near: ['merchant1', 'plaza', 'center'], dx: 2, dz: 2, spread: 14 }); return d && Object.assign(d, { mode: 'wander', r: 3.5, repick: 70 });
+      }
+      case 'drink': { const d = randomOf(nums('radroom_patron_', 6).concat(['bar_patron', 'rad_room', 'radroom_bar']), { near: ['bar_patron', 'bar', 'rad_room'], dx: 0, dz: 0, spread: 5 }); return d && Object.assign(d, { mode: 'static', r: 1, repick: 240 }); }
+      case 'show': { const d = randomOf(nums('opry_seat_', 12), { near: ['stage', 'singer'], dx: 0, dz: 6, spread: 7 }); return d && Object.assign(d, { mode: d.real ? 'sit' : 'static', r: 0.8, faceStage: !d.real }); }
+      case 'party': { const d = randomOf(['screen_view', 'plaza_centre', 'ball_base'].concat(nums('crowd_', 20)), { near: ['plaza_centre', 'center', 'plaza'], dx: 0, dz: 0, spread: 16 }); return d && Object.assign(d, { mode: 'wander', r: 4, repick: 90 }); }
+      case 'bench': { const d = randomOf(nums('bench_', 8), { near: ['plaza', 'totem', 'center'], dx: 0, dz: 0, spread: 12 }); return d && Object.assign(d, { mode: d.real ? 'sit' : 'wander', r: d.real ? 0.8 : 3 }); }
+      case 'depot': { const d = randomOf(['brahmin_pen', 'caravan_park_1', 'caravan_park_2', 'caravan_park_3', 'caravan_arrive'], { near: ['caravan_master', 'entrance_south', 'subway'], dx: -4, dz: 3, spread: 8 }); return d && Object.assign(d, { mode: 'wander', r: 4, repick: 120 }); }
+      case 'gather': return town.gather ? Object.assign({}, town.gather.at(rec), { mode: 'static', r: 1.5 }) : null;
+      default: return null;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Scheduler (2 Hz, staggered)
+  // ------------------------------------------------------------------
+  function busy(a) { return !a || a.dead || a.removed || a.talking || a.inCombat || a.knockedOut || a.following || ['combat', 'flee', 'cower', 'search', 'knocked', 'follow'].indexOf(a.state) >= 0; }
+  function observed(x, y, z) {
+    const P = G.player; if (!P) return false;
+    if (isInt(P.pos.x) !== isInt(x)) return false;
+    const dx = x - P.pos.x, dz = z - P.pos.z, d = Math.hypot(dx, dz);
+    if (d < 18) return true;
+    if (d > 90) return false;
+    const f = P.forward || { x: -Math.sin(P.yaw), z: -Math.cos(P.yaw) };
+    return (dx * f.x + dz * f.z) / (d || 1) > 0.45;
+  }
+  function findDoor(fromPos, dest) {
+    const wantIn = isInt(dest.x);
+    let best = null, bd = 1e9;
+    for (const d of L.doors()) {
+      const p = d.def && d.def.pos, t = d.def && d.def.target; if (!p || !t) continue;
+      if (isInt(p.x) === wantIn || isInt(t.x) !== wantIn) continue;
+      const dd = Math.hypot(t.x - dest.x, t.z - dest.z) + Math.hypot(p.x - fromPos.x, p.z - fromPos.z);
+      if (Math.hypot(t.x - dest.x, t.z - dest.z) > 90 || Math.hypot(p.x - fromPos.x, p.z - fromPos.z) > 160) continue;
+      if (dd < bd) { bd = dd; best = { from: { x: p.x, y: p.y || 0, z: p.z }, to: { x: t.x, y: t.y || 0, z: t.z } }; }
+    }
+    return best;
+  }
+  function place(a, p) {
+    const y = G.world.groundHeight(p.x, p.z, (p.y || 0) + 0.6, 0.3);
+    a.pos.set(p.x, isFinite(y) ? y : (p.y || 0), p.z);
+    if (a.nav) { a.nav.path = null; a.nav.search = null; }
+    a.moveGoal = null; if (a.state === 'move') a.setState('idle');
+  }
+  function arrive(rec) {
+    const a = rec.a, d = rec.dest;
+    rec.leg = 'at';
+    a.home = { x: d.x, z: d.z, r: d.r || 1.2 };
+    a.aiMode = d.mode || 'static';
+    let yaw = d.yaw;
+    if (d.faceStage) { const st = has(['opry_stage', 'stage', 'singer']); if (st) yaw = Math.atan2(-(st.x - d.x), -(st.z - d.z)); }
+    if (isFinite(yaw) && a.aiMode !== 'wander') { a.yaw = yaw; a.homeYaw = yaw; if (a.applyYaw) a.applyYaw(); }
+    if (a.aiMode === 'sit' && a.anim) a.anim('sit');
+    rec.asleep = !!d.sleep;
+    applyBarks(rec);
+    if (d.eating && G.player && Math.hypot(a.pos.x - G.player.pos.x, a.pos.z - G.player.pos.z) < 14 && Math.random() < 0.35) a.say(pick(EAT_BARKS), 3);
+    rec.pickT = G.time.elapsed + (d.repick || 0) * (0.6 + Math.random() * 0.8);
+  }
+  function applyBarks(rec) {
+    const a = rec.a;
+    if (rec.asleep) { a.customBarks = SLEEP_BARKS; return; }
+    if (rec.def.guard) { a.customBarks = rec.def.barks || (nightNow() ? GUARD_NIGHT : GUARD_DAY); return; }
+    a.customBarks = rec.def.barks || null;
+  }
+  function nightNow() { const h = G.time.hour; return h >= 20 || h < 6; }
+  /**
+   * Can't get where the routine wants while the player is watching (door blocked, path stuck):
+   * mill about on this side for a while instead of freezing mid-street, then try again.
+   */
+  function loiter(rec, secs) {
+    const a = rec.a;
+    const f = L.freeSpot(a.pos.x + (Math.random() - 0.5) * 5, a.pos.z + (Math.random() - 0.5) * 5, a.pos.y, { maxR: 5 });
+    rec.dest = { x: f.x, y: f.y, z: f.z, r: 1.6, mode: 'wander', repick: secs || 25, loiter: true };
+    rec.leg = null; rec.door = null; rec.moveT = G.time.elapsed; rec.lastX = a.pos.x; rec.lastZ = a.pos.z;
+    if (Math.random() < 0.3 && G.player && Math.hypot(a.pos.x - G.player.pos.x, a.pos.z - G.player.pos.z) < 16) a.say(pick(['Hm. Where was I going?', 'Forgot what I came out here for.', 'Eh, it\'ll keep.']), 2.5);
+  }
+  function steer(rec, dt) {
+    const a = rec.a;
+    const want = town.gather && town.gather.who(rec) ? 'gather' : activityAt(rec.def.routine, G.time.hour);
+    if (want !== rec.act || !rec.dest || (rec.leg === 'at' && rec.dest.repick && G.time.elapsed > rec.pickT)) {
+      if (rec.act === 'sleep' && want !== 'sleep' && rec.bunk && rec.bunk.i !== undefined) { town.bunkUsed.delete(rec.bunk.i); rec.bunk = null; }
+      if (rec.asleep && want !== 'sleep' && rec.a && G.player && Math.hypot(a.pos.x - G.player.pos.x, a.pos.z - G.player.pos.z) < 20 && Math.random() < 0.5) a.say(pick(['*yawn* Another beautiful night in the Neon.', 'Rise and shine. Mostly shine.', 'Ugh. My back. My everything.']), 3);
+      rec.act = want; rec.dest = destFor(rec, want); rec.leg = null; rec.door = null; rec.asleep = false; rec.moveT = G.time.elapsed;
+      applyBarks(rec);
+    }
+    const d = rec.dest; if (!d) return;
+    if (rec.leg === 'at') {
+      // drifted away (pushed, wandered past the home radius): go back
+      const dd = Math.hypot(a.pos.x - d.x, a.pos.z - d.z);
+      if (isInt(a.pos.x) === isInt(d.x) && dd > (d.r || 1.2) + 4) rec.leg = null; else return;
+    }
+    // cross-space: walk to the door, go through it (FO3 NPCs use doors)
+    if (isInt(a.pos.x) !== isInt(d.x)) {
+      if (!rec.door) rec.door = findDoor(a.pos, d) || { none: true };
+      if (rec.door.none) { if (!observed(a.pos.x, a.pos.y, a.pos.z) && !observed(d.x, d.y, d.z)) { place(a, d); arrive(rec); } else if (G.time.elapsed - rec.moveT > 45) loiter(rec, 25); return; }
+      const fr = rec.door.from, dd = Math.hypot(a.pos.x - fr.x, a.pos.z - fr.z);
+      if (dd < 2.2 || G.time.elapsed - rec.moveT > 40) {
+        if (!observed(rec.door.to.x, rec.door.to.y, rec.door.to.z) || dd < 2.2) { place(a, rec.door.to); rec.door = null; rec.moveT = G.time.elapsed; if (G.sfx && !G.isStub('sfx') && observed(fr.x, fr.y, fr.z)) L.sfx('door_open', { pos: L.V3(fr.x, fr.y + 1, fr.z), volume: 0.5 }); }
+        else if (G.time.elapsed - rec.moveT > 70) loiter(rec, 25);   // the far side is watched and the door is out of reach
+        return;
+      }
+      if (!a.moveGoal || Math.hypot(a.moveGoal.x - fr.x, a.moveGoal.z - fr.z) > 0.5) a.moveTo(fr.x, fr.z);
+      return;
+    }
+    const dd = Math.hypot(a.pos.x - d.x, a.pos.z - d.z);
+    if (dd < 1.3) { arrive(rec); return; }
+    // stuck / taking forever: pop there when nobody's looking
+    if (Math.hypot(a.pos.x - rec.lastX, a.pos.z - rec.lastZ) > 1) { rec.lastX = a.pos.x; rec.lastZ = a.pos.z; rec.moveT = G.time.elapsed; }
+    else if (G.time.elapsed - rec.moveT > 20 && !observed(a.pos.x, a.pos.y, a.pos.z) && !observed(d.x, d.y, d.z)) { place(a, d); arrive(rec); return; }
+    else if (G.time.elapsed - rec.moveT > 60 && !d.loiter) { loiter(rec, 25); return; }   // stuck in plain view: re-plan instead of freezing
+    if (a.state !== 'move' || !a.moveGoal || Math.hypot(a.moveGoal.x - d.x, a.moveGoal.z - d.z) > 0.5) { a.aiMode = 'static'; a.moveTo(d.x, d.z); }
+  }
+
+  // ------------------------------------------------------------------
+  // Life: greetings, hawkers, the singer, guard night barks, conversations
+  // ------------------------------------------------------------------
+  const CONVOS = [
+    [['A', 'You hear Crowe\'s running for mayor again?'], ['B', 'He\'s the only candidate.'], ['A', 'And he STILL almost lost.']],
+    [['A', 'My nose fell off this morning.'], ['B', 'Again?'], ['A', 'Same nose. I keep it in a jar.'], ['B', 'Classy.']],
+    [['A', 'Smoothskin at the gallery hit nine tin cans in a row.'], ['B', 'Annie let \'em keep the caps?'], ['A', 'Annie let \'em keep their FINGERS. That\'s the prize.']],
+    [['A', 'Velvet was flat last night.'], ['B', 'She\'s been flat since \'77.'], ['A', 'Say that to her face.'], ['B', 'Which part?']],
+    [['A', 'Caravan\'s late.'], ['B', 'Caravan\'s always late.'], ['A', 'Late\'s better than eaten.']],
+    [['A', 'You ever miss the sun on your skin?'], ['B', 'I miss the skin.']],
+    [['A', 'Lou took me for forty caps last night.'], ['B', 'That\'s why they call him Lucky.'], ['A', 'I thought they called him Lucky \'cause he survived the bombs.'], ['B', 'That too.']],
+    [['A', 'Power flickered again.'], ['B', 'Sparks says it\'s the grid.'], ['A', 'Sparks says everything\'s the grid.'], ['B', 'Everything IS the grid.']],
+    [['A', 'Did you see the Ball? Stuck halfway, same as always.'], ['B', 'Like my career.'], ['A', 'Like all of us, pal.']],
+    [['A', 'They let a smoothskin into the Club last week.'], ['B', 'No!'], ['A', 'Told a joke about skin. Rocco laughed so hard his lip came off.']],
+    [['A', 'Doc Broadway says I got the constitution of a man half my age.'], ['B', 'You\'re two hundred and forty.'], ['A', 'So I\'m a hundred and twenty inside. Beautiful.']],
+    [['A', 'Candy\'s selling Jet by the Opry again.'], ['B', 'Captain know?'], ['A', 'Captain BUYS.'], ['B', '…I didn\'t hear that.']],
+    [['A', 'Scoop\'s paper says the Enclave\'s coming.'], ['B', 'Scoop\'s paper said that last year.'], ['A', 'And?'], ['B', 'And they came. Just not here.']],
+    [['A', 'Nice night.'], ['B', 'It\'s always night for you. You never go out in the day.'], ['A', 'That\'s why it\'s always nice.']],
+    [['A', 'You going to the drop tonight?'], ['B', 'The Ball don\'t drop. The Ball ain\'t dropped in two hundred years.'], ['A', 'A ghoul can dream.']],
+  ];
+  /**
+   * Reactive talk (FO3/NV: townsfolk gossip about what YOU did). Picked about half the time when one applies.
+   * Speaker A/B lines; `cond` is read when the conversation starts.
+   */
+  const KT = () => L.karmaTier();
+  const REACTIVE = [
+    { cond: () => Q.isComplete('sq_neon_ball'), lines: [['A', 'You see the Ball come down last night?'], ['B', 'Cried like a baby. Lost an eyelid.'], ['A', 'Worth it.']] },
+    { cond: () => Q.isComplete('sq_neon_ball'), lines: [['A', 'Crowe gave a speech after the drop.'], ['B', 'How long?'], ['A', 'He\'s still going. I left at "Fourscore".']] },
+    { cond: () => Q.isComplete('sq_neon_power'), lines: [['A', 'Lights haven\'t flickered in days.'], ['B', 'Sparks is insufferable about it.'], ['A', 'Sparks was always insufferable. Now she\'s insufferable with a working grid.']] },
+    { cond: () => Q.isComplete('sq_neon_power') && L.flag('kip_outcome') === 'arrested', lines: [['A', 'Kip Lasko\'s in the barracks cell.'], ['B', 'Poor kid. Slag had him by the debts.'], ['A', 'Slag had him by the neck. Now the Guard\'s got him by the ankles. Progress.']] },
+    { cond: () => !!L.flag('opry_star'), lines: [['A', 'That smoothskin at the Opry, though.'], ['B', 'Terrible voice.'], ['A', 'Terrible! I went twice.']] },
+    { cond: () => !!L.flag('neon_guard_sergeant'), lines: [['A', 'Kincaid made a smoothskin a Sergeant.'], ['B', 'Next she\'ll make a brahmin Mayor.'], ['A', 'Better than Crowe.'], ['B', 'Don\'t let him hear you.']] },
+    { cond: () => Q.isComplete('mq05'), lines: [['A', 'Scoop says the big ape on the Empire State is gone.'], ['B', 'Gone where?'], ['A', 'Gone gone.'], ['B', 'Huh. Skyline looks naked without him.']] },
+    { cond: () => Q.isComplete('mq03'), lines: [['A', 'Vinnie Valentine was on about some vault dweller again.'], ['B', 'Vinnie\'s always on about somebody.'], ['A', 'This one\'s real. I think they\'re standing right there.']] },
+    { cond: () => Q.isComplete('sq_neon'), lines: [['A', 'Crowe got a new heart for the grid.'], ['B', 'Crowe got a new heart? Didn\'t know he had the old one.']] },
+    { cond: () => KT() >= 3, lines: [['A', '(quietly) That\'s the one. The one from the radio.'], ['B', 'Don\'t look. Don\'t LOOK.'], ['A', 'I\'m not looking. I\'m not even here.']] },
+    { cond: () => KT() <= 0, lines: [['A', 'See that smoothskin? Pulled Gus out of a feral nest, I heard.'], ['B', 'Which Gus?'], ['A', 'Does it matter? A Gus was saved.']] },
+    { cond: () => !!L.flag('club_member'), lines: [['A', 'They made a smoothskin an honorary ghoul.'], ['B', 'What\'s next, honorary nose?'], ['A', 'I\'d take one.']] },
+  ];
+  /** Fame greetings: residents and guards remember your deeds (and your karma). */
+  function fameLine(rec) {
+    const g = !!rec.def.guard, out = [];
+    if (L.flag('neon_guard_sergeant')) out.push(g ? pick(['Sergeant.', 'Evening, Sergeant. Walls are quiet.', '*salutes* Sergeant on the square!']) : 'Evening, Sergeant. Keeping us safe?');
+    else if (L.flag('neon_guard_member') && g) out.push(pick(['Guardsman. Captain\'s been asking after you.', 'Hey, it\'s the new blood. Don\'t die, we\'re short.']));
+    if (Q.isComplete('sq_neon_ball')) out.push(pick(['You\'re the one who got the Ball moving! Happy New Year! …Every night!', 'Hey, it\'s the Ball fixer! I kissed a stranger at the drop. Might\'ve been you.']));
+    if (Q.isComplete('sq_neon_power')) out.push(pick(['Lights stayed on all night. Heard that was you. Thanks, smoothskin.', 'You\'re the one who stopped the blackouts? The dark\'s the only thing that scares me anymore.']));
+    if (L.flag('opry_star')) out.push(pick(['It\'s the star of the Revue! Sign my… anything. Sign my arm. It\'s not using it.', 'Encore! ENCORE! …Sorry. Reflex.']));
+    if (L.flag('club_member') && !g) out.push('Honorary ghoul! Lookin\' rough, pal. Real rough. Suits you.');
+    const kt = KT();
+    if (kt >= 4) out.push(g ? 'I know what you are. One wrong move in my square and you\'re meat.' : pick(['Stay back. I heard what you did.', 'Don\'t hurt me. I\'m already mostly dead.']));
+    else if (kt === 3) out.push(g ? 'Keep your hands where I can see \'em. I\'ve heard the stories.' : 'Hmph. Heard about you. Nothing good.');
+    else if (kt === 0) out.push(g ? 'Good to have you in the Neon, friend. Word travels.' : pick(['You\'re the one Vinnie talks about on the radio! The good stuff!', 'Bless you, smoothskin. The Neon owes you.']));
+    return out.length ? pick(out) : null;
+  }
+  const convo = { t: 0, busyUntil: 0 };
+  function tryConversation() {
+    const t = G.time.elapsed;
+    if (t < convo.busyUntil || t < convo.t) return;
+    convo.t = t + 10 + Math.random() * 12;
+    const P = G.player.pos;
+    const cands = [];
+    for (const rec of town.recs.values()) {
+      const a = rec.a;
+      if (busy(a) || rec.asleep || rec.def.guard || rec.def.role === 'hawker' || a.state === 'move' || !a.inScene) continue;
+      if (Math.hypot(a.pos.x - P.x, a.pos.z - P.z) > 20) continue;
+      cands.push(rec);
+    }
+    for (let i = 0; i < cands.length; i++) for (let j = i + 1; j < cands.length; j++) {
+      const a = cands[i].a, b = cands[j].a;
+      if (Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z) > 6.5 || Math.abs(a.pos.y - b.pos.y) > 1.5) continue;
+      const rx = REACTIVE.filter((r) => { try { return !!r.cond(); } catch (e) { return false; } });
+      const lines = rx.length && Math.random() < 0.5 ? pick(rx).lines : pick(CONVOS);
+      let k = 0;
+      a.faceTowards(b.pos.x, b.pos.z); b.faceTowards(a.pos.x, a.pos.z);
+      for (const [who, text] of lines) {
+        const sp = who === 'A' ? a : b;
+        L.later(0.2 + k * 3.1, () => { if (!busy(sp)) sp.say(text, 3); });
+        k++;
+      }
+      convo.busyUntil = t + lines.length * 3.1 + 25 + Math.random() * 20;
+      return;
+    }
+  }
+  function lifeTick() {
+    const P = G.player; const t = G.time.elapsed;
+    const f = P.forward || { x: -Math.sin(P.yaw), z: -Math.cos(P.yaw) };
+    const night = nightNow();
+    if (night !== town.night) { town.night = night; for (const rec of town.recs.values()) if (rec.def.guard && !rec.def.barks && !busy(rec.a)) applyBarks(rec); }
+    for (const rec of town.recs.values()) {
+      const a = rec.a; if (busy(a) || !a.inScene) continue;
+      const dx = a.pos.x - P.pos.x, dz = a.pos.z - P.pos.z, d = Math.hypot(dx, dz);
+      if (d > 32) continue;
+      // hawkers cry their wares; Velvet sings on stage
+      if (rec.act === 'work' && rec.def.role === 'hawker' && rec.leg === 'at' && t > rec.hawkT) { rec.hawkT = t + 9 + Math.random() * 8; a.say(pick(HAWK[rec.id] || HAWK.neon_newsie), 3.6); continue; }
+      if (rec.act === 'perform' && rec.leg === 'at' && t > rec.hawkT) { rec.hawkT = t + 6 + Math.random() * 4; a.say(pick(rec.def.songs || SINGING), 4); if (a.char && a.char.playOneShot) try { a.char.playOneShot('talk'); } catch (e) { /* ignore */ } continue; }
+      // FO3 greeting: walk up to someone and look at them
+      if (d < 3.2 && t > rec.greetT && Math.abs(a.pos.y - P.pos.y) < 1.6 && (dx * f.x + dz * f.z) / (d || 1) > 0.6) {
+        rec.greetT = t + 50 + Math.random() * 30;
+        a.faceTowards(P.pos.x, P.pos.z);
+        const fame = rec.asleep ? null : Math.random() < 0.55 ? fameLine(rec) : null;
+        if (fame) a.say(fame, 3.5); else a.bark('greet');
+      }
+    }
+    tryConversation();
+  }
+
+  // ------------------------------------------------------------------
+  // Public helpers for 48/49 (L.neonTown)
+  // ------------------------------------------------------------------
+  L.neonTown = {
+    spot, has, series, rawAnchor, rec: (id) => town.recs.get(id) || null, recs: () => Array.from(town.recs.values()),
+    asleep: (id) => { const r = town.recs.get(id); return !!(r && r.asleep && r.leg === 'at'); },
+    /** Crowd event: everyone (townsfolk/hawkers/off-duty merchants) walks to `at(rec)` while `who(rec)` is true. */
+    setGather(g) { town.gather = g || null; for (const r of town.recs.values()) if (r.act === 'gather' || (g && g.who(r))) { r.act = null; } },
+    ROSTER, STOCK, ROUTINES, CONVOS, REACTIVE, HAWK, nightNow, place: placeOf, realOpry, PLACES, ALIAS, skipped: () => (town.skipped || []).slice(),
+    customerSpot, fameLine,
+    /**
+     * Sleeping NPC wrapper for dialogue trees (shared trees too: the check uses the actor being
+     * talked to): talking to a sleeper opens a groggy node first — FO3 lets you wake people up.
+     */
+    sleepy(tree) {
+      const start0 = tree.start;
+      const real = (actor, A) => (typeof start0 === 'function' ? start0(actor, A) : start0);
+      tree.nodes.__asleep = { text: () => pick(['Zzz… [They\'re fast asleep.]', 'Hrrn… *wheezy snore* [Asleep.]', '[Curled up and snoring like a Vertibird.]']),
+        responses: [{ text: '[Wake them up.]', next: '__woken' },
+          { text: '[Sneak 40] [Go through their pockets while they sleep.]', check: { skill: 'sneak', value: 40 }, karma: -15, repeatKarma: true,
+            cond: (actor) => !!actor && !actor.neonGuard && L.flag('neon_lift_' + actor.id) !== G.time.day,
+            action: (actor) => { L.setFlag('neon_lift_' + actor.id, G.time.day); const n = 6 + Math.floor(Math.random() * 22); L.giveCaps(n); L.incFlag('neon_lifts'); },
+            next: '__lifted', failNext: '__caught' },
+          { text: '[Let them sleep.]' }] };
+      tree.nodes.__lifted = { text: '[A handful of warm caps and a button. They mumble something about "…my mother\'s noodles…" and roll over.]', responses: [{ text: '[Slip away.]' }] };
+      tree.nodes.__caught = { text: '[An eye snaps open. Then the other one, eventually.] HEY! Hands OFF, smoothskin! GUARD! THIEF!',
+        onEnter(actor) {
+          if (actor) L.setFlag('neon_lift_' + actor.id, G.time.day);
+          L.karma(-5, 'Caught stealing in the Neon');
+          const g = Array.from(town.recs.values()).filter((r) => r.def.guard && r.a && !r.a.dead && G.player && Math.hypot(r.a.pos.x - G.player.pos.x, r.a.pos.z - G.player.pos.z) < 40)[0];
+          if (g) g.a.say('Hands where I can see \'em! One more time and you\'re out of the Neon.', 4);
+        }, responses: [{ text: '[Back away.]' }] };
+      tree.nodes.__woken = { text: () => pick(['Wha—? Oh, it\'s you. Fine. FINE. What?', 'This better be good, smoothskin.', '*cough* I\'m up, I\'m up. What do you want?']),
+        responses: [{ text: 'I need something.', next: (actor, A) => real(actor, A) }, { text: 'Sorry. Go back to sleep.' }] };
+      tree.start = (actor, A) => (actor && L.neonTown.asleep(actor.id) ? '__asleep' : real(actor, A));
+      return tree;
+    },
+  };
+
+  // ------------------------------------------------------------------
+  // Dialogues (generic: guards, hawkers, townsfolk; stall merchants)
+  // ------------------------------------------------------------------
+  const PLACE_DIRS = [
+    ['Where can I buy supplies?', 'The Marquee Market, right under the billboards. Tillie for guns, Brass for ammo, Mags for clothes, Joe for junk. Old Sato does noodles all night.'],
+    ['I need a doctor.', 'Doc Broadway\'s clinic, the old box office with the red cross on it. Tell him a guard sent you. He won\'t care, but tell him.'],
+    ['Where can a body sleep?', () => (placeOf('bunkhouse') ? 'The Bunkhouse. Dottie rents beds, twenty caps. Clean-ish.'
+      : 'Nowhere with a door, yet. Dottie\'s still shovelling the old Astor out so she can rent beds again. Till then folks bunk wherever it\'s dry and the Guard can see \'em.')],
+    ['Where\'s the mayor?', 'Crowe\'s office is the old Recruiting Station on the island. Notice board\'s out front if you\'re looking for work.'],
+    ['Where can I get a drink?', 'The Rad Room. Marigold pours, Lucky Lou deals. Don\'t play cards with Lou.'],
+    ['Anything fun to do around here?', () => (placeOf('gallery') ? 'Ammo Annie\'s gallery, ' : '') + (realOpry() ? 'the Opry after dark' : 'the Revue after dark on the Rad-Lounge stage') + ', Lucky Lou\'s cards, the Smoothskin Club if you can talk your way past Sal. Or stand under the Ball and wait for it to drop. Some folks been waiting two hundred years.'],
+  ];
+  function guardDialogue() {
+    const nodes = {
+      hello: { text: () => (L.flag('neon_guard_member') ? pick(['Evening, brother. Anything to report?', 'Hey, you\'re one of us now. Try not to get shot.']) : nightNow() ? pick(GUARD_NIGHT.greet) : pick(GUARD_DAY.greet)),
+        responses: PLACE_DIRS.map(([q], i) => ({ text: q, next: 'dir' + i })).concat([
+          { text: 'What are the rules here?', next: 'rules' },
+          { text: 'Who\'s in charge of the guard?', next: 'capt', cond: () => !L.flag('met_kincaid') },
+          { text: 'Carry on.' }]) },
+      rules: { text: 'Three rules. No shooting inside the gates. No stealing from the stalls. No ferals, no raiders, no mutants — that one\'s ours to enforce, not yours. Break one and you\'ll meet the Captain. Break two and you\'ll meet the Doc.', responses: [{ text: 'Understood.', next: 'hello' }] },
+      capt: { text: 'Captain Mercy Kincaid. Up at the north gate most days. She\'s hiring, if you\'re any good. Or even if you\'re not — we lose a lot of people.', responses: [{ text: 'Thanks.', next: 'hello' }] },
+    };
+    PLACE_DIRS.forEach(([, a], i) => { nodes['dir' + i] = { text: a, responses: [{ text: 'Anything else I should know?', next: 'hello' }, { text: 'Thanks.' }] }; });
+    L.dialogue('dlg_neon_guard', L.neonTown.sleepy({ start: 'hello', nodes }));
+  }
+  const FOLK = {
+    neon_gums: { hi: ['Heyyy, smoothskin. Buy an old ghoul a drink? No? Buy a young ghoul a drink? Also me.', '*hic* You\'re blurry. Or I\'m blurry. One of us is blurry.'],
+      story: 'Tended bar at the Astor before the bombs. Now I\'m retired. From standing up, mostly.', rumor: 'Heard Lou\'s deck got five aces. Heard it from Lou. He was bragging.' },
+    neon_ruby: { hi: ['Ruby Fontaine, second from the left in the old Revue kick line. Now I\'m second from the left in the bar line.', 'Honey, you are GLOWING. Oh, no, that\'s me.'],
+      story: 'Velvet and I came up together. She got the solo, I got the radiation. Well — we both got the radiation. She got the solo.', rumor: 'Lionel\'s lead man walked off mid-song last week. Walked off the stage, walked off the island. Opry needs a new face. Any face.' },
+    neon_stan: { hi: ['Stan Hollis, Depot porter. If it\'s on a brahmin, I lifted it.', 'Back hurts. Brahmin hurts. Everything hurts. Good day, though.'],
+      story: 'Eustace hired me off the Grand Central run. Says I\'ve got a strong back and a weak mind. Best compliment I ever got.', rumor: 'Eustace is hiring guards for the runs. Good caps. Not good odds.' },
+    neon_pearl: { hi: ['Oh, a visitor! You\'re so… smooth. Do you moisturise?', 'Grandma Pearl, dear. Everybody\'s grandma. Nobody\'s actually related to me. Anymore.'],
+      story: 'I was ninety-one when the bombs fell. Wait — I was nine. Or nineteen. Something with a nine. I\'m old, dear.', rumor: 'The power keeps flickering at night. Sparks says it\'s not the grid this time. Somebody\'s pulling cable. Mark my words.' },
+    neon_nicky: { hi: ['Nicky Two-Thumbs. Both on the same hand. Wanna see?', 'You new? You look new. Everything about you is new. It\'s disgusting.'],
+      story: 'I\'m a professional heckler. I heckle at the Opry. They pay me not to. It\'s a living.', rumor: 'Captain Kincaid posts bounties on the Mayor\'s board. Raiders, ferals, the works. Easy caps if you\'re quick on the draw.' },
+    neon_dusty: { hi: ['Oh thank god, another human. Well — another smoothskin. They call us that here. I don\'t love it.', 'Dusty Mae. Came in with the caravan and never left. The ghouls are nicer than people. Don\'t tell people.'],
+      story: 'I\'m trying to get into the Smoothskin Club. They don\'t let humans in. That\'s the point, apparently. That\'s WHY I want in.', rumor: 'There\'s a ticker-tape oracle booth under the zipper sign. Tells your fortune for five caps. Mine said "BEWARE THE BRAHMIN." Then a brahmin stepped on me.' },
+  };
+  function folkDialogue() {
+    const F = (actor) => FOLK[actor && actor.id] || FOLK.neon_gums;
+    L.dialogue('dlg_neon_folk', L.neonTown.sleepy({
+      start: 'hello',
+      nodes: {
+        hello: { text: (actor) => pick(F(actor).hi),
+          responses: [{ text: 'Tell me about yourself.', next: 'story' }, { text: 'Heard anything interesting?', next: 'rumor' },
+            { text: '[Give Gums a bottle of purified water.]', karma: 15, repeatKarma: true,
+              cond: (actor) => !!actor && actor.id === 'neon_gums' && L.has('purified_water') && L.flag('gums_water_day') !== G.time.day,
+              action: () => { L.take('purified_water', 1); L.setFlag('gums_water_day', G.time.day); L.incFlag('gums_water'); }, next: 'water' },
+            { text: 'See you around.' }] },
+        water: { text: () => (Number(L.flag('gums_water')) > 1 ? 'Again? You keep this up, kid, I\'ll have to start remembering your name. [He drinks it like a man who forgot water came without a label.]'
+          : 'Water? Real water? [He holds the bottle like it might bite.] Nobody\'s given me anything but a hard time since the Astor burned. …Tastes like nothing. Tastes like being alive. Thanks, kid.'),
+          responses: [{ text: 'Take care of yourself, Gums.' }] },
+        story: { text: (actor) => F(actor).story, responses: [{ text: 'Heard anything interesting?', next: 'rumor' }, { text: 'Take care.' }] },
+        rumor: { text: (actor) => F(actor).rumor, onEnter(actor) { if (actor && FOLK[actor.id]) L.setFlag('neon_rumor_' + actor.id); }, responses: [{ text: 'Thanks.' }] },
+      },
+    }));
+  }
+  function hawkerDialogue() {
+    const HD = {
+      neon_newsie: ['Scoop Doolan, Neon Gazette! One cap! Today\'s headline: "YOU." Well — "LOCAL SMOOTHSKIN WANDERS IN." Slow news day.', 'Paper, mister? It\'s got a crossword. All the answers are "radiation."'],
+      neon_doomer: ['Brother Tick-Tock, prophet of the Second Ending! Repent! Or don\'t. Honestly it won\'t help.', 'The ticker sign — the zipper — it spells out the future, friend! Yesterday it said SALE. What does THAT mean?!'],
+      neon_tout: ['Tickets Tessie! Tonight at eight, the Neon Revue! Velvet Maloney! Dancing! Mild singing!', 'Two caps a seat and I\'ll throw in a program. The program is a napkin.'],
+    };
+    const who = (actor) => (actor && HD[actor.id] ? actor.id : 'neon_newsie');
+    L.dialogue('dlg_neon_hawker', L.neonTown.sleepy({
+      start: 'hello',
+      nodes: {
+        hello: { text: (actor) => pick(HD[who(actor)]),
+          responses: [
+            { text: 'Buy a paper. (1 cap)', cond: (actor) => who(actor) === 'neon_newsie', action: () => { if (L.pay(1)) L.notify(pick(['NEON GAZETTE: "MAYOR CROWE: \'I AM STILL THE MAYOR\'"', 'NEON GAZETTE: "BALL STILL STUCK — DAY 77,000-SOMETHING"', 'NEON GAZETTE: "GUARDS REPEL FERALS AT 42ND ST GATE; ONE GUARD \'MOSTLY FINE\'"', 'NEON GAZETTE: "OPRY STAR\'S WIG STOLEN; POLICE BAFFLED (THERE ARE NO POLICE)"'])); } },
+            { text: 'Buy a ticket for tonight\'s show. (2 caps)', cond: (actor) => who(actor) === 'neon_tout' && !L.has('q_neon_ticket'), action: () => { if (L.pay(2)) { L.give('q_neon_ticket', 1); } } },
+            { text: 'What is the Second Ending?', cond: (actor) => who(actor) === 'neon_doomer', next: 'doom' },
+            { text: '[Drop 5 caps in Brother Tick-Tock\'s tin.]', karma: 10, repeatKarma: true,
+              cond: (actor) => who(actor) === 'neon_doomer' && L.caps() >= 5 && L.flag('doomer_alms_day') !== G.time.day,
+              action: () => { if (L.pay(5)) L.setFlag('doomer_alms_day', G.time.day); }, next: 'alms' },
+            { text: 'Not today.' }] },
+        alms: { text: 'Bless you! Bless you, smoothskin! When the Second Ending comes I shall tell it you were one of the GOOD ones! …It probably won\'t listen. Nothing listens. But I\'ll TELL it.', responses: [{ text: 'Much obliged.' }] },
+        doom: { text: 'The FIRST ending was the bombs. The SECOND ending is when the lights of the Neon go out. When the power fails, friend, the dark comes back into the square — and so do THEY. Mark me! Mark me! …Nobody ever marks me.', responses: [{ text: 'Marked.' }] },
+      },
+    }));
+  }
+
+  // ---- stall merchants (FO3: hello → trade / chat / goodbye) ----
+  const MERCH_TALK = {
+    neon_tillie: { who: 'Two-Gun Tillie. Had three guns once — the third one\'s in a raider. Long story. Short raider.', tip: 'Tip for free: aim for the legs on ferals. Slow \'em down, then say goodnight.' },
+    neon_brass: { who: 'Ran a sporting goods store on 44th before the war. Now I run the only honest ammo counter on the island. Counting is a lost art, friend.', tip: 'Energy cells go bad in the damp. Keep \'em in your pack, not your pockets.' },
+    neon_mags: { who: 'Seamstress to the stars, once. Broadway costumes. Now I stitch armour for guards and prom dresses for ghouls who never went to prom. Same thing, really.', tip: 'Wear something with a collar to the Smoothskin Club. Sal respects a collar.' },
+    neon_joe: { who: 'Scrapper Joe. I had a real name once. I sold it. Got three caps for it.', tip: 'Sprocket at the Robo-Shop pays good for sensor modules. Me, I pay better. Don\'t tell her.' },
+    neon_noodle: { who: 'I cook noodles. My father cooked noodles. His father cooked noodles. The noodles are the same noodles. Very old noodles.', tip: 'Eat, then sleep at the Bunkhouse. Full belly, full rest. Old man\'s wisdom.' },
+    neon_bev: { who: 'Bev. I raise \'em, I name \'em, I grill \'em. It\'s called the circle of life, sweetie, and I\'m at the grilling end of it.', tip: 'Eustace\'s caravans bring fresh brahmin twice a week. The meat\'s better when the caravan\'s on time.' },
+    neon_candy: { who: 'Candy Rourke, pharmaceutical entrepreneur. Broadway calls me a pusher. I call myself a motivator.', tip: 'Don\'t mix Psycho and Buffout before a fight. Or do. I\'m not your mother.' },
+    neon_willie: { who: 'Wet Willie. Used to be a plumber. Water was my life. Still is. Now it\'s just in bottles.', tip: 'Boil anything that don\'t come from me. Then buy from me anyway.' },
+  };
+  function merchantDialogues() {
+    for (const id in MERCH_TALK) {
+      const m = MERCH_TALK[id];
+      L.dialogue('dlg_' + id, L.neonTown.sleepy({
+        start: 'hello',
+        nodes: {
+          hello: { text: () => { const r = BY_ID[id]; return pick((r.barks && r.barks.greet) || ['What\'ll it be?']); },
+            responses: [{ text: 'Let\'s trade.', barter: true, end: true }, { text: 'Tell me about yourself.', next: 'who' }, { text: 'Any advice?', next: 'tip' }, { text: 'Goodbye.' }] },
+          who: { text: m.who, responses: [{ text: 'Let\'s trade.', barter: true, end: true }, { text: 'Goodbye.' }] },
+          tip: { text: m.tip, responses: [{ text: 'Thanks. Let\'s trade.', barter: true, end: true }, { text: 'Goodbye.' }] },
+        },
+      }));
+    }
+  }
+
+  L.hook('init', function () {
+    L.defineItem({ id: 'q_neon_ticket', name: 'Neon Revue Ticket', type: 'misc', weight: 0, value: 2, quest: false, mesh: 'paper',
+      desc: 'ADMIT ONE — THE NEON REVUE, STARRING VELVET MALONEY. "No refunds. No re-entry. No heckling (Nicky)." Printed on the back of a pre-war parking ticket.' });
+  });
+  L.hook('register', function () { guardDialogue(); folkDialogue(); hawkerDialogue(); merchantDialogues(); });
+  L.hook('spawn', function () { try { spawnAll(); } catch (e) { G.reportError('quests:neon spawnAll', e); } });
+  L.hook('reset', function () { cache.clear(); town.recs.clear(); town.spawned = false; town.gather = null; convo.t = 0; convo.busyUntil = 0; });
+
+  // ------------------------------------------------------------------
+  // Update: the crowd sleeps when the player is far away (performance cap)
+  // ------------------------------------------------------------------
+  let tickT = 0, lifeT = 0;
+  L.hook('update', function (dt) {
+    if (!town.spawned || !G.player || dt <= 0) return;
+    const P = G.player.pos;
+    const o = NEON_CELL();
+    const near = isInt(P.x) ? (Math.abs(P.x - o.x) < 170 && Math.abs(P.z - o.z) < 170) : Math.hypot(P.x - TS.x, P.z - TS.z) < 260;
+    if (!near) return;
+    tickT += dt; lifeT += dt;
+    if (tickT >= 0.5) {
+      const step = tickT; tickT = 0;
+      for (const rec of town.recs.values()) {
+        if (!rec.def.routine || busy(rec.a)) continue;
+        try { steer(rec, step); } catch (e) { G.reportError('quests:neon steer ' + rec.id, e); rec.def = Object.assign({}, rec.def, { routine: null }); }
+      }
+    }
+    if (lifeT >= 1) { lifeT = 0; try { lifeTick(); } catch (e) { G.reportError('quests:neon life', e); } }
+  });
+
+  // Debug (dev console): G.quests.debug.neon()
+  Q.debug.neon = function () {
+    return Array.from(town.recs.values()).map((r) => ({ id: r.id, act: r.act, leg: r.leg, anchor: r.post && r.post.name, how: r.post ? (r.post.fallback ? 'fallback' : /→/.test(r.post.name || '') ? 'built-alias' : 'plan') : '?',
+      x: +r.a.pos.x.toFixed(1), z: +r.a.pos.z.toFixed(1), state: r.a.state, mode: r.a.aiMode, dead: r.a.dead }));
+  };
+  /** Where the Neon stands: placement mix, skipped services, which places exist (and through which anchor). */
+  Q.debug.neonPlaces = function () {
+    const rows = Q.debug.neon(), count = { plan: 0, 'built-alias': 0, fallback: 0 };
+    for (const r of rows) count[r.how] = (count[r.how] || 0) + 1;
+    const places = {}; for (const k in PLACES) { const a = placeOf(k); places[k] = a ? a.name : null; }
+    return { spawned: rows.length, placement: count, skipped: (town.skipped || []).slice(), places, fallbacks: rows.filter((r) => r.how === 'fallback').map((r) => r.id) };
+  };
+})();
+

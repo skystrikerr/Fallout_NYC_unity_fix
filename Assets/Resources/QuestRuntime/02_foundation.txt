@@ -1,0 +1,435 @@
+G.scene=new THREE.Scene();G.camera=new THREE.PerspectiveCamera();G.player={name:'Wanderer',pos:new THREE.Vector3(-65,0,-708),height:1.7,radius:.35,teleport:(x,y,z,yaw)=>G.native.send('travel',{x,y,z,yaw})};G.raycastables=[];(()=>{const THREE=window.THREE;  const U = (G.util = {});
+  U.clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  U.lerp = (a, b, t) => a + (b - a) * t;
+  U.smoothstep = (a, b, x) => { const t = U.clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+  U.damp = (a, b, lambda, dt) => U.lerp(a, b, 1 - Math.exp(-lambda * dt));
+  U.wrapAngle = (a) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
+  U.angleDiff = (a, b) => U.wrapAngle(b - a);
+  U.dist2D = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+  /** Seeded PRNG (mulberry32) with helpers: r(), r.range(a,b), r.int(a,b), r.pick(arr), r.chance(p) */
+  U.rng = function (seed) {
+    let a = (seed >>> 0) || 1;
+    const r = function () {
+      a |= 0; a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    r.range = (lo, hi) => lo + (hi - lo) * r();
+    r.int = (lo, hi) => Math.floor(lo + (hi - lo + 1) * r());
+    r.pick = (arr) => arr[Math.floor(r() * arr.length)];
+    r.chance = (p) => r() < p;
+    return r;
+  };
+  /** Deterministic hash of 2 numbers → [0,1) */
+  U.hash2 = (x, z) => { let h = Math.imul((x * 73856093) | 0, 1) ^ Math.imul((z * 19349663) | 0, 1); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  U.hashStr = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+  /** 2D value noise in [0,1], smooth. */
+  U.noise2 = (x, z) => {
+    const xi = Math.floor(x), zi = Math.floor(z), xf = x - xi, zf = z - zi;
+    const s = (t) => t * t * (3 - 2 * t);
+    const a = U.hash2(xi, zi), b = U.hash2(xi + 1, zi), c = U.hash2(xi, zi + 1), d = U.hash2(xi + 1, zi + 1);
+    return U.lerp(U.lerp(a, b, s(xf)), U.lerp(c, d, s(xf)), s(zf));
+  };
+  U.fbm2 = (x, z, oct) => { let v = 0, amp = 0.5, f = 1; for (let i = 0; i < (oct || 4); i++) { v += amp * U.noise2(x * f, z * f); f *= 2; amp *= 0.5; } return v; };
+
+  /**
+   * Merge BufferGeometries into one (same material). Handles indexed and
+   * non-indexed input; keeps position, normal, uv, color (if ALL have color,
+   * otherwise color is dropped). Returns a new indexed BufferGeometry.
+   */
+  U.mergeGeometries = function (geoms) {
+    geoms = geoms.filter(Boolean);
+    if (!geoms.length) return new THREE.BufferGeometry();
+    const hasColor = geoms.every((g) => g.attributes.color);
+    const hasUV = geoms.every((g) => g.attributes.uv);
+    let vCount = 0, iCount = 0;
+    for (const g of geoms) { vCount += g.attributes.position.count; iCount += g.index ? g.index.count : g.attributes.position.count; }
+    const pos = new Float32Array(vCount * 3), nor = new Float32Array(vCount * 3);
+    const uv = hasUV ? new Float32Array(vCount * 2) : null;
+    const col = hasColor ? new Float32Array(vCount * 3) : null;
+    const idx = vCount > 65535 ? new Uint32Array(iCount) : new Uint16Array(iCount);
+    let vo = 0, io = 0;
+    for (const g of geoms) {
+      if (!g.attributes.normal) g.computeVertexNormals();
+      const p = g.attributes.position, n = g.attributes.normal;
+      for (let i = 0; i < p.count; i++) {
+        pos[(vo + i) * 3] = p.getX(i); pos[(vo + i) * 3 + 1] = p.getY(i); pos[(vo + i) * 3 + 2] = p.getZ(i);
+        nor[(vo + i) * 3] = n.getX(i); nor[(vo + i) * 3 + 1] = n.getY(i); nor[(vo + i) * 3 + 2] = n.getZ(i);
+        if (uv) { const u = g.attributes.uv; uv[(vo + i) * 2] = u.getX(i); uv[(vo + i) * 2 + 1] = u.getY(i); }
+        if (col) { const c = g.attributes.color; col[(vo + i) * 3] = c.getX(i); col[(vo + i) * 3 + 1] = c.getY(i); col[(vo + i) * 3 + 2] = c.getZ(i); }
+      }
+      if (g.index) { for (let i = 0; i < g.index.count; i++) idx[io++] = g.index.getX(i) + vo; }
+      else { for (let i = 0; i < p.count; i++) idx[io++] = i + vo; }
+      vo += p.count;
+    }
+    const out = new THREE.BufferGeometry();
+    out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    if (uv) out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    if (col) out.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    out.setIndex(new THREE.BufferAttribute(idx, 1));
+    out.computeBoundingSphere(); out.computeBoundingBox();
+    return out;
+  };
+  /** Clone geometry with a transform baked in. */
+  U.bake = (geom, pos, rotY, scale, rotX, rotZ) => {
+    const g = geom.clone();
+    const m = new THREE.Matrix4().compose(
+      new THREE.Vector3(pos ? pos.x : 0, pos ? pos.y : 0, pos ? pos.z : 0),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(rotX || 0, rotY || 0, rotZ || 0, 'YXZ')),
+      typeof scale === 'number' ? new THREE.Vector3(scale, scale, scale) : (scale || new THREE.Vector3(1, 1, 1)));
+    g.applyMatrix4(m);
+    return g;
+  };
+  /** Paint a flat vertex color onto a geometry (adds 'color' attribute). */
+  U.paint = (geom, color) => {
+    const c = new THREE.Color(color), n = geom.attributes.position.count, a = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
+    geom.setAttribute('color', new THREE.BufferAttribute(a, 3));
+    return geom;
+  };
+  U.disposeObject = (obj) => {
+    obj.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material && !o.material.userData.shared) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose());
+    });
+    if (obj.parent) obj.parent.remove(obj);
+  };
+  U.randomId = (() => { let n = 0; return (p) => (p || 'id') + '_' + (++n); })();
+  U.fmt = (n) => Math.round(n).toString();
+
+  // ------------------------------------------------------------------
+  // Event bus
+  // ------------------------------------------------------------------
+  const CELL = 20;
+  const W = (G.world = {
+    colliders: [], grid: new Map(), CELL,
+    waterLevel: -1.2, stepHeight: 0.55,
+    interactables: [], focus: null, radSources: [], lods: [], doors: [],
+    interactRange: 3.2,
+  });
+  function cellKey(cx, cz) { return cx * 73856093 ^ cz * 19349663; }
+  function colliderAABB(c) {
+    const cos = Math.abs(Math.cos(c.yaw)), sin = Math.abs(Math.sin(c.yaw));
+    const ex = c.hx * cos + c.hz * sin, ez = c.hx * sin + c.hz * cos;
+    return { x0: c.cx - ex, x1: c.cx + ex, z0: c.cz - ez, z1: c.cz + ez };
+  }
+  /**
+   * Add a collider: an XZ-rotated box. opts: {tag, walkable=true, surface:'concrete'|'metal'|'grass'|'dirt'|'wood'|'water', data}
+   * @returns collider handle (pass to removeCollider)
+   */
+  W.addCollider = function (cx, cz, w, d, minY, maxY, yaw, opts) {
+    opts = opts || {};
+    const c = { cx, cz, hx: w / 2, hz: d / 2, minY, maxY, yaw: yaw || 0, cos: Math.cos(-(yaw || 0)), sin: Math.sin(-(yaw || 0)),
+      tag: opts.tag || 'static', walkable: opts.walkable !== false, surface: opts.surface || 'concrete', data: opts.data || null, _stamp: 0, cells: [] };
+    const bb = colliderAABB(c);
+    c.bb = bb;
+    for (let x = Math.floor(bb.x0 / CELL); x <= Math.floor(bb.x1 / CELL); x++) {
+      for (let z = Math.floor(bb.z0 / CELL); z <= Math.floor(bb.z1 / CELL); z++) {
+        const k = cellKey(x, z); let arr = W.grid.get(k); if (!arr) { arr = []; W.grid.set(k, arr); }
+        arr.push(c); c.cells.push(k);
+      }
+    }
+    W.colliders.push(c);
+    return c;
+  };
+  /** Axis-aligned convenience: min/max corners. */
+  W.addBox = function (minX, minY, minZ, maxX, maxY, maxZ, opts) {
+    return W.addCollider((minX + maxX) / 2, (minZ + maxZ) / 2, maxX - minX, maxZ - minZ, minY, maxY, 0, opts);
+  };
+  /** Collider from a mesh/group: uses local bounding box, world position, world yaw and scale. */
+  W.addFromObject = function (obj, opts) {
+    obj.updateWorldMatrix(true, true);
+    const box = new THREE.Box3();
+    // local-space bounds of the whole object (relative to obj)
+    const inv = new THREE.Matrix4().copy(obj.matrixWorld).invert();
+    obj.traverse((o) => {
+      if (!o.geometry) return;
+      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      const b = o.geometry.boundingBox.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld));
+      box.union(b);
+    });
+    if (box.isEmpty()) return null;
+    const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3();
+    obj.matrixWorld.decompose(pos, quat, scl);
+    const e = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
+    const center = box.getCenter(new THREE.Vector3()).multiply(scl).applyQuaternion(quat).add(pos);
+    const size = box.getSize(new THREE.Vector3()).multiply(scl);
+    return W.addCollider(center.x, center.z, size.x, size.z, center.y - size.y / 2, center.y + size.y / 2, e.y, opts);
+  };
+  W.removeCollider = function (c) {
+    if (!c) return;
+    for (const k of c.cells) { const arr = W.grid.get(k); if (arr) { const i = arr.indexOf(c); if (i >= 0) arr.splice(i, 1); } }
+    const i = W.colliders.indexOf(c); if (i >= 0) W.colliders.splice(i, 1);
+  };
+  let stamp = 1;
+  /** Colliders whose grid cells touch the XZ rect. */
+  W.query = function (x0, z0, x1, z1) {
+    stamp++;
+    const out = [];
+    for (let x = Math.floor(x0 / CELL); x <= Math.floor(x1 / CELL); x++) {
+      for (let z = Math.floor(z0 / CELL); z <= Math.floor(z1 / CELL); z++) {
+        const arr = W.grid.get(cellKey(x, z)); if (!arr) continue;
+        for (const c of arr) if (c._stamp !== stamp) { c._stamp = stamp; out.push(c); }
+      }
+    }
+    return out;
+  };
+  function toLocal(c, x, z) { const dx = x - c.cx, dz = z - c.cz; return [dx * c.cos - dz * c.sin, dx * c.sin + dz * c.cos]; }
+  function toWorldDir(c, lx, lz) { return [lx * c.cos + lz * c.sin, -lx * c.sin + lz * c.cos]; }
+  W.pointInCollider = (c, x, z, pad) => { const l = toLocal(c, x, z); pad = pad || 0; return Math.abs(l[0]) <= c.hx + pad && Math.abs(l[1]) <= c.hz + pad; };
+
+  /** Terrain height (land y≈0; map module may override for park hills; river bed below water). */
+  W.terrainHeight = function (x, z) { return G.LAYOUT && G.LAYOUT.isLand(x, z) ? 0 : -6; };
+  /** Highest walkable surface under (x,z) that is at or below yRef + stepHeight. */
+  W.groundHeight = function (x, z, yRef, radius) {
+    if (yRef === undefined) yRef = 1e6;
+    radius = radius || 0;
+    let best = W.terrainHeight(x, z);
+    const cs = W.query(x - radius, z - radius, x + radius, z + radius);
+    for (const c of cs) {
+      if (!c.walkable) continue;
+      if (c.maxY > best && c.maxY <= yRef + W.stepHeight && W.pointInCollider(c, x, z, radius * 0.5)) best = c.maxY;
+    }
+    return best;
+  };
+  /**
+   * Move a vertical cylinder (feet at pos.y, given height) by (dx,dz) with wall sliding.
+   * Returns {x, z, blocked}. Colliders whose top is within stepHeight of feet are ignored (stepped onto).
+   */
+  W.moveCircle = function (pos, radius, height, dx, dz, ignore) {
+    let x = pos.x + dx, z = pos.z + dz, blocked = false;
+    const feet = pos.y + W.stepHeight, head = pos.y + height;
+    for (let iter = 0; iter < 3; iter++) {
+      let pushed = false;
+      const cs = W.query(x - radius - 1, z - radius - 1, x + radius + 1, z + radius + 1);
+      for (const c of cs) {
+        if (c === ignore || c.maxY <= feet || c.minY >= head) continue;
+        const l = toLocal(c, x, z);
+        const qx = U.clamp(l[0], -c.hx, c.hx), qz = U.clamp(l[1], -c.hz, c.hz);
+        let ox = l[0] - qx, oz = l[1] - qz;
+        const d2 = ox * ox + oz * oz;
+        if (d2 >= radius * radius) continue;
+        let nx, nz, pen;
+        if (d2 > 1e-8) { const d = Math.sqrt(d2); nx = ox / d; nz = oz / d; pen = radius - d; }
+        else { // center inside box: push out along smallest axis
+          const px = c.hx - Math.abs(l[0]), pz = c.hz - Math.abs(l[1]);
+          if (px < pz) { nx = Math.sign(l[0]) || 1; nz = 0; pen = px + radius; } else { nx = 0; nz = Math.sign(l[1]) || 1; pen = pz + radius; }
+        }
+        const wd = toWorldDir(c, nx, nz);
+        x += wd[0] * pen; z += wd[1] * pen; pushed = true; blocked = true;
+      }
+      if (!pushed) break;
+    }
+    // world bounds
+    const WB = G.LAYOUT ? G.LAYOUT.WORLD : null;
+    if (WB && x < G.LAYOUT.INTERIOR_X_MIN) { x = U.clamp(x, WB.minX + 2, WB.maxX - 2); z = U.clamp(z, WB.minZ + 2, WB.maxZ - 2); }
+    return { x, z, blocked };
+  };
+  /**
+   * Raycast against colliders + terrain.  dir must be normalized.
+   * opts: {ignoreTags:Set|Array, includeWater:false}
+   * returns {dist, point:Vector3, normal:Vector3, collider|null, surface} or null
+   */
+  const _v = new THREE.Vector3();
+  W.raycast = function (origin, dir, maxDist, opts) {
+    opts = opts || {};
+    const ignore = opts.ignoreTags ? new Set(opts.ignoreTags) : null;
+    let best = maxDist, hit = null, hitN = null;
+    const step = CELL;
+    stamp++;
+    const myStamp = stamp;
+    const nSteps = Math.ceil(maxDist / step) + 1;
+    for (let s = 0; s <= nSteps; s++) {
+      const t0 = s * step; if (t0 > best + step) break;
+      const px = origin.x + dir.x * t0, pz = origin.z + dir.z * t0;
+      const px2 = origin.x + dir.x * Math.min(t0 + step, maxDist), pz2 = origin.z + dir.z * Math.min(t0 + step, maxDist);
+      for (let cx = Math.floor(Math.min(px, px2) / CELL) - 0; cx <= Math.floor(Math.max(px, px2) / CELL); cx++) {
+        for (let cz = Math.floor(Math.min(pz, pz2) / CELL); cz <= Math.floor(Math.max(pz, pz2) / CELL); cz++) {
+          const arr = W.grid.get(cellKey(cx, cz)); if (!arr) continue;
+          for (const c of arr) {
+            if (c._stamp === myStamp) continue; c._stamp = myStamp;
+            if (ignore && ignore.has(c.tag)) continue;
+            // slab test in collider local frame
+            const lo = toLocal(c, origin.x, origin.z);
+            const ldx = dir.x * c.cos - dir.z * c.sin, ldz = dir.x * c.sin + dir.z * c.cos;
+            let tmin = 0, tmax = best, nAxis = -1, nSign = 0;
+            const slabs = [[lo[0], ldx, -c.hx, c.hx, 0], [origin.y, dir.y, c.minY, c.maxY, 1], [lo[1], ldz, -c.hz, c.hz, 2]];
+            let ok = true;
+            for (const sl of slabs) {
+              const o = sl[0], d = sl[1];
+              if (Math.abs(d) < 1e-9) { if (o < sl[2] || o > sl[3]) { ok = false; break; } continue; }
+              let t1 = (sl[2] - o) / d, t2 = (sl[3] - o) / d, sg = -1;
+              if (t1 > t2) { const tt = t1; t1 = t2; t2 = tt; sg = 1; }
+              if (t1 > tmin) { tmin = t1; nAxis = sl[4]; nSign = sg; }
+              if (t2 < tmax) tmax = t2;
+              if (tmin > tmax) { ok = false; break; }
+            }
+            if (!ok || tmin >= best || nAxis < 0) continue;
+            best = tmin; hit = c;
+            if (nAxis === 1) hitN = [0, nSign, 0];
+            else { const wd = nAxis === 0 ? toWorldDir(c, nSign, 0) : toWorldDir(c, 0, nSign); hitN = [wd[0], 0, wd[1]]; }
+          }
+        }
+      }
+    }
+    // terrain / water
+    if (dir.y < -1e-4) {
+      const tStep = 1.0;
+      for (let t = 0; t < best; t += tStep) {
+        const x = origin.x + dir.x * t, y = origin.y + dir.y * t, z = origin.z + dir.z * t;
+        let gh = W.terrainHeight(x, z);
+        if (opts.includeWater && gh < W.waterLevel) gh = W.waterLevel;
+        if (y <= gh) { best = Math.max(0, t - tStep * 0.5); hit = null; hitN = [0, 1, 0]; break; }
+      }
+    }
+    if (!hitN) return null;
+    return {
+      dist: best, point: new THREE.Vector3(origin.x + dir.x * best, origin.y + dir.y * best, origin.z + dir.z * best),
+      normal: new THREE.Vector3(hitN[0], hitN[1], hitN[2]), collider: hit,
+      surface: hit ? hit.surface : (G.LAYOUT && G.LAYOUT.inPark(origin.x + dir.x * best, origin.z + dir.z * best) ? 'grass' : 'concrete'),
+    };
+  };
+  W.lineOfSight = function (a, b, opts) {
+    _v.subVectors(b, a); const d = _v.length(); if (d < 1e-3) return true;
+    _v.divideScalar(d);
+    const h = W.raycast(a, _v, d, opts);
+    return !h || h.dist >= d - 0.3;
+  };
+
+  // ---- Interactables ------------------------------------------------
+  /**
+   * Register something the player can activate with E.
+   * def: {pos:Vector3 | getPos():Vector3, radius=0.8, label:string|fn, verb:'Open'|'Talk'|'Take'|..., enabled?():bool,
+   *       onInteract(), object3d?, priority=0, range?}
+   */
+  // Broad phase: the ~1,100 interactables are culled to a short candidate list near the eye, rebuilt 4x/s
+  // (or when the eye moves > 2 m / the list changes). A generous pad covers items moving between rebuilds.
+  let _cand = [], _candDirty = true, _candT = 0;
+  const _candEye = new THREE.Vector3(1e9, 0, 0), CAND_PAD = 6;
+  W.addInteractable = function (def) { def.radius = def.radius || 0.8; def.id = def.id || U.randomId('int'); W.interactables.push(def); _candDirty = true; return def; };
+  W.removeInteractable = function (def) {
+    const i = W.interactables.indexOf(def); if (i >= 0) W.interactables.splice(i, 1);
+    const j = _cand.indexOf(def); if (j >= 0) _cand.splice(j, 1);
+    if (W.focus === def) { W.focus = null; G.events.emit('focus', null); }
+  };
+  function rebuildCandidates(eye) {
+    _cand = [];
+    for (const it of W.interactables) {
+      let p; try { p = it.getPos ? it.getPos() : it.pos; } catch (e) { p = null; }
+      if (!p) { if (it.getPos) _cand.push(it); continue; } // position unknown right now: keep testing it
+      const r = (it.range || W.interactRange) + (it.radius || 0.8) + CAND_PAD;
+      const dx = p.x - eye.x, dy = (p.y || 0) - eye.y, dz = p.z - eye.z;
+      if (dx * dx + dy * dy + dz * dz < r * r) _cand.push(it);
+    }
+    _candEye.copy(eye); _candDirty = false; _candT = 0.25;
+  }
+  const _fwd = new THREE.Vector3(), _to = new THREE.Vector3(), _eye = new THREE.Vector3();
+  function updateFocus() {
+    let best = null, bestScore = -1e9;
+    if (G.player && G.player.thirdPersonActive) { _eye.copy(G.player.eye); _fwd.copy(G.player.forward); } // camera is behind the player
+    else { G.camera.getWorldPosition(_eye); G.camera.getWorldDirection(_fwd); }
+    _candT -= G.realDt || 0.016;
+    if (_candDirty || _candT <= 0 || _eye.distanceToSquared(_candEye) > 4) rebuildCandidates(_eye);
+    for (const it of _cand) {
+      if (it.enabled && !it.enabled()) continue;
+      const p = it.getPos ? it.getPos() : it.pos; if (!p) continue;
+      _to.subVectors(p, _eye);
+      const dist = _to.length(); const range = (it.range || W.interactRange) + it.radius;
+      if (dist > range) continue;
+      _to.divideScalar(dist || 1);
+      const dot = _to.dot(_fwd);
+      const angTol = Math.atan2(it.radius, Math.max(dist, 0.1));
+      const ang = Math.acos(U.clamp(dot, -1, 1));
+      if (ang > angTol + 0.12) continue;
+      const score = -ang * 3 - dist * 0.1 + (it.priority || 0);
+      if (score > bestScore) { bestScore = score; best = it; }
+    }
+    if (best) { // occlusion check
+      const p = best.getPos ? best.getPos() : best.pos;
+      if (!W.lineOfSight(_eye, p, { ignoreTags: ['interactable_self', 'actor'] })) {
+        const d = _eye.distanceTo(p); if (d > 1.2) best = null;
+      }
+    }
+    if (best !== W.focus) { W.focus = best; G.events.emit('focus', best); }
+  }
+  W.getFocusLabel = function () {
+    const f = W.focus; if (!f) return null;
+    return { verb: typeof f.verb === 'function' ? f.verb() : (f.verb || 'Activate'), label: typeof f.label === 'function' ? f.label() : (f.label || ''), locked: f.locked ? (typeof f.locked === 'function' ? f.locked() : f.locked) : null };
+  };
+
+  // ---- Doors / teleports ---------------------------------------------
+  /**
+   * def: {pos:Vector3, label:'Vault 120', verb:'Enter', target:{x,y,z,yaw}, locked?:0-100 (lockpick skill) , keyId?, sound?:'door_open'|'vault_door', radius?, onEnter?()}
+   */
+  W.addDoor = function (def) {
+    const door = W.addInteractable({
+      pos: def.pos, radius: def.radius || 1.2, label: def.label, verb: def.verb || 'Enter', priority: 1,
+      locked: () => (door._locked ? 'Locked (' + door._locked + ')' : null),
+      onInteract() {
+        if (door._locked) {
+          if (def.keyId && G.inventory.count && G.inventory.count(def.keyId) > 0) { door._locked = 0; }
+          else if (G.lockpick && !G.isStub('lockpick') && G.lockpick.start) { G.lockpick.start(door._locked, () => { door._locked = 0; }); return; }
+          else { G.sfx.play('door_locked'); G.notify('This door is locked.'); return; }
+        }
+        G.sfx.play(def.sound || 'door_open');
+        G.fadeTransition(() => {
+          G.player.teleport(def.target.x, def.target.y || 0, def.target.z, def.target.yaw || 0);
+          if (def.onEnter) def.onEnter();
+          G.events.emit('doorTransition', def);
+        });
+      },
+    });
+    door._locked = def.locked || 0;
+    door.def = def;
+    W.doors.push(door);
+    return door;
+  };
+  /** Stable key for a door's lock state in saves (explicit def.id, else its rounded position). */
+  function doorKey(d) {
+    if (d.def && d.def.id) return String(d.def.id);
+    const p = d.pos || (d.def && d.def.pos); if (!p) return null;
+    return Math.round(p.x * 10) + ',' + Math.round((p.y || 0) * 10) + ',' + Math.round(p.z * 10);
+  }
+  /** Doors that were picked / keyed open this playthrough (lock > 0 by definition, now 0). */
+  W.unlockedDoorKeys = function () {
+    const out = [];
+    for (const d of W.doors) if (d.def && d.def.locked > 0 && !d._locked) { const k = doorKey(d); if (k) out.push(k); }
+    return out;
+  };
+  /** Restore every door to its defined lock, then re-open the given keys (save data). */
+  W.restoreDoorLocks = function (unlocked) {
+    const set = new Set(unlocked || []);
+    for (const d of W.doors) { if (!d.def) continue; d._locked = set.has(doorKey(d)) ? 0 : (d.def.locked || 0); }
+  };
+
+  // ---- Distance LOD / culling ---------------------------------------
+  /** Hide obj when camera farther than maxDist (checked 4×/s). */
+  W.addLOD = function (obj, maxDist, center) { const e = { obj, max2: maxDist * maxDist, c: center || null }; W.lods.push(e); return e; };
+  let lodTimer = 0;
+  const _lp = new THREE.Vector3();
+  function updateLODs(dt) {
+    lodTimer -= dt; if (lodTimer > 0) return; lodTimer = 0.25;
+    const cam = G.camera.position;
+    for (const e of W.lods) {
+      const p = e.c || e.obj.getWorldPosition(_lp);
+      const dx = p.x - cam.x, dz = p.z - cam.z;
+      e.obj.visible = dx * dx + dz * dz < e.max2;
+    }
+  }
+
+  // ---- Radiation sources ---------------------------------------------
+  /** {x,y,z, radius, strength (rads/sec at centre)} — player accumulates rads when inside. */
+  W.addRadSource = function (src) { W.radSources.push(src); return src; };
+  W.removeRadSource = function (src) { const i = W.radSources.indexOf(src); if (i >= 0) W.radSources.splice(i, 1); };
+  W.radiationAt = function (p) {
+    let r = 0;
+    for (const s of W.radSources) {
+      const d = Math.hypot(p.x - s.x, (p.y || 0) - (s.y || 0), p.z - s.z);
+      if (d < s.radius) r += s.strength * (1 - d / s.radius);
+    }
+    return r;
+  };
+
+})();

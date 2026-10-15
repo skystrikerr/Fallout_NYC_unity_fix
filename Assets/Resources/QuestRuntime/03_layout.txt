@@ -1,0 +1,826 @@
+/* src/core/layout.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — WORLD LAYOUT (single source of truth)
+ * Owned by: CORE. Every module reads positions from here so that the
+ * map, landmarks, props, spawns, quests and Pip-Boy map all agree.
+ *
+ * Units: 1 unit = 1 metre.  +X = east, -X = west, -Z = NORTH, +Z = SOUTH.
+ * Ground level on land is y = 0 (Central Park adds gentle hills via
+ * G.world.terrainHeight, see map module). Water surface y = -1.2.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = (window.G = window.G || {});
+
+  // ---------------------------------------------------------------
+  // Manhattan shoreline polygon (clockwise, x,z). Artistic, compressed.
+  // ---------------------------------------------------------------
+  const MANHATTAN = [
+    [-330, -1000], [330, -1000], [335, -700], [338, -400], [345, -150],
+    [335, 100], [310, 400], [285, 620], [255, 760], [190, 900], [110, 985],
+    [-10, 1010], [-120, 990], [-210, 900], [-270, 760], [-315, 560],
+    [-338, 300], [-345, 0], [-342, -400], [-335, -700],
+  ];
+  // Brooklyn waterfront (DUMBO / Navy Yard) across the East River
+  const BROOKLYN = [
+    [470, 380], [800, 380], [800, 980], [520, 980], [480, 900], [462, 760], [458, 600],
+  ];
+  // Liberty Island & Ellis Island (in the harbour, south-west)
+  const LIBERTY = { x: -420, z: 1250, r: 55 };
+  const ELLIS = { x: -520, z: 1090, r: 52 }; // enlarged to fit the Immigration Station site
+
+  // Roosevelt (Blackwell's) Island in the East River — land built by the poi_roosevelt module
+  const ROOSEVELT = [[378, -720], [434, -720], [434, -356], [378, -356]];
+  const WORLD = { minX: -760, maxX: 820, minZ: -1000, maxZ: 1420 };
+  const WATER_LEVEL = -1.2;
+
+  // ---------------------------------------------------------------
+  // Street grid. Avenues run N-S (constant x), streets run E-W (constant z).
+  // Corridor widths INCLUDE sidewalks.
+  // ---------------------------------------------------------------
+  const AVE_W = 20, AVE_ROAD = 12;   // 4 m sidewalk each side
+  const ST_W = 14, ST_ROAD = 8;      // 3 m sidewalk each side
+  const BROADWAY_W = 16, BROADWAY_ROAD = 10;
+  const AVENUE_DEFS = [
+    { x: -280, name: '10th Avenue' },
+    { x: -200, name: '9th Avenue' },
+    { x: -120, name: '8th Avenue' },          // Central Park West north of z=-420
+    { x: -40, name: '7th Avenue' },
+    { x: 40, name: '6th Avenue' },
+    { x: 120, name: '5th Avenue' },
+    { x: 200, name: 'Park Avenue' },
+    { x: 280, name: 'Lexington Avenue' },
+  ];
+  const STREET_Z0 = -410, STREET_STEP = 45, STREET_COUNT = 31; // z = -410 .. 940
+  // Artistic street numbering (compressed: one layout street every ~2–4 real blocks), anchored on the
+  // landmarks: 59th = Central Park South, 47th = Duffy Square (north end of the Times Square bow-tie),
+  // 42nd, 34th (Herald Sq / Empire State), 23rd (Flatiron / Madison Sq), 14th (Union Sq), Houston,
+  // Canal, Chambers (City Hall), Wall Street. Monotonic north → south (round 1 fix: the old table
+  // had duplicates and numbers running backwards south of 42nd).
+  const STREET_NAMES = {};
+  (function nameStreets() {
+    const table = ['59th', '57th', '51st', '47th', '42nd', '40th', '37th', '34th', '32nd', '28th', '26th', '23rd',
+      '20th', '17th', '16th', '15th', '14th', '11th', '8th', 'Houston', 'Grand', 'Canal', 'Worth', 'Chambers',
+      'Fulton', 'John', 'Liberty', 'Wall', 'Beaver', 'Bridge', 'State'];
+    for (let i = 0; i < STREET_COUNT; i++) STREET_NAMES[STREET_Z0 + i * STREET_STEP] = (table[i] || ('Street ' + i)) + ' Street';
+  })();
+  // Broadway: the only non-grid road (polyline, corridor BROADWAY_W incl. sidewalks).
+  // Round 1 layout pass (city_layout, revised twice after critique):
+  //  * starts at the centre of the COLUMBUS CIRCLE roundabout (8th Ave × 59th St, see CIRCLES) and leaves it on a
+  //    DIAGONAL (≈31° off the avenues, SSE — as in NYC) straight to the Times Square bow-tie; Carnegie Hall keeps the
+  //    7th Ave / 57th St corner EAST of it (its footprint is now a wedge whose west face is Broadway's kerb);
+  //  * crosses 7th Ave in the Times Square bow-tie (the line through the Times Square site is unchanged —
+  //    the Times Square lots are clipped to it; see BOWTIES), rides the 6th Ave slot through Herald /
+  //    Greeley Square (34th → 32nd St, between Macy's and the Empire State), runs SSE to 26th St, bends and crosses
+  //    5th Ave INSIDE the 23rd St junction (centre-line crossing z≈72, the Flatiron prow on 23rd's south kerb):
+  //    Worth Square is the small triangle north of the crossing (Broadway W, 5th E), Madison Square Park fills the
+  //    NE quadrant (west edge 5th Ave, south edge 23rd St), then Broadway runs SE along the Flatiron's east face;
+  //  * takes over the Park Avenue slot (x=200) from 17th St past Union Square (east of Broadway, as in NYC),
+  //    Astor Place and Cooper Square; swings SW below Houston through SoHo (Washington Square stays WEST,
+  //    Chinatown / Old St. Patrick's EAST) and takes over the 6th Avenue slot (x=40) from Canal St down to
+  //    Bowling Green — so City Hall, the Tombs, the Federal Reserve are EAST of Broadway and the Woolworth,
+  //    St. Paul's, Singer, Trinity WEST of it, as in NYC.
+  const BROADWAY = [
+    [-121.5, -408.5], // Columbus Circle (roundabout centre) → diagonal SSE out of the ring
+    [-62.5, -312],    // north edge of the Times Square site
+    [-40, -262],      // Times Square: the bow-tie crossing of 7th Avenue
+    [-18.95, -212],   // south edge of the Times Square site (same line as before through the site)
+    [40, -104],       // Herald Square: joins the 6th Ave slot at 35th St
+    [40, -45],        // Greeley Square: leaves the 6th Ave slot at 32nd St
+    [80, 45],         // 26th St: bends ESE (Worth Square in the V north of the 5th Ave crossing)
+    [139.3, 85],      // 23rd St junction: crosses 5th Ave (centre lines at z≈72), Flatiron prow on the south kerb
+    [200, 171.6],     // along the Flatiron's east face → joins the Park Avenue slot at 17th St
+    [200, 442.5],     // Union Square West · Astor Place · Cooper Square → Houston St
+    [40, 535],        // SoHo diagonal → joins the 6th Ave slot at Canal St
+    [40, 897],        // Bowling Green (Battery Park)
+  ];
+  // Roundabouts. rIsland = raised centre island (monument), rOuter = outer edge of the ring carriageway.
+  const CIRCLES = [
+    { id: 'columbus_circle', name: 'Columbus Circle', x: -121.5, z: -408.5, rIsland: 7, rOuter: 16 },
+  ];
+  // Avenue slots that Broadway takes over / renamed stretches (applied after the avenue sweep below).
+  // An avenue segment is clipped to [z0,z1] windows; each window gets its own name. Consecutive windows
+  // must share their boundary (no gap), or the ground model would put a kerb strip across the avenue.
+  // (Where Broadway only rides an avenue for one block — 6th Ave 35th→32nd — the avenue stays and Broadway runs
+  // inside its corridor.)
+  const AVENUE_OVERRIDES = [
+    { x: 200, keep: [{ z1: 172, name: 'Park Avenue' }, { z0: 443, z1: 586, name: 'Bowery' }, { z0: 587, name: 'Pearl Street' }] },
+    { x: 120, keep: [{ z1: 406, name: '5th Avenue' }, { z0: 459, z1: 490, name: 'LaGuardia Place' }, { z0: 490, z1: 664, name: 'Centre Street' }, { z0: 664, name: 'Nassau Street' }] },
+    { x: 40, keep: [{ z1: 535, name: '6th Avenue' }] },
+  ];
+  // Street spans removed after the sweep (x0..x1 at street z): stubs swallowed by a wedge landmark.
+  const STREET_CUTS = [
+    { z: 130, x0: 128, x1: 166, why: 'Flatiron wedge (20th St would run through the building up to Broadway)' },
+  ];
+  // Bow-ties: where Broadway crosses an avenue inside a landmark plaza. The carriageways (LAYOUT.isRoad(x,z,true))
+  // stay open road; the pedestrian islands between them are computed below (L.BOWTIES[i].islands, L.bowtieAt).
+  const BOWTIES = [
+    { id: 'times_square', site: 'times_square', name: 'Times Square', avenueX: -40, crossing: { x: -40, z: -262 }, northZ: -312, southZ: -212,
+      streets: [-275, -230], note: 'Duffy Square (north island, 51st→47th) and the 42nd St island (south); The Neon lives on the islands and building-front sidewalks, the carriageways stay clear' },
+  ];
+
+  // Central Park (no grid inside; map module makes paths, lake, reservoir)
+  const PARK = { x0: -110, x1: 110, z0: -1000, z1: -420 };
+  const PARK_FEATURES = {
+    lake: { x0: -80, x1: 40, z0: -645, z1: -585 },          // "The Lake" (water at y=-0.6, shallow)
+    reservoir: { x0: -80, x1: 90, z0: -900, z1: -780 },     // water, fenced
+    sheepMeadow: { x0: -90, x1: -10, z0: -540, z1: -460 },
+    bethesda: { x: 0, z: -560 },                            // terrace + Angel of the Waters fountain (landmarks_b)
+    bowBridge: { x: -20, z: -615, yaw: 0 },                 // spans the lake N-S (landmarks_b)
+    belvedere: { x: -20, z: -700 },                         // Belvedere Castle on rock (landmarks_b)
+    vaultEntrance: { x: -65, z: -725 },                     // Vault 120 door in a rock outcrop (map)
+    northWoods: { x0: -100, x1: 100, z0: -1000, z1: -920 }, // deathclaw territory
+  };
+
+  // ---------------------------------------------------------------
+  // LANDMARK SITES. Generic buildings must NOT be placed inside these
+  // footprints. Owner = module responsible for building the landmark.
+  // closesStreets: streets/avenues inside the footprint are not generated.
+  // Heights are artistic (≈0.45–0.5× real).
+  // ---------------------------------------------------------------
+  const SITES = [
+    // ---- landmarks_a (Midtown) ----
+    { id: 'empire_state', name: 'Empire State Building', owner: 'landmarks_a', x0: 50, x1: 110, z0: -93, z1: -52, height: 205 },
+    { id: 'grand_central', name: 'Grand Central Terminal', owner: 'landmarks_a', x0: 210, x1: 270, z0: -271, z1: -189, closesStreets: true, height: 38, interiorWalkIn: true },
+    { id: 'chrysler', name: 'Chrysler Building', owner: 'landmarks_a', x0: 292, x1: 326, z0: -224, z1: -191, height: 160 },
+    { id: 'un_hq', name: 'United Nations Headquarters', owner: 'landmarks_a', x0: 292, x1: 334, z0: -361, z1: -279, closesStreets: true, height: 80 },
+    { id: 'nypl', name: 'New York Public Library', owner: 'landmarks_a', x0: 50, x1: 110, z0: -179, z1: -146, height: 24 },
+    { id: 'bryant_park', name: 'Bryant Park', owner: 'landmarks_a', x0: 50, x1: 110, z0: -224, z1: -191, height: 0 },
+    { id: 'rockefeller', name: 'Rockefeller Center', owner: 'landmarks_a', x0: 50, x1: 110, z0: -359, z1: -281, closesStreets: true, height: 130 },
+    { id: 'st_patricks', name: "St. Patrick's Cathedral", owner: 'landmarks_a', x0: 130, x1: 190, z0: -359, z1: -326, height: 48 },
+    { id: 'radio_city', name: 'Radio City Music Hall', owner: 'landmarks_a', x0: -30, x1: 30, z0: -359, z1: -326, height: 30 },
+    { id: 'times_square', name: 'Times Square', owner: 'landmarks_a', x0: -95, x1: 15, z0: -312, z1: -212, closesStreets: false, height: 60, plaza: true },
+    { id: 'macys', name: "Macy's Herald Square", owner: 'landmarks_a', x0: -30, x1: 30, z0: -93, z1: -52, height: 45 },
+    // ---- landmarks_b (Downtown, Park, Harbour) ----
+    { id: 'flatiron', name: 'Flatiron Building', owner: 'landmarks_b', x0: 130, x1: 175, z0: 92, z1: 150, height: 60, shape: 'triangle',
+      // exact wedge (= the landmarks_b build): 5th Ave kerb west, Broadway's west kerb along the diagonal face, prow at 23rd St
+      poly: [[133.4, 93.0], [135.2, 93.7], [174, 149], [131, 149], [131, 95.3], [131.9, 93.8]] },
+    { id: 'washington_square', name: 'Washington Square Park', owner: 'landmarks_b', x0: 86, x1: 154, z0: 407, z1: 458, closesStreets: true, height: 0, arch: { x: 120, z: 411, faces: 'north' } },
+    { id: 'woolworth', name: 'Woolworth Building', owner: 'landmarks_b', x0: -30, x1: 30, z0: 587, z1: 618, height: 110 },
+    { id: 'city_hall', name: 'City Hall', owner: 'landmarks_b', x0: 50, x1: 110, z0: 587, z1: 663, closesStreets: true, height: 25 },
+    { id: 'nyse', name: 'New York Stock Exchange', owner: 'landmarks_b', x0: -30, x1: 30, z0: 812, z1: 843, height: 32 },
+    { id: 'battery_park', name: 'Battery Park', owner: 'landmarks_b', x0: -200, x1: 140, z0: 905, z1: 1010, closesStreets: true, height: 0 },
+    { id: 'brooklyn_bridge', name: 'Brooklyn Bridge', owner: 'landmarks_b', x0: 140, x1: 600, z0: 628, z1: 652, deckY: 24, height: 85 },
+    { id: 'statue_of_liberty', name: 'Statue of Liberty', owner: 'landmarks_b', x0: -475, x1: -365, z0: 1195, z1: 1305, height: 93 },
+    { id: 'met', name: 'Metropolitan Museum of Art', owner: 'landmarks_b', x0: 55, x1: 110, z0: -705, z1: -605, height: 28 },
+    { id: 'guggenheim', name: 'Guggenheim Museum', owner: 'landmarks_b', x0: 130, x1: 190, z0: -775, z1: -735, height: 30 },
+    { id: 'bethesda', name: 'Bethesda Terrace', owner: 'landmarks_b', x0: -25, x1: 25, z0: -580, z1: -540, height: 0 },
+    { id: 'belvedere', name: 'Belvedere Castle', owner: 'landmarks_b', x0: -40, x1: 0, z0: -718, z1: -684, height: 22 },
+    { id: 'bow_bridge', name: 'Bow Bridge', owner: 'landmarks_b', x0: -28, x1: -12, z0: -650, z1: -580, height: 3 },
+    // ---- map (vault entrance) ----
+    { id: 'vault120_entrance', name: 'Vault 120', owner: 'map', x0: -80, x1: -50, z0: -740, z1: -712, height: 8 },
+    // ---- map (round 1): Union Square, east of Broadway between 17th and 15th St (closes 16th St) ----
+    { id: 'union_square', name: 'Union Square', owner: 'map', x0: 210, x1: 270, z0: 182, z1: 258, closesStreets: true, height: 0, plaza: true },
+
+    // ---- NEW POIs (each with a detailed interior cell, see INTERIORS) ----
+    // poi_uptown
+    { id: 'amnh', name: 'American Museum of Natural History', owner: 'poi_uptown', x0: -188, x1: -132, z0: -780, z1: -690, height: 32, interior: 'amnh' },
+    { id: 'dakota', name: 'The Dakota', owner: 'poi_uptown', x0: -188, x1: -132, z0: -640, z1: -592, height: 38, interior: 'dakota' },
+    { id: 'plaza_hotel', name: 'The Plaza Hotel', owner: 'poi_uptown', x0: 50, x1: 110, z0: -403, z1: -372, height: 70, interior: 'plaza_hotel' },
+    { id: 'carnegie_hall', name: 'Carnegie Hall', owner: 'poi_uptown', x0: -104.5, x1: -50, z0: -403, z1: -372, height: 30, interior: 'carnegie_hall',
+      // wedge: 59th St north, 7th Ave east, 57th St south (main front), the diagonal west face = Broadway's east kerb
+      // (clear of the Columbus Circle ring walk). Entrance arcade on 57th St stays at x≈-80.
+      poly: [[-102, -403], [-50, -403], [-50, -372], [-89.5, -372], [-104.5, -396.5]] },
+    { id: 'tiffany', name: 'Tiffany & Co.', owner: 'poi_uptown', x0: 130, x1: 190, z0: -403, z1: -372, height: 34, interior: 'tiffany' },
+    // poi_midtown
+    { id: 'waldorf', name: 'Waldorf-Astoria', owner: 'poi_midtown', x0: 210, x1: 270, z0: -359, z1: -326, height: 110, interior: 'waldorf' },
+    { id: 'msg', name: 'Madison Square Garden', owner: 'poi_midtown', x0: -190, x1: -130, z0: -314, z1: -281, height: 26, interior: 'msg' },
+    { id: 'penn_station', name: 'Pennsylvania Station', owner: 'poi_midtown', x0: -110, x1: -50, z0: -134, z1: -56, closesStreets: true, height: 28, interior: 'penn_station' },
+    { id: 'metlife_tower', name: 'Metropolitan Life Tower', owner: 'poi_midtown', x0: 210, x1: 270, z0: 47, z1: 78, height: 110, interior: 'metlife_tower' },
+    { id: 'bellevue', name: 'Bellevue Hospital', owner: 'poi_midtown', x0: 292, x1: 330, z0: 47, z1: 78, height: 40, interior: 'bellevue' },
+    // poi_village
+    { id: 'chelsea_hotel', name: 'Hotel Chelsea', owner: 'poi_village', x0: -110, x1: -50, z0: 47, z1: 78, height: 42, interior: 'chelsea_hotel' },
+    { id: 'village_vanguard', name: 'Village Vanguard', owner: 'poi_village', x0: -110, x1: -50, z0: 317, z1: 348, height: 14, interior: 'village_vanguard' },
+    { id: 'katz_deli', name: "Katz's Delicatessen", owner: 'poi_village', x0: 210, x1: 270, z0: 406, z1: 438, height: 12, interior: 'katz_deli' },
+    { id: 'chinatown', name: 'Chinatown', owner: 'poi_village', x0: 130, x1: 190, z0: 496, z1: 529, height: 18, interior: 'chinatown' },
+    { id: 'tombs', name: 'The Tombs', owner: 'poi_village', x0: 50, x1: 110, z0: 541, z1: 574, height: 45, interior: 'tombs' },
+    // poi_financial
+    { id: 'trinity_church', name: 'Trinity Church', owner: 'poi_financial', x0: -110, x1: -50, z0: 766, z1: 799, height: 60, interior: 'trinity_church' },
+    { id: 'federal_reserve', name: 'Federal Reserve Bank of New York', owner: 'poi_financial', x0: 50, x1: 110, z0: 766, z1: 799, height: 50, interior: 'federal_reserve' },
+    { id: 'fraunces_tavern', name: 'Fraunces Tavern', owner: 'poi_financial', x0: 50, x1: 110, z0: 856, z1: 889, height: 14, interior: 'fraunces_tavern' },
+    { id: 'seaport', name: 'South Street Seaport', owner: 'poi_financial', x0: 170, x1: 250, z0: 677, z1: 753, closesStreets: true, height: 40, interior: 'seaport' },
+    // poi_harbor
+    { id: 'ellis_island', name: 'Ellis Island Immigration Station', owner: 'poi_harbor', x0: -552, x1: -488, z0: 1058, z1: 1122, height: 40, interior: 'ellis_island' },
+    { id: 'domino_sugar', name: 'Sugar Bombs Refinery', owner: 'poi_harbor', x0: 600, x1: 690, z0: 420, z1: 500, height: 45, interior: 'domino_sugar' },
+    { id: 'navy_yard', name: 'Brooklyn Navy Yard Drydock', owner: 'poi_harbor', x0: 560, x1: 720, z0: 700, z1: 860, height: 40, interior: 'uss_hudson' },
+    // ---- POI wave 2 (36 more famous places; 12 modules) ----
+    { id: 'roosevelt_octagon', name: "The Octagon (Blackwell's Island Asylum)", owner: 'poi_roosevelt', x0: 384, x1: 428, z0: -700, z1: -640, height: 40, interior: 'roosevelt_octagon' },
+    { id: 'smallpox_hospital', name: "Renwick Smallpox Hospital", owner: 'poi_roosevelt', x0: 384, x1: 428, z0: -400, z1: -366, height: 22, interior: 'smallpox_hospital' },
+    { id: 'queensboro_bridge', name: "Queensboro Bridge & Bridgemarket", owner: 'poi_bridges', x0: 300, x1: 820, z0: -446, z1: -424, height: 70, interior: 'queensboro_bridge', deckY: 22 },
+    { id: 'manhattan_bridge', name: "Manhattan Bridge", owner: 'poi_bridges', x0: 196, x1: 560, z0: 560, z1: 586, height: 90, interior: 'manhattan_bridge', deckY: 20, closesStreets: true },
+    { id: 'frick', name: "The Frick Collection", owner: 'poi_ues', x0: 130, x1: 190, z0: -560, z1: -500, height: 20, interior: 'frick' },
+    { id: 'cooper_hewitt', name: "Carnegie Mansion (Cooper Hewitt)", owner: 'poi_ues', x0: 130, x1: 190, z0: -870, z1: -830, height: 22, interior: 'cooper_hewitt' },
+    { id: 'gracie_mansion', name: "Gracie Mansion", owner: 'poi_ues', x0: 292, x1: 332, z0: -800, z1: -760, height: 14, interior: 'gracie_mansion' },
+    { id: 'park_ave_armory', name: "Park Avenue Armory", owner: 'poi_ues', x0: 210, x1: 270, z0: -600, z1: -540, height: 30, interior: 'park_ave_armory' },
+    { id: 'ansonia', name: "The Ansonia", owner: 'poi_uws', x0: -188, x1: -132, z0: -540, z1: -490, height: 55, interior: 'ansonia' },
+    { id: 'san_remo', name: "The San Remo", owner: 'poi_uws', x0: -188, x1: -132, z0: -900, z1: -850, height: 85, interior: 'san_remo' },
+    { id: 'bloomingdales', name: "Bloomingdale's", owner: 'poi_uws', x0: 210, x1: 270, z0: -455, z1: -417, height: 40, interior: 'bloomingdales' },
+    { id: 'ed_sullivan', name: "Ed Sullivan Theater", owner: 'poi_theater', x0: -190, x1: -130, z0: -359, z1: -326, height: 30, interior: 'ed_sullivan' },
+    { id: 'lyceum_theatre', name: "Lyceum Theatre", owner: 'poi_theater', x0: -190, x1: -130, z0: -269, z1: -236, height: 25, interior: 'lyceum_theatre' },
+    { id: 'port_authority', name: "Port Authority Bus Terminal", owner: 'poi_theater', x0: -190, x1: -130, z0: -224, z1: -191, height: 24, interior: 'port_authority' },
+    { id: 'moma', name: "Museum of Modern Art", owner: 'poi_midtown2', x0: 130, x1: 190, z0: -314, z1: -281, height: 30, interior: 'moma' },
+    { id: 'algonquin', name: "The Algonquin Hotel", owner: 'poi_midtown2', x0: -110, x1: -50, z0: -179, z1: -146, height: 45, interior: 'algonquin' },
+    { id: 'morgan_library', name: "The Morgan Library", owner: 'poi_midtown2', x0: 130, x1: 190, z0: -133, z1: -102, height: 18, interior: 'morgan_library' },
+    { id: 'daily_news', name: "Daily News Building", owner: 'poi_eastside', x0: 292, x1: 330, z0: -268, z1: -237, height: 110, interior: 'daily_news' },
+    { id: 'tudor_city', name: "Tudor City", owner: 'poi_eastside', x0: 292, x1: 330, z0: -179, z1: -146, height: 70, interior: 'tudor_city' },
+    { id: 'new_york_life', name: "New York Life Building", owner: 'poi_eastside', x0: 210, x1: 270, z0: 2, z1: 33, height: 120, interior: 'new_york_life' },
+    { id: 'hotel_new_yorker', name: "Hotel New Yorker", owner: 'poi_herald', x0: -190, x1: -130, z0: -89, z1: -56, height: 130, interior: 'hotel_new_yorker' },
+    { id: 'automat', name: "Horn & Hardart Automat", owner: 'poi_herald', x0: -30, x1: 30, z0: 2, z1: 33, height: 14, interior: 'automat' },
+    { id: 'empire_diner', name: "Empire Diner", owner: 'poi_herald', x0: -262, x1: -218, z0: 47, z1: 78, height: 8, interior: 'empire_diner' },
+    { id: 'high_line', name: "The High Line", owner: 'poi_chelsea', x0: -314, x1: -296, z0: -40, z1: 290, height: 12, interior: 'high_line' },
+    { id: 'nabisco_factory', name: "National Biscuit Company Factory", owner: 'poi_chelsea', x0: -262, x1: -218, z0: 227, z1: 258, height: 30, interior: 'nabisco_factory' },
+    { id: 'webster_hall', name: "Webster Hall", owner: 'poi_chelsea', x0: 130, x1: 190, z0: 272, z1: 303, height: 20, interior: 'webster_hall' },
+    { id: 'cooper_union', name: "Cooper Union Foundation Building", owner: 'poi_eastvillage', x0: 210, x1: 270, z0: 317, z1: 348, height: 25, interior: 'cooper_union' },
+    { id: 'mcsorleys', name: "McSorley's Old Ale House", owner: 'poi_eastvillage', x0: 210, x1: 270, z0: 362, z1: 393, height: 10, interior: 'mcsorleys' },
+    { id: 'tammany_hall', name: "Tammany Hall", owner: 'poi_eastvillage', x0: 210, x1: 270, z0: 272, z1: 303, height: 24, interior: 'tammany_hall' },
+    { id: 'police_hq', name: "Police Headquarters", owner: 'poi_civic', x0: 130, x1: 190, z0: 541, z1: 574, height: 40, interior: 'police_hq' },
+    { id: 'municipal_building', name: "Manhattan Municipal Building", owner: 'poi_civic', x0: 130, x1: 190, z0: 587, z1: 620, height: 100, interior: 'municipal_building' },
+    { id: 'old_st_patricks', name: "Old St. Patrick's Cathedral", owner: 'poi_civic', x0: 210, x1: 270, z0: 452, z1: 483, height: 30, interior: 'old_st_patricks' }, // round 1: NoLita, east of Broadway (unbuilt → no refit needed)
+    { id: 'st_pauls_chapel', name: "St. Paul's Chapel", owner: 'poi_wallst', x0: -110, x1: -50, z0: 631, z1: 664, height: 40, interior: 'st_pauls_chapel' },
+    { id: 'singer_building', name: "Singer Building", owner: 'poi_wallst', x0: -110, x1: -50, z0: 721, z1: 754, height: 150, interior: 'singer_building' },
+    { id: 'forty_wall', name: "40 Wall Street (Bank of Manhattan)", owner: 'poi_wallst', x0: -110, x1: -50, z0: 811, z1: 844, height: 140, interior: 'forty_wall' },
+    { id: 'custom_house', name: "Alexander Hamilton Custom House", owner: 'poi_wallst', x0: -110, x1: -50, z0: 856, z1: 889, height: 25, interior: 'custom_house' },
+    // ---- POI wave 3 (approved 2026-09-26; 15 places, 6 modules) ----
+    { id: 'club_21', name: "21 Club", owner: 'poi_midtown3', x0: 51, x1: 77, z0: -267, z1: -245, height: 14, interior: 'club_21' },
+    { id: 'helmsley', name: "Helmsley Building", owner: 'poi_midtown3', x0: 212, x1: 268, z0: -312, z1: -284, height: 110, interior: 'helmsley' },
+    { id: 'farley_post_office', name: "James A. Farley Post Office", owner: 'poi_penn', x0: -180, x1: -140, z0: -132, z1: -106, height: 30, interior: 'farley_post_office' },
+    { id: 'hotel_pennsylvania', name: "Hotel Pennsylvania", owner: 'poi_penn', x0: 51, x1: 81, z0: -132, z1: -106, height: 70, interior: 'hotel_pennsylvania' },
+    { id: 'jefferson_market', name: "Jefferson Market Courthouse", owner: 'poi_village3', x0: -5, x1: 29, z0: 364, z1: 392, height: 45, interior: 'jefferson_market' },
+    { id: 'chumleys', name: "Chumley's", owner: 'poi_village3', x0: -69, x1: -51, z0: 376, z1: 392, height: 10, interior: 'chumleys' },
+    { id: 'con_ed_tower', name: "Con Edison Tower of Light", owner: 'poi_village3', x0: 160, x1: 190, z0: 231, z1: 257, height: 90, interior: 'con_ed_tower' },
+    { id: 'federal_hall', name: "Federal Hall", owner: 'poi_fidi3', x0: 65, x1: 95, z0: 818, z1: 842, height: 24, interior: 'federal_hall' },
+    { id: 'bankers_trust', name: "Bankers Trust Building", owner: 'poi_fidi3', x0: 147, x1: 173, z0: 818, z1: 842, height: 120, interior: 'bankers_trust' },
+    { id: 'delmonicos', name: "Delmonico's", owner: 'poi_fidi3', x0: 136, x1: 164, z0: 858, z1: 882, height: 16, interior: 'delmonicos' },
+    { id: 'whitehall_terminal', name: "Whitehall Ferry Terminal", owner: 'poi_harbor2', x0: 144, x1: 188, z0: 943, z1: 977, height: 22, interior: 'whitehall_terminal', waterfront: true },
+    { id: 'pier_a', name: "Pier A", owner: 'poi_harbor2', x0: -253, x1: -213, z0: 887, z1: 903, height: 20, interior: 'pier_a', waterfront: true },
+    { id: 'empire_stores', name: "Empire Stores", owner: 'poi_harbor2', x0: 472, x1: 528, z0: 591, z1: 619, height: 20, interior: 'empire_stores' },
+    { id: 'cp_zoo_arsenal', name: "Central Park Zoo & Arsenal", owner: 'poi_park', x0: 53, x1: 109, z0: -495, z1: -435, height: 18, interior: 'cp_zoo_arsenal' },
+    { id: 'tavern_on_green', name: "Tavern on the Green", owner: 'poi_park', x0: -108, x1: -82, z0: -575, z1: -545, height: 10, interior: 'tavern_on_green' },
+  ];
+
+  // ---------------------------------------------------------------
+  // LOCATIONS: discoverable map markers, fast-travel points, spawn zones.
+  // faction: who lives there. hostile: whether its faction attacks on sight.
+  // level: suggested enemy level. Combat module populates hostile ones.
+  // ---------------------------------------------------------------
+  const LOCATIONS = [
+    { id: 'vault120', name: 'Vault 120', x: -65, z: -705, r: 25, type: 'vault', faction: 'vault', hostile: false, level: 1 },
+    { id: 'belvedere', name: 'Belvedere Castle', x: -20, z: -700, r: 30, type: 'landmark', faction: 'creatures', hostile: true, level: 1, spawns: ['radroach', 'molerat'] },
+    { id: 'bethesda', name: 'Bethesda Terrace', x: 0, z: -560, r: 35, type: 'landmark', faction: 'creatures', hostile: true, level: 2, spawns: ['molerat', 'bloatfly'] },
+    { id: 'north_woods', name: 'The North Woods', x: 0, z: -955, r: 50, type: 'hostile', faction: 'creatures', hostile: true, level: 12, spawns: ['deathclaw'] },
+    { id: 'reservoir', name: 'Central Park Reservoir', x: 5, z: -840, r: 70, type: 'hostile', faction: 'creatures', hostile: true, level: 5, spawns: ['mirelurk'] },
+    { id: 'met', name: 'Metropolitan Museum of Art', x: 82, z: -655, r: 45, type: 'dungeon', faction: 'robots', hostile: true, level: 5, spawns: ['protectron', 'protectron'] },
+    { id: 'guggenheim', name: 'Guggenheim Museum', x: 160, z: -755, r: 30, type: 'dungeon', faction: 'robots', hostile: true, level: 7, spawns: ['mister_handy', 'protectron'] },
+    { id: 'rockefeller', name: 'Rockefeller Center — Brotherhood Outpost', x: 80, z: -320, r: 40, type: 'settlement', faction: 'brotherhood', hostile: false, level: 8 },
+    { id: 'st_patricks', name: "St. Patrick's Cathedral", x: 160, z: -342, r: 28, type: 'settlement', faction: 'children_of_atom', hostile: false, level: 4 },
+    { id: 'radio_city', name: 'Radio City — Radio Free Manhattan', x: 0, z: -342, r: 28, type: 'settlement', faction: 'settlers', hostile: false, level: 1 },
+    { id: 'times_square', name: 'The Neon (Times Square)', x: -40, z: -262, r: 55, type: 'settlement', faction: 'ghouls', hostile: false, level: 3 },
+    { id: 'grand_central', name: 'Grand Central Market', x: 240, z: -230, r: 45, type: 'settlement', faction: 'settlers', hostile: false, level: 1 },
+    { id: 'chrysler', name: 'Chrysler Building', x: 309, z: -208, r: 25, type: 'hostile', faction: 'raiders', hostile: true, level: 6, spawns: ['raider', 'raider', 'raider'] },
+    { id: 'un_hq', name: 'United Nations Plaza', x: 313, z: -320, r: 45, type: 'hostile', faction: 'enclave', hostile: true, level: 14, spawns: ['enclave_soldier', 'eyebot'] },
+    { id: 'nypl', name: 'New York Public Library', x: 80, z: -162, r: 35, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 4, spawns: ['feral_ghoul', 'feral_ghoul', 'feral_ghoul'] },
+    { id: 'bryant_park', name: 'Bryant Park', x: 80, z: -207, r: 30, type: 'landmark', faction: 'creatures', hostile: true, level: 2, spawns: ['molerat', 'radroach'] },
+    { id: 'empire_state', name: 'Empire State Building', x: 80, z: -72, r: 45, type: 'hostile', faction: 'super_mutants', hostile: true, level: 10, spawns: ['super_mutant', 'super_mutant', 'super_mutant', 'super_mutant_behemoth'] },
+    { id: 'macys', name: "Macy's Herald Square", x: 0, z: -72, r: 38, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 5, spawns: ['feral_ghoul', 'feral_ghoul', 'glowing_one'] },
+    { id: 'flatiron', name: 'Flatiron Trading Post', x: 150, z: 118, r: 30, type: 'settlement', faction: 'settlers', hostile: false, level: 2 },
+    { id: 'washington_square', name: 'Washington Square', x: 120, z: 432, r: 40, type: 'landmark', faction: 'creatures', hostile: true, level: 3, spawns: ['molerat', 'bloatfly', 'dog'] },
+    { id: 'woolworth', name: 'Woolworth Building', x: 0, z: 603, r: 28, type: 'hostile', faction: 'raiders', hostile: true, level: 5, spawns: ['raider', 'raider'] },
+    { id: 'city_hall', name: 'City Hall', x: 80, z: 625, r: 40, type: 'dungeon', faction: 'robots', hostile: true, level: 6, spawns: ['protectron', 'protectron', 'mister_handy'] },
+    { id: 'brooklyn_bridge', name: 'Brooklyn Bridge', x: 380, z: 640, r: 60, type: 'hostile', faction: 'raiders', hostile: true, level: 7, spawns: ['raider', 'raider', 'raider'] },
+    { id: 'wall_street', name: 'The Exchange (Wall Street)', x: 0, z: 828, r: 45, type: 'hostile', faction: 'raiders', hostile: true, level: 8, spawns: ['raider', 'raider', 'raider', 'raider'] },
+    { id: 'battery_park', name: 'Battery Park', x: -40, z: 950, r: 70, type: 'hostile', faction: 'creatures', hostile: true, level: 6, spawns: ['mirelurk', 'mirelurk'] },
+    { id: 'dumbo', name: 'Brooklyn Navy Yard', x: 600, z: 700, r: 90, type: 'hostile', faction: 'creatures', hostile: true, level: 11, spawns: ['mirelurk', 'mirelurk', 'mirelurk_queen'] },
+    { id: 'liberty', name: 'Liberty Island', x: -420, z: 1250, r: 60, type: 'hostile', faction: 'enclave', hostile: true, level: 16, spawns: ['enclave_soldier', 'enclave_soldier', 'eyebot'] },
+    { id: 'subway', name: '42nd Street Subway Tunnels', x: -60, z: -228, r: 8, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 3, interior: 'subway', spawns: ['feral_ghoul', 'feral_ghoul', 'radroach'] },
+
+    // ---- NEW POIs. `interior` = hostiles spawn inside that cell (combat). `sub:true` = no separate map marker. ----
+    { id: 'amnh', name: 'American Museum of Natural History', x: -160, z: -684, r: 30, type: 'dungeon', faction: 'creatures', hostile: true, level: 9, interior: 'amnh', spawns: ['molerat', 'molerat', 'radroach', 'deathclaw'] },
+    { id: 'dakota', name: 'The Dakota', x: -160, z: -586, r: 22, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 7, interior: 'dakota', spawns: ['feral_ghoul', 'feral_ghoul', 'feral_ghoul', 'glowing_one'] },
+    { id: 'plaza_hotel', name: 'The Plaza Hotel', x: 80, z: -410, r: 25, type: 'settlement', faction: 'settlers', hostile: false, level: 4 },
+    { id: 'carnegie_hall', name: 'Carnegie Hall', x: -80, z: -366, r: 25, type: 'settlement', faction: 'settlers', hostile: false, level: 2 },
+    { id: 'tiffany', name: 'Tiffany & Co.', x: 160, z: -366, r: 22, type: 'dungeon', faction: 'raiders', hostile: true, level: 6, interior: 'tiffany', spawns: ['raider', 'raider', 'raider'] },
+    { id: 'waldorf', name: 'Waldorf-Astoria', x: 240, z: -320, r: 25, type: 'dungeon', faction: 'enclave', hostile: true, level: 12, interior: 'waldorf', spawns: ['enclave_soldier', 'enclave_soldier', 'eyebot'] },
+    { id: 'msg', name: 'Madison Square Garden — The Pit', x: -160, z: -275, r: 28, type: 'settlement', faction: 'settlers', hostile: false, level: 5 },
+    { id: 'penn_station', name: 'Pennsylvania Station', x: -80, z: -50, r: 35, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 6, interior: 'penn_station', spawns: ['feral_ghoul', 'feral_ghoul', 'feral_ghoul', 'glowing_one'] },
+    { id: 'metlife_tower', name: 'Metropolitan Life Tower', x: 240, z: 84, r: 22, type: 'dungeon', faction: 'robots', hostile: true, level: 6, interior: 'metlife_tower', spawns: ['mister_handy', 'protectron', 'protectron'] },
+    { id: 'bellevue', name: 'Bellevue Hospital', x: 311, z: 84, r: 22, type: 'dungeon', faction: 'super_mutants', hostile: true, level: 9, interior: 'bellevue', spawns: ['super_mutant', 'super_mutant', 'super_mutant'] },
+    { id: 'chelsea_hotel', name: 'Hotel Chelsea', x: -80, z: 84, r: 22, type: 'settlement', faction: 'ghouls', hostile: false, level: 3 },
+    { id: 'village_vanguard', name: 'Village Vanguard', x: -80, z: 354, r: 18, type: 'settlement', faction: 'settlers', hostile: false, level: 2 },
+    { id: 'katz_deli', name: "Katz's Delicatessen", x: 240, z: 400, r: 18, type: 'dungeon', faction: 'creatures', hostile: true, level: 3, interior: 'katz_deli', spawns: ['radroach', 'radroach', 'radroach', 'molerat'] },
+    { id: 'chinatown', name: 'Chinatown', x: 160, z: 512, r: 35, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 7, interior: 'chinatown', spawns: ['feral_ghoul', 'feral_ghoul', 'feral_ghoul', 'glowing_one'] },
+    { id: 'tombs', name: 'The Tombs', x: 80, z: 535, r: 25, type: 'dungeon', faction: 'raiders', hostile: true, level: 6, interior: 'tombs', spawns: ['raider', 'raider', 'raider', 'raider'] },
+    { id: 'trinity_church', name: 'Trinity Church', x: -80, z: 760, r: 25, type: 'settlement', faction: 'settlers', hostile: false, level: 3 },
+    { id: 'federal_reserve', name: 'Federal Reserve Bank', x: 80, z: 760, r: 22, type: 'dungeon', faction: 'robots', hostile: true, level: 10, interior: 'federal_reserve', spawns: ['protectron', 'mister_handy', 'protectron', 'protectron'] },
+    { id: 'fraunces_tavern', name: 'Fraunces Tavern', x: 80, z: 850, r: 18, type: 'settlement', faction: 'settlers', hostile: false, level: 2 },
+    { id: 'seaport', name: 'South Street Seaport', x: 210, z: 715, r: 40, type: 'dungeon', faction: 'creatures', hostile: true, level: 7, interior: 'seaport', spawns: ['mirelurk', 'mirelurk', 'mirelurk'] },
+    { id: 'ellis_island', name: 'Ellis Island', x: -520, z: 1090, r: 40, type: 'settlement', faction: 'ghouls', hostile: false, level: 5 },
+    { id: 'domino_sugar', name: 'Sugar Bombs Refinery', x: 645, z: 410, r: 40, type: 'dungeon', faction: 'super_mutants', hostile: true, level: 9, interior: 'domino_sugar', spawns: ['super_mutant', 'super_mutant', 'super_mutant'] },
+    { id: 'uss_hudson', name: 'USS Hudson (Navy Yard Drydock)', x: 640, z: 780, r: 30, type: 'dungeon', faction: 'raiders', hostile: true, level: 10, interior: 'uss_hudson', spawns: ['raider', 'raider', 'raider', 'raider'], sub: true },
+    // ---- interiors added to existing landmarks (landmark_interiors module); sub-locations of existing markers ----
+    { id: 'un_assembly', name: 'UN General Assembly Hall', x: 313, z: -300, r: 10, type: 'dungeon', faction: 'enclave', hostile: true, level: 14, interior: 'un_assembly', spawns: ['enclave_soldier', 'enclave_soldier', 'eyebot'], sub: true },
+    { id: 'nyse_floor', name: 'Stock Exchange Trading Floor', x: 0, z: 808, r: 10, type: 'dungeon', faction: 'raiders', hostile: true, level: 8, interior: 'nyse_floor', spawns: ['raider', 'raider', 'raider'], sub: true },
+    { id: 'woolworth_lobby', name: 'Woolworth Building Interior', x: 0, z: 584, r: 10, type: 'dungeon', faction: 'raiders', hostile: true, level: 5, interior: 'woolworth_lobby', spawns: ['raider', 'raider'], sub: true },
+    { id: 'city_hall_rotunda', name: 'City Hall Rotunda', x: 80, z: 584, r: 10, type: 'dungeon', faction: 'robots', hostile: true, level: 6, interior: 'city_hall_rotunda', spawns: ['protectron', 'mister_handy'], sub: true },
+    // ---- POI wave 2 ----
+    { id: 'roosevelt_octagon', name: "The Octagon (Blackwell's Island Asylum)", x: 406, z: -634, r: 22, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 8, interior: 'roosevelt_octagon', spawns: ['feral_ghoul', 'feral_ghoul', 'feral_ghoul', 'glowing_one'] },
+    { id: 'smallpox_hospital', name: "Renwick Smallpox Hospital", x: 406, z: -360, r: 22, type: 'dungeon', faction: 'creatures', hostile: true, level: 7, interior: 'smallpox_hospital', spawns: ['centaur', 'centaur', 'radroach'] },
+    { id: 'queensboro_bridge', name: "Queensboro Bridge & Bridgemarket", x: 318, z: -418, r: 22, type: 'settlement', faction: 'settlers', hostile: false, level: 4 },
+    { id: 'manhattan_bridge', name: "Manhattan Bridge", x: 232, z: 592, r: 22, type: 'dungeon', faction: 'super_mutants', hostile: true, level: 8, interior: 'manhattan_bridge', spawns: ['super_mutant', 'super_mutant', 'super_mutant'] },
+    { id: 'frick', name: "The Frick Collection", x: 160, z: -494, r: 22, type: 'dungeon', faction: 'robots', hostile: true, level: 5, interior: 'frick', spawns: ['mister_handy', 'protectron'] },
+    { id: 'cooper_hewitt', name: "Carnegie Mansion (Cooper Hewitt)", x: 160, z: -824, r: 22, type: 'dungeon', faction: 'raiders', hostile: true, level: 6, interior: 'cooper_hewitt', spawns: ['raider', 'raider', 'raider'] },
+    { id: 'gracie_mansion', name: "Gracie Mansion", x: 312, z: -754, r: 22, type: 'settlement', faction: 'ghouls', hostile: false, level: 5 },
+    { id: 'park_ave_armory', name: "Park Avenue Armory", x: 240, z: -534, r: 22, type: 'dungeon', faction: 'raiders', hostile: true, level: 8, interior: 'park_ave_armory', spawns: ['raider', 'raider', 'raider', 'raider'] },
+    { id: 'ansonia', name: "The Ansonia", x: -160, z: -484, r: 22, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 6, interior: 'ansonia', spawns: ['feral_ghoul', 'feral_ghoul', 'feral_ghoul'] },
+    { id: 'san_remo', name: "The San Remo", x: -160, z: -844, r: 22, type: 'settlement', faction: 'settlers', hostile: false, level: 4 },
+    { id: 'bloomingdales', name: "Bloomingdale's", x: 240, z: -411, r: 22, type: 'dungeon', faction: 'raiders', hostile: true, level: 5, interior: 'bloomingdales', spawns: ['raider', 'raider', 'raider'] },
+    { id: 'ed_sullivan', name: "Ed Sullivan Theater", x: -160, z: -320, r: 22, type: 'dungeon', faction: 'robots', hostile: true, level: 6, interior: 'ed_sullivan', spawns: ['protectron', 'mister_handy', 'protectron'] },
+    { id: 'lyceum_theatre', name: "Lyceum Theatre", x: -160, z: -230, r: 22, type: 'settlement', faction: 'ghouls', hostile: false, level: 3 },
+    { id: 'port_authority', name: "Port Authority Bus Terminal", x: -160, z: -185, r: 22, type: 'dungeon', faction: 'raiders', hostile: true, level: 5, interior: 'port_authority', spawns: ['raider', 'raider', 'raider'] },
+    { id: 'moma', name: "Museum of Modern Art", x: 160, z: -275, r: 22, type: 'dungeon', faction: 'super_mutants', hostile: true, level: 8, interior: 'moma', spawns: ['super_mutant', 'super_mutant', 'super_mutant'] },
+    { id: 'algonquin', name: "The Algonquin Hotel", x: -80, z: -140, r: 22, type: 'settlement', faction: 'settlers', hostile: false, level: 3 },
+    { id: 'morgan_library', name: "The Morgan Library", x: 160, z: -96, r: 22, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 5, interior: 'morgan_library', spawns: ['feral_ghoul', 'feral_ghoul', 'feral_ghoul'] },
+    { id: 'daily_news', name: "Daily News Building", x: 311, z: -231, r: 22, type: 'settlement', faction: 'settlers', hostile: false, level: 3 },
+    { id: 'tudor_city', name: "Tudor City", x: 311, z: -140, r: 22, type: 'dungeon', faction: 'raiders', hostile: true, level: 6, interior: 'tudor_city', spawns: ['raider', 'raider', 'raider'] },
+    { id: 'new_york_life', name: "New York Life Building", x: 240, z: 39, r: 22, type: 'dungeon', faction: 'creatures', hostile: true, level: 6, interior: 'new_york_life', spawns: ['yao_guai', 'yao_guai'] },
+    { id: 'hotel_new_yorker', name: "Hotel New Yorker", x: -160, z: -50, r: 22, type: 'dungeon', faction: 'robots', hostile: true, level: 9, interior: 'hotel_new_yorker', spawns: ['sentry_bot', 'protectron', 'mister_gutsy'] },
+    { id: 'automat', name: "Horn & Hardart Automat", x: 0, z: 39, r: 22, type: 'settlement', faction: 'settlers', hostile: false, level: 1 },
+    { id: 'empire_diner', name: "Empire Diner", x: -240, z: 84, r: 22, type: 'settlement', faction: 'settlers', hostile: false, level: 2 },
+    { id: 'high_line', name: "The High Line", x: -305, z: 296, r: 22, type: 'dungeon', faction: 'raiders', hostile: true, level: 5, interior: 'high_line', spawns: ['raider', 'raider', 'raider'] },
+    { id: 'nabisco_factory', name: "National Biscuit Company Factory", x: -240, z: 264, r: 22, type: 'dungeon', faction: 'creatures', hostile: true, level: 4, interior: 'nabisco_factory', spawns: ['giant_ant', 'giant_ant', 'fire_ant'] },
+    { id: 'webster_hall', name: "Webster Hall", x: 160, z: 309, r: 22, type: 'settlement', faction: 'settlers', hostile: false, level: 3 },
+    { id: 'cooper_union', name: "Cooper Union Foundation Building", x: 240, z: 354, r: 22, type: 'dungeon', faction: 'robots', hostile: true, level: 5, interior: 'cooper_union', spawns: ['mister_gutsy', 'protectron'] },
+    { id: 'mcsorleys', name: "McSorley's Old Ale House", x: 240, z: 399, r: 22, type: 'settlement', faction: 'settlers', hostile: false, level: 2 },
+    { id: 'tammany_hall', name: "Tammany Hall", x: 240, z: 309, r: 22, type: 'dungeon', faction: 'raiders', hostile: true, level: 7, interior: 'tammany_hall', spawns: ['raider', 'raider', 'raider', 'raider'] },
+    { id: 'police_hq', name: "Police Headquarters", x: 160, z: 580, r: 22, type: 'dungeon', faction: 'robots', hostile: true, level: 6, interior: 'police_hq', spawns: ['protectron', 'protectron', 'sentry_bot'] },
+    { id: 'municipal_building', name: "Manhattan Municipal Building", x: 160, z: 626, r: 22, type: 'dungeon', faction: 'super_mutants', hostile: true, level: 8, interior: 'municipal_building', spawns: ['super_mutant', 'super_mutant', 'super_mutant'] },
+    { id: 'old_st_patricks', name: "Old St. Patrick's Cathedral", x: 240, z: 489, r: 22, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 5, interior: 'old_st_patricks', spawns: ['feral_ghoul', 'feral_ghoul', 'feral_ghoul'] },
+    { id: 'st_pauls_chapel', name: "St. Paul's Chapel", x: -80, z: 670, r: 22, type: 'settlement', faction: 'settlers', hostile: false, level: 2 },
+    { id: 'singer_building', name: "Singer Building", x: -80, z: 760, r: 22, type: 'dungeon', faction: 'raiders', hostile: true, level: 7, interior: 'singer_building', spawns: ['raider', 'raider', 'raider'] },
+    { id: 'forty_wall', name: "40 Wall Street (Bank of Manhattan)", x: -80, z: 850, r: 22, type: 'dungeon', faction: 'robots', hostile: true, level: 8, interior: 'forty_wall', spawns: ['mister_gutsy', 'protectron', 'sentry_bot'] },
+    { id: 'custom_house', name: "Alexander Hamilton Custom House", x: -80, z: 895, r: 22, type: 'settlement', faction: 'settlers', hostile: false, level: 3 },
+    // ---- POI wave 3 ----
+    { id: 'club_21', name: "21 Club", x: 64, z: -239, r: 20, type: 'dungeon', faction: 'raiders', hostile: true, level: 6, interior: 'club_21', spawns: ['raider', 'raider', 'raider'] },
+    { id: 'helmsley', name: "Helmsley Building", x: 240, z: -278, r: 20, type: 'dungeon', faction: 'enclave', hostile: true, level: 13, interior: 'helmsley', spawns: ['enclave_soldier', 'enclave_soldier', 'eyebot'] },
+    { id: 'farley_post_office', name: "James A. Farley Post Office", x: -160, z: -100, r: 20, type: 'dungeon', faction: 'robots', hostile: true, level: 6, interior: 'farley_post_office', spawns: ['protectron', 'mister_handy', 'protectron'] },
+    { id: 'hotel_pennsylvania', name: "Hotel Pennsylvania", x: 66, z: -100, r: 20, type: 'dungeon', faction: 'feral_ghouls', hostile: true, level: 7, interior: 'hotel_pennsylvania', spawns: ['feral_ghoul', 'feral_ghoul', 'feral_ghoul', 'glowing_one'] },
+    { id: 'jefferson_market', name: "Jefferson Market Courthouse", x: 12, z: 398, r: 20, type: 'landmark', faction: 'robots', hostile: false, level: 5 },
+    { id: 'chumleys', name: "Chumley's", x: -60, z: 398, r: 20, type: 'settlement', faction: 'settlers', hostile: false, level: 2 },
+    { id: 'con_ed_tower', name: "Con Edison Tower of Light", x: 175, z: 263, r: 20, type: 'dungeon', faction: 'robots', hostile: true, level: 8, interior: 'con_ed_tower', spawns: ['sentry_bot', 'protectron', 'mister_gutsy'] },
+    { id: 'federal_hall', name: "Federal Hall", x: 80, z: 848, r: 20, type: 'dungeon', faction: 'raiders', hostile: true, level: 8, interior: 'federal_hall', spawns: ['raider', 'raider', 'raider', 'raider'] },
+    { id: 'bankers_trust', name: "Bankers Trust Building", x: 160, z: 848, r: 20, type: 'dungeon', faction: 'robots', hostile: true, level: 9, interior: 'bankers_trust', spawns: ['sentry_bot', 'protectron', 'protectron'] },
+    { id: 'delmonicos', name: "Delmonico's", x: 150, z: 888, r: 20, type: 'settlement', faction: 'settlers', hostile: false, level: 4 },
+    { id: 'whitehall_terminal', name: "Whitehall Ferry Terminal", x: 140, z: 940, r: 20, type: 'settlement', faction: 'settlers', hostile: false, level: 3 },
+    { id: 'pier_a', name: "Pier A", x: -200, z: 895, r: 20, type: 'dungeon', faction: 'creatures', hostile: true, level: 6, interior: 'pier_a', spawns: ['mirelurk', 'mirelurk'] },
+    { id: 'empire_stores', name: "Empire Stores", x: 500, z: 625, r: 20, type: 'settlement', faction: 'settlers', hostile: false, level: 4 },
+    { id: 'cp_zoo_arsenal', name: "Central Park Zoo & Arsenal", x: 81, z: -429, r: 20, type: 'dungeon', faction: 'creatures', hostile: true, level: 7, interior: 'cp_zoo_arsenal', spawns: ['yao_guai', 'radscorpion', 'molerat'] },
+    { id: 'tavern_on_green', name: "Tavern on the Green", x: -95, z: -539, r: 20, type: 'settlement', faction: 'settlers', hostile: false, level: 2 },
+  ];
+
+  // ---------------------------------------------------------------
+  // INTERIOR CELLS live far east of the world (x >= 3000). Anything with
+  // x >= INTERIOR_X_MIN is treated as "indoors" (no sky, indoor light).
+  // Enter/exit with G.world.addDoor(). Each owner may only build inside
+  // its cell box (±150 m around origin, y -20..40).
+  // ---------------------------------------------------------------
+  const INTERIOR_X_MIN = 2500;
+  const INTERIORS = {
+    vault120: { owner: 'map', origin: { x: 4000, y: 0, z: 0 }, name: 'Vault 120' },
+    subway: { owner: 'map', origin: { x: 4000, y: 0, z: 400 }, name: '42nd Street Subway Tunnels' },
+    empire_lobby: { owner: 'landmarks_a', origin: { x: 4000, y: 0, z: 800 }, name: 'Empire State Building — Lobby' },
+    liberty_pedestal: { owner: 'landmarks_b', origin: { x: 4000, y: 0, z: 1200 }, name: 'Statue of Liberty — Pedestal' },
+    spare_1: { owner: 'quests', origin: { x: 4400, y: 0, z: 0 }, name: '(quest interior 1)' },
+    spare_2: { owner: 'quests', origin: { x: 4400, y: 0, z: 400 }, name: '(quest interior 2)' },
+
+    // ---- NEW POI interiors: 400 m grid east of the world. Build within origin ±150 m, y -40..80. ----
+    amnh: { owner: 'poi_uptown', origin: { x: 5000, y: 0, z: 0 }, name: 'American Museum of Natural History' },
+    dakota: { owner: 'poi_uptown', origin: { x: 5000, y: 0, z: 400 }, name: 'The Dakota' },
+    plaza_hotel: { owner: 'poi_uptown', origin: { x: 5000, y: 0, z: 800 }, name: 'The Plaza Hotel' },
+    carnegie_hall: { owner: 'poi_uptown', origin: { x: 5000, y: 0, z: 1200 }, name: 'Carnegie Hall' },
+    tiffany: { owner: 'poi_uptown', origin: { x: 5000, y: 0, z: 1600 }, name: 'Tiffany & Co.' },
+    waldorf: { owner: 'poi_midtown', origin: { x: 5400, y: 0, z: 0 }, name: 'Waldorf-Astoria' },
+    msg: { owner: 'poi_midtown', origin: { x: 5400, y: 0, z: 400 }, name: 'Madison Square Garden' },
+    penn_station: { owner: 'poi_midtown', origin: { x: 5400, y: 0, z: 800 }, name: 'Pennsylvania Station' },
+    metlife_tower: { owner: 'poi_midtown', origin: { x: 5400, y: 0, z: 1200 }, name: 'Metropolitan Life Tower' },
+    bellevue: { owner: 'poi_midtown', origin: { x: 5400, y: 0, z: 1600 }, name: 'Bellevue Hospital' },
+    chelsea_hotel: { owner: 'poi_village', origin: { x: 5800, y: 0, z: 0 }, name: 'Hotel Chelsea' },
+    village_vanguard: { owner: 'poi_village', origin: { x: 5800, y: 0, z: 400 }, name: 'Village Vanguard' },
+    katz_deli: { owner: 'poi_village', origin: { x: 5800, y: 0, z: 800 }, name: "Katz's Delicatessen" },
+    chinatown: { owner: 'poi_village', origin: { x: 5800, y: 0, z: 1200 }, name: 'Chinatown — Remnant Bunker' },
+    tombs: { owner: 'poi_village', origin: { x: 5800, y: 0, z: 1600 }, name: 'The Tombs' },
+    trinity_church: { owner: 'poi_financial', origin: { x: 6200, y: 0, z: 0 }, name: 'Trinity Church' },
+    federal_reserve: { owner: 'poi_financial', origin: { x: 6200, y: 0, z: 400 }, name: 'Federal Reserve Bank — Gold Vault' },
+    fraunces_tavern: { owner: 'poi_financial', origin: { x: 6200, y: 0, z: 800 }, name: 'Fraunces Tavern' },
+    seaport: { owner: 'poi_financial', origin: { x: 6200, y: 0, z: 1200 }, name: 'South Street Seaport' },
+    ellis_island: { owner: 'poi_harbor', origin: { x: 6600, y: 0, z: 0 }, name: 'Ellis Island — Registry Room' },
+    domino_sugar: { owner: 'poi_harbor', origin: { x: 6600, y: 0, z: 400 }, name: 'Sugar Bombs Refinery' },
+    uss_hudson: { owner: 'poi_harbor', origin: { x: 6600, y: 0, z: 800 }, name: 'USS Hudson' },
+    // ---- interiors for existing landmarks that lacked them (landmark_interiors module) ----
+    un_assembly: { owner: 'landmark_interiors', origin: { x: 7000, y: 0, z: 0 }, name: 'UN General Assembly Hall' },
+    rockefeller_30rock: { owner: 'landmark_interiors', origin: { x: 7000, y: 0, z: 400 }, name: '30 Rockefeller Plaza — Brotherhood Citadel' },
+    nyse_floor: { owner: 'landmark_interiors', origin: { x: 7000, y: 0, z: 800 }, name: 'NYSE Trading Floor' },
+    woolworth_lobby: { owner: 'landmark_interiors', origin: { x: 7000, y: 0, z: 1200 }, name: 'Woolworth Building' },
+    city_hall_rotunda: { owner: 'landmark_interiors', origin: { x: 7000, y: 0, z: 1600 }, name: 'City Hall' },
+    flatiron_interior: { owner: 'landmark_interiors', origin: { x: 7000, y: 0, z: 2000 }, name: 'Flatiron Building' },
+    // ---- POI wave 2 interiors (x 7400..9400 grid) ----
+    roosevelt_octagon: { owner: 'poi_roosevelt', origin: { x: 7400, y: 0, z: 0 }, name: "The Octagon (Blackwell's Island Asylum)" },
+    smallpox_hospital: { owner: 'poi_roosevelt', origin: { x: 7400, y: 0, z: 400 }, name: "Renwick Smallpox Hospital" },
+    queensboro_bridge: { owner: 'poi_bridges', origin: { x: 7400, y: 0, z: 800 }, name: "Queensboro Bridge & Bridgemarket" },
+    manhattan_bridge: { owner: 'poi_bridges', origin: { x: 7400, y: 0, z: 1200 }, name: "Manhattan Bridge" },
+    frick: { owner: 'poi_ues', origin: { x: 7400, y: 0, z: 1600 }, name: "The Frick Collection" },
+    cooper_hewitt: { owner: 'poi_ues', origin: { x: 7400, y: 0, z: 2000 }, name: "Carnegie Mansion (Cooper Hewitt)" },
+    gracie_mansion: { owner: 'poi_ues', origin: { x: 7800, y: 0, z: 0 }, name: "Gracie Mansion" },
+    park_ave_armory: { owner: 'poi_ues', origin: { x: 7800, y: 0, z: 400 }, name: "Park Avenue Armory" },
+    ansonia: { owner: 'poi_uws', origin: { x: 7800, y: 0, z: 800 }, name: "The Ansonia" },
+    san_remo: { owner: 'poi_uws', origin: { x: 7800, y: 0, z: 1200 }, name: "The San Remo" },
+    bloomingdales: { owner: 'poi_uws', origin: { x: 7800, y: 0, z: 1600 }, name: "Bloomingdale's" },
+    ed_sullivan: { owner: 'poi_theater', origin: { x: 7800, y: 0, z: 2000 }, name: "Ed Sullivan Theater" },
+    lyceum_theatre: { owner: 'poi_theater', origin: { x: 8200, y: 0, z: 0 }, name: "Lyceum Theatre" },
+    port_authority: { owner: 'poi_theater', origin: { x: 8200, y: 0, z: 400 }, name: "Port Authority Bus Terminal" },
+    moma: { owner: 'poi_midtown2', origin: { x: 8200, y: 0, z: 800 }, name: "Museum of Modern Art" },
+    algonquin: { owner: 'poi_midtown2', origin: { x: 8200, y: 0, z: 1200 }, name: "The Algonquin Hotel" },
+    morgan_library: { owner: 'poi_midtown2', origin: { x: 8200, y: 0, z: 1600 }, name: "The Morgan Library" },
+    daily_news: { owner: 'poi_eastside', origin: { x: 8200, y: 0, z: 2000 }, name: "Daily News Building" },
+    tudor_city: { owner: 'poi_eastside', origin: { x: 8600, y: 0, z: 0 }, name: "Tudor City" },
+    new_york_life: { owner: 'poi_eastside', origin: { x: 8600, y: 0, z: 400 }, name: "New York Life Building" },
+    hotel_new_yorker: { owner: 'poi_herald', origin: { x: 8600, y: 0, z: 800 }, name: "Hotel New Yorker" },
+    automat: { owner: 'poi_herald', origin: { x: 8600, y: 0, z: 1200 }, name: "Horn & Hardart Automat" },
+    empire_diner: { owner: 'poi_herald', origin: { x: 8600, y: 0, z: 1600 }, name: "Empire Diner" },
+    high_line: { owner: 'poi_chelsea', origin: { x: 8600, y: 0, z: 2000 }, name: "The High Line" },
+    nabisco_factory: { owner: 'poi_chelsea', origin: { x: 9000, y: 0, z: 0 }, name: "National Biscuit Company Factory" },
+    webster_hall: { owner: 'poi_chelsea', origin: { x: 9000, y: 0, z: 400 }, name: "Webster Hall" },
+    cooper_union: { owner: 'poi_eastvillage', origin: { x: 9000, y: 0, z: 800 }, name: "Cooper Union Foundation Building" },
+    mcsorleys: { owner: 'poi_eastvillage', origin: { x: 9000, y: 0, z: 1200 }, name: "McSorley's Old Ale House" },
+    tammany_hall: { owner: 'poi_eastvillage', origin: { x: 9000, y: 0, z: 1600 }, name: "Tammany Hall" },
+    police_hq: { owner: 'poi_civic', origin: { x: 9000, y: 0, z: 2000 }, name: "Police Headquarters" },
+    municipal_building: { owner: 'poi_civic', origin: { x: 9400, y: 0, z: 0 }, name: "Manhattan Municipal Building" },
+    old_st_patricks: { owner: 'poi_civic', origin: { x: 9400, y: 0, z: 400 }, name: "Old St. Patrick's Cathedral" },
+    st_pauls_chapel: { owner: 'poi_wallst', origin: { x: 9400, y: 0, z: 800 }, name: "St. Paul's Chapel" },
+    singer_building: { owner: 'poi_wallst', origin: { x: 9400, y: 0, z: 1200 }, name: "Singer Building" },
+    forty_wall: { owner: 'poi_wallst', origin: { x: 9400, y: 0, z: 1600 }, name: "40 Wall Street (Bank of Manhattan)" },
+    custom_house: { owner: 'poi_wallst', origin: { x: 9400, y: 0, z: 2000 }, name: "Alexander Hamilton Custom House" },
+    // ---- The Neon (Times Square) — all 18 approved places share one interior cell (see TIMES_SQUARE_PLAN.md) ----
+    neon_interiors: { owner: 'landmarks_a', origin: { x: 11000, y: 0, z: 0 }, name: 'The Neon (Times Square)' },
+    // ---- POI wave 3 interiors (x 9800..10600 grid) ----
+    club_21: { owner: 'poi_midtown3', origin: { x: 9800, y: 0, z: 0 }, name: "21 Club" },
+    helmsley: { owner: 'poi_midtown3', origin: { x: 9800, y: 0, z: 400 }, name: "Helmsley Building" },
+    farley_post_office: { owner: 'poi_penn', origin: { x: 9800, y: 0, z: 800 }, name: "James A. Farley Post Office" },
+    hotel_pennsylvania: { owner: 'poi_penn', origin: { x: 9800, y: 0, z: 1200 }, name: "Hotel Pennsylvania" },
+    jefferson_market: { owner: 'poi_village3', origin: { x: 9800, y: 0, z: 1600 }, name: "Jefferson Market Courthouse" },
+    chumleys: { owner: 'poi_village3', origin: { x: 9800, y: 0, z: 2000 }, name: "Chumley's" },
+    con_ed_tower: { owner: 'poi_village3', origin: { x: 10200, y: 0, z: 0 }, name: "Con Edison Tower of Light" },
+    federal_hall: { owner: 'poi_fidi3', origin: { x: 10200, y: 0, z: 400 }, name: "Federal Hall" },
+    bankers_trust: { owner: 'poi_fidi3', origin: { x: 10200, y: 0, z: 800 }, name: "Bankers Trust Building" },
+    delmonicos: { owner: 'poi_fidi3', origin: { x: 10200, y: 0, z: 1200 }, name: "Delmonico's" },
+    whitehall_terminal: { owner: 'poi_harbor2', origin: { x: 10200, y: 0, z: 1600 }, name: "Whitehall Ferry Terminal" },
+    pier_a: { owner: 'poi_harbor2', origin: { x: 10200, y: 0, z: 2000 }, name: "Pier A" },
+    empire_stores: { owner: 'poi_harbor2', origin: { x: 10600, y: 0, z: 0 }, name: "Empire Stores" },
+    cp_zoo_arsenal: { owner: 'poi_park', origin: { x: 10600, y: 0, z: 400 }, name: "Central Park Zoo & Arsenal" },
+    tavern_on_green: { owner: 'poi_park', origin: { x: 10600, y: 0, z: 800 }, name: "Tavern on the Green" },
+  };
+
+  // The new game begins inside the vault; the vault module (map) places
+  // the actual spawn marker and the exit door leads to PARK_FEATURES.vaultEntrance.
+  const PLAYER_START = { x: 4000, y: 0, z: 0, yaw: Math.PI }; // map may override via G.LAYOUT.playerStart
+  const VAULT_EXIT = { x: -65, y: 0, z: -708, yaw: 0 };           // standing outside the vault door, facing south (+Z)
+
+  // ---------------------------------------------------------------
+  // Brands for billboards/posters (textures module provides G.tex.billboard(id))
+  // ---------------------------------------------------------------
+  const BRANDS = ['nuka_cola', 'nuka_cola_quantum', 'vault_tec', 'sunset_sarsaparilla', 'robco', 'red_rocket',
+    'poseidon_energy', 'abraxo', 'sugar_bombs', 'fancy_lads', 'radiation_king', 'blamco', 'grognak',
+    'general_atomics', 'chryslus', 'jet_hq', 'cram', 'mister_handy', 'gunners_mag', 'hubris_comics',
+    'atomic_command', 'rad_x', 'pip_boy', 'nuka_world'];
+
+  // ---------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------
+  function pointInPoly(x, z, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i][0], zi = poly[i][1], xj = poly[j][0], zj = poly[j][1];
+      if (((zi > z) !== (zj > z)) && (x < (xj - xi) * (z - zi) / (zj - zi) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+  function inCircle(x, z, c) { const dx = x - c.x, dz = z - c.z; return dx * dx + dz * dz <= c.r * c.r; }
+  function inRect(x, z, r, pad) { pad = pad || 0; return x >= r.x0 - pad && x <= r.x1 + pad && z >= r.z0 - pad && z <= r.z1 + pad; }
+  function distToSeg(px, pz, ax, az, bx, bz) {
+    const dx = bx - ax, dz = bz - az; const l2 = dx * dx + dz * dz;
+    let t = l2 ? ((px - ax) * dx + (pz - az) * dz) / l2 : 0; t = Math.max(0, Math.min(1, t));
+    const cx = ax + t * dx, cz = az + t * dz; return Math.hypot(px - cx, pz - cz);
+  }
+
+  const L = {
+    WORLD, WATER_LEVEL, MANHATTAN, BROOKLYN, LIBERTY, ELLIS, ROOSEVELT,
+    AVE_W, AVE_ROAD, ST_W, ST_ROAD, BROADWAY_W, BROADWAY_ROAD,
+    AVENUE_DEFS, STREET_Z0, STREET_STEP, STREET_COUNT, STREET_NAMES, BROADWAY, CIRCLES, AVENUE_OVERRIDES, STREET_CUTS, BOWTIES,
+    PARK, PARK_FEATURES, SITES, LOCATIONS, INTERIORS, INTERIOR_X_MIN,
+    playerStart: PLAYER_START, vaultExit: VAULT_EXIT, BRANDS,
+    pointInPoly, distToSeg,
+  };
+
+  L.isManhattan = (x, z) => pointInPoly(x, z, MANHATTAN);
+  L.isBrooklyn = (x, z) => pointInPoly(x, z, BROOKLYN);
+  L.isIsland = (x, z) => inCircle(x, z, LIBERTY) || inCircle(x, z, ELLIS) || pointInPoly(x, z, ROOSEVELT);
+  L.isRoosevelt = (x, z) => pointInPoly(x, z, ROOSEVELT);
+  L.isLand = (x, z) => x >= INTERIOR_X_MIN || L.isManhattan(x, z) || L.isBrooklyn(x, z) || L.isIsland(x, z);
+  L.isWater = (x, z) => !L.isLand(x, z);
+  L.isInterior = (x) => (typeof x === 'object' ? x.x : x) >= INTERIOR_X_MIN;
+  L.inPark = (x, z) => inRect(x, z, PARK);
+  L.inRect = inRect;
+
+  /** Street names for x/z, used by HUD. */
+  // (x only: nearest avenue definition; with z: the actual segment name there — 'Broadway', 'Bowery', 'LaGuardia Place', …)
+  L.avenueNameAt = (x, z) => {
+    if (typeof z === 'number') {
+      const ci = L.circleAt ? L.circleAt(x, z) : null;
+      if (ci && ci.part !== 'walk') return ci.circle.name;
+      if (L.onBroadway && L.onBroadway(x, z)) return 'Broadway';
+      for (const a of L.avenues || []) if (z >= a.z0 && z <= a.z1 && Math.abs(x - a.x) <= a.width / 2) return a.name;
+      return null;
+    }
+    let best = null, bd = 1e9; for (const a of AVENUE_DEFS) { const d = Math.abs(a.x - x); if (d < bd) { bd = d; best = a; } } return bd < AVE_W ? best.name : null;
+  };
+  /** Name of the E-W street at z (within its corridor), or null. */
+  L.streetNameAt = (x, z) => { for (const s of L.streets || []) if (x >= s.x0 && x <= s.x1 && Math.abs(z - s.z) <= s.width / 2) return s.name; return null; };
+
+  /** Landmark site containing (x,z) (with optional padding), or null. */
+  L.siteAt = (x, z, pad) => { for (const s of SITES) if (inRect(x, z, s, pad)) return s; return null; };
+  L.getSite = (id) => SITES.find((s) => s.id === id) || null;
+  L.getLocation = (id) => LOCATIONS.find((l) => l.id === id) || null;
+  L.rectOverlapsSite = (x0, z0, x1, z1, pad) => {
+    pad = pad || 0;
+    for (const s of SITES) if (x1 > s.x0 - pad && x0 < s.x1 + pad && z1 > s.z0 - pad && z0 < s.z1 + pad) return s;
+    return null;
+  };
+
+  /** Precomputed road segments (land-clipped, park- and closed-site-aware). */
+  const avenues = [], streets = [];
+  // Sites moved by the round-1 layout pass keep their OLD footprint reserved (roads closed there if the site closes
+  // streets; the map keeps generic lots out) until the owner module has refitted its build to the new record.
+  // Owners: once refitted, the city_layout segment deletes the `movedRound1` marker (see src/map/NOTES.md).
+  L.PENDING_REFIT = SITES.filter((s) => s.movedRound1).map((s) => Object.assign({ id: s.id, owner: s.owner, closesStreets: !!s.closesStreets }, s.movedRound1.from));
+  function closedAt(x, z) {
+    const s = L.siteAt(x, z); if (s && s.closesStreets) return true;
+    for (const p of L.PENDING_REFIT) if (p.closesStreets && inRect(x, z, p)) return true;
+    return false;
+  }
+  function roadAllowed(x, z) { return (L.isManhattan(x, z)) && !L.inPark(x, z) && !closedAt(x, z); }
+  for (const a of AVENUE_DEFS) {
+    let start = null;
+    for (let z = WORLD.minZ; z <= WORLD.maxZ + 1; z += 1) {
+      const ok = z <= WORLD.maxZ && roadAllowed(a.x, z);
+      if (ok && start === null) start = z;
+      if (!ok && start !== null) { if (z - start > 20) avenues.push({ x: a.x, z0: start, z1: z - 1, width: AVE_W, road: AVE_ROAD, name: a.name }); start = null; }
+    }
+  }
+  for (let i = 0; i < STREET_COUNT; i++) {
+    const z = STREET_Z0 + i * STREET_STEP;
+    let start = null;
+    for (let x = WORLD.minX; x <= WORLD.maxX + 1; x += 1) {
+      const ok = x <= WORLD.maxX && roadAllowed(x, z);
+      if (ok && start === null) start = x;
+      if (!ok && start !== null) { if (x - start > 20) streets.push({ z, x0: start, x1: x - 1, width: ST_W, road: ST_ROAD, name: STREET_NAMES[z] }); start = null; }
+    }
+  }
+  // Round 1: Broadway takes over avenue slots / renamed stretches (see AVENUE_OVERRIDES), street stubs cut.
+  (function applyOverrides() {
+    for (const ov of AVENUE_OVERRIDES) {
+      for (let i = avenues.length - 1; i >= 0; i--) {
+        const a = avenues[i];
+        if (a.x !== ov.x) continue;
+        avenues.splice(i, 1);
+        for (const k of ov.keep) {
+          const z0 = Math.max(a.z0, k.z0 === undefined ? -1e9 : k.z0), z1 = Math.min(a.z1, k.z1 === undefined ? 1e9 : k.z1);
+          if (z1 - z0 > 20) avenues.splice(i, 0, Object.assign({}, a, { z0, z1, name: k.name }));
+        }
+      }
+    }
+    for (const c of STREET_CUTS) {
+      for (let i = streets.length - 1; i >= 0; i--) {
+        const s = streets[i];
+        if (s.z !== c.z || s.x1 <= c.x0 || s.x0 >= c.x1) continue;
+        streets.splice(i, 1);
+        if (c.x0 - s.x0 > 20) streets.splice(i, 0, Object.assign({}, s, { x1: c.x0 }));
+        if (s.x1 - c.x1 > 20) streets.splice(i, 0, Object.assign({}, s, { x0: c.x1 }));
+      }
+    }
+  })();
+  // Central Park transverse road (the 79th St transverse), sunken but at y=0 here
+  streets.push({ z: -760, x0: -110, x1: 110, width: 12, road: 8, name: '79th Street Transverse', park: true });
+  L.avenues = avenues;
+  L.streets = streets;
+
+  /** Roundabout at (x,z): 'island' | 'ring' (carriageway) | 'walk' (ring sidewalk, 3.5 m) | null. */
+  L.circleAt = (x, z) => {
+    for (const c of CIRCLES) {
+      const d = Math.hypot(x - c.x, z - c.z);
+      if (d <= c.rIsland) return { circle: c, part: 'island', d };
+      if (d <= c.rOuter) return { circle: c, part: 'ring', d };
+      if (d <= c.rOuter + 3.5) return { circle: c, part: 'walk', d };
+    }
+    return null;
+  };
+  /** Is (x,z) inside any road corridor (incl. sidewalks)? roadOnly=true excludes sidewalks. */
+  L.isRoad = (x, z, roadOnly) => {
+    const ci = CIRCLES.length ? L.circleAt(x, z) : null;
+    if (ci) { if (ci.part === 'island') return false; if (ci.part === 'ring') return true; if (!roadOnly) return true; }
+    for (const a of avenues) if (z >= a.z0 && z <= a.z1 && Math.abs(x - a.x) <= (roadOnly ? a.road : a.width) / 2) return true;
+    for (const s of streets) if (x >= s.x0 && x <= s.x1 && Math.abs(z - s.z) <= (roadOnly ? s.road : s.width) / 2) return true;
+    if (L.onBroadway(x, z, roadOnly)) return true;
+    return false;
+  };
+  L.onBroadway = (x, z, roadOnly) => {
+    const hw = (roadOnly ? BROADWAY_ROAD : BROADWAY_W) / 2;
+    for (let i = 0; i < BROADWAY.length - 1; i++) {
+      const a = BROADWAY[i], b = BROADWAY[i + 1];
+      if (distToSeg(x, z, a[0], a[1], b[0], b[1]) <= hw) return !L.inPark(x, z);
+    }
+    return false;
+  };
+  /** Exact footprint polygon of a site ([x,z] list): its `poly` when it has one (e.g. the Flatiron wedge), else its rect. */
+  L.sitePoly = (s) => (s && s.poly) || (s ? [[s.x0, s.z0], [s.x1, s.z0], [s.x1, s.z1], [s.x0, s.z1]] : null);
+  /** Is (x,z) inside the site's exact footprint (poly-aware)? */
+  L.inSite = (s, x, z) => !!s && inRect(x, z, s) && (!s.poly || pointInPoly(x, z, s.poly));
+  /** Site whose EXACT footprint contains (x,z) (poly-aware variant of siteAt, no padding), or null. */
+  L.siteShapeAt = (x, z) => { for (const s of SITES) if (L.inSite(s, x, z)) return s; return null; };
+
+  // ---- Bow-ties: pedestrian islands between Broadway and the crossing avenue (computed from the road geometry)
+  /** Broadway centre x at z along the polyline segment covering z nearest to xNear (or null) + horizontal half-widths. */
+  function broadwayXAt(z, xNear) {
+    let best = null;
+    for (let i = 0; i < BROADWAY.length - 1; i++) {
+      const a = BROADWAY[i], b = BROADWAY[i + 1];
+      if (Math.abs(b[1] - a[1]) < 1e-6 || z < Math.min(a[1], b[1]) || z > Math.max(a[1], b[1])) continue;
+      const k = (b[0] - a[0]) / (b[1] - a[1]), x = a[0] + (z - a[1]) * k;
+      const f = Math.sqrt(1 + k * k);
+      if (!best || Math.abs(x - xNear) < Math.abs(best.x - xNear)) best = { x, road: BROADWAY_ROAD / 2 * f, walk: BROADWAY_W / 2 * f };
+    }
+    return best;
+  }
+  for (const bt of BOWTIES) {
+    bt.islands = [];
+    const aHalf = AVE_ROAD / 2;
+    let cur = null;
+    const flush = () => { if (cur && cur.l.length >= 2) bt.islands.push({ side: cur.side, poly: cur.l.concat(cur.r.slice().reverse()) }); cur = null; };
+    for (let z = bt.northZ; z <= bt.southZ + 1e-6; z += 0.5) {
+      const bw = broadwayXAt(z, bt.avenueX);
+      const inStreet = bt.streets.some((sz) => Math.abs(z - sz) <= ST_ROAD / 2);
+      let seg = null;
+      if (bw && !inStreet) {
+        if (bw.x < bt.avenueX) { const x0 = bw.x + bw.road, x1 = bt.avenueX - aHalf; if (x1 - x0 > 0.6) seg = ['north', x0, x1]; }
+        else { const x0 = bt.avenueX + aHalf, x1 = bw.x - bw.road; if (x1 - x0 > 0.6) seg = ['south', x0, x1]; }
+      }
+      if (!seg || (cur && cur.side !== seg[0])) flush();
+      if (seg) { if (!cur) cur = { side: seg[0], l: [], r: [] }; cur.l.push([seg[1], z]); cur.r.push([seg[2], z]); }
+    }
+    flush();
+  }
+  /** Inside a bow-tie site: { bowtie, part: 'carriageway' | 'island' | 'walk' } (walk = building-front pavement), else null. */
+  L.bowtieAt = (x, z) => {
+    for (const bt of BOWTIES) {
+      const s = L.getSite(bt.site); if (!s || !inRect(x, z, s)) continue;
+      if (L.isRoad(x, z, true)) return { bowtie: bt, part: 'carriageway' };
+      for (const is of bt.islands) if (pointInPoly(x, z, is.poly)) return { bowtie: bt, part: 'island', island: is };
+      return { bowtie: bt, part: 'walk' };
+    }
+    return null;
+  };
+
+  /**
+   * Layout self-check (cheap, deterministic). Returns a list of issues:
+   *  - 'broadway_in_site': Broadway ROADWAY area (m², 1 m samples) inside a site's exact footprint (plaza/bow-tie sites exempt)
+   *  - 'broadway_in_pending': Broadway roadway inside an old footprint whose owner has not refitted yet (PENDING_REFIT)
+   *  - 'site_overlap' / 'site_on_pending': two footprints overlapping (m²)
+   * Used by the map (G.map.stats.layoutLint) and the layout tools.
+   */
+  L.lintLayout = () => {
+    const out = [];
+    const bwHits = new Map();
+    for (let i = 0; i < BROADWAY.length - 1; i++) {
+      const a = BROADWAY[i], b = BROADWAY[i + 1];
+      const x0 = Math.min(a[0], b[0]) - 6, x1 = Math.max(a[0], b[0]) + 6, z0 = Math.min(a[1], b[1]) - 6, z1 = Math.max(a[1], b[1]) + 6;
+      const cands = SITES.filter((s) => !s.plaza && s.x1 > x0 && s.x0 < x1 && s.z1 > z0 && s.z0 < z1).map((s) => ['site', s])
+        .concat((L.PENDING_REFIT || []).filter((s) => s.x1 > x0 && s.x0 < x1 && s.z1 > z0 && s.z0 < z1).map((s) => ['pending', s]));
+      if (!cands.length) continue;
+      for (const [kind, s] of cands) {
+        let n = 0;
+        for (let x = Math.max(x0, s.x0) + 0.5; x < Math.min(x1, s.x1); x += 1) for (let z = Math.max(z0, s.z0) + 0.5; z < Math.min(z1, s.z1); z += 1) {
+          if (distToSeg(x, z, a[0], a[1], b[0], b[1]) > BROADWAY_ROAD / 2) continue;
+          if (kind === 'site' ? L.inSite(s, x, z) : inRect(x, z, s)) n++;
+        }
+        if (n) { const key = kind + ':' + s.id; bwHits.set(key, (bwHits.get(key) || 0) + n); }
+      }
+    }
+    for (const [key, n] of bwHits) { const [kind, id] = key.split(':'); out.push({ type: kind === 'site' ? 'broadway_in_site' : 'broadway_in_pending', id, m2: n }); }
+    const ov = (a, b) => Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) * Math.max(0, Math.min(a.z1, b.z1) - Math.max(a.z0, b.z0));
+    for (let i = 0; i < SITES.length; i++) for (let j = i + 1; j < SITES.length; j++) { const m2 = ov(SITES[i], SITES[j]); if (m2 > 1) out.push({ type: 'site_overlap', id: SITES[i].id, other: SITES[j].id, m2: Math.round(m2) }); }
+    for (const p of L.PENDING_REFIT || []) for (const s of SITES) { if (s.id === p.id) continue; const m2 = ov(p, s); if (m2 > 1) out.push({ type: 'site_on_pending', id: s.id, other: p.id + '(old)', m2: Math.round(m2) }); }
+    return out;
+  };
+
+  /**
+   * Bow-tie carriageway check against the LIVE world (call after every module has built): for each bow-tie,
+   * 1 m samples on its open carriageways (isRoad roadOnly) that sit inside a solid collider between kerb height
+   * and 4.9 m (wrecked vehicles / actors exempt), plus the walkable ground height at the crossing centre (must be
+   * street level ≈ 0: a canopy / market roof over the X would lift it). → [{type, id, owner, ...}] (empty = clean).
+   */
+  L.lintBowties = (W) => {
+    W = W || G.world; const out = [];
+    if (!W || !W.query || !W.pointInCollider) return out;
+    for (const bt of BOWTIES) {
+      const s = L.getSite(bt.site); if (!s) continue;
+      let n = 0; const at = [];
+      for (let x = s.x0 + 0.5; x < s.x1; x += 1) for (let z = s.z0 + 0.5; z < s.z1; z += 1) {
+        if (!L.isRoad(x, z, true)) continue;
+        for (const c of W.query(x - 0.01, z - 0.01, x + 0.01, z + 0.01)) {
+          if (/actor|car|vehicle|bus|truck|wreck/.test(c.tag || '') || c.minY >= 4.9 || c.maxY <= 0.35 || !W.pointInCollider(c, x, z, 0)) continue;
+          n++; if (at.length < 12) at.push([x, z, c.tag || '', +c.maxY.toFixed(1)]); break;
+        }
+      }
+      if (n) out.push({ type: 'bowtie_blocked', id: bt.id, owner: s.owner, m2: n, at });
+      const gy = W.groundHeight ? W.groundHeight(bt.crossing.x, bt.crossing.z, 60) : 0;
+      if (typeof gy === 'number' && Math.abs(gy) > 0.4) out.push({ type: 'bowtie_raised', id: bt.id, owner: s.owner, groundY: +gy.toFixed(2) });
+    }
+    return out;
+  };
+
+  /** Does rect touch a road corridor? (samples edges + interior) */
+  L.rectHitsRoad = (x0, z0, x1, z1) => {
+    const nx = Math.max(2, Math.ceil((x1 - x0) / 4)), nz = Math.max(2, Math.ceil((z1 - z0) / 4));
+    for (let i = 0; i <= nx; i++) for (let j = 0; j <= nz; j++) {
+      if (L.isRoad(x0 + (x1 - x0) * i / nx, z0 + (z1 - z0) * j / nz)) return true;
+    }
+    return false;
+  };
+
+  /**
+   * City blocks for generic buildings: rectangles between road corridors,
+   * clipped to Manhattan, excluding the park. May overlap landmark sites —
+   * callers must test L.rectOverlapsSite() per lot, and L.isLand() per lot corner.
+   * Also includes blocks west of 10th Ave / east of Lexington up to the shore.
+   */
+  const blocks = [];
+  (function buildBlocks() {
+    const xs = [-420].concat(AVENUE_DEFS.map((a) => a.x)).concat([420]);
+    for (let i = 0; i < xs.length - 1; i++) {
+      const bx0 = xs[i] + (i === 0 ? 0 : AVE_W / 2), bx1 = xs[i + 1] - (i === xs.length - 2 ? 0 : AVE_W / 2);
+      for (let k = -1; k < STREET_COUNT; k++) {
+        const zA = k < 0 ? -1000 : STREET_Z0 + k * STREET_STEP;
+        const zB = k + 1 >= STREET_COUNT ? 1010 : STREET_Z0 + (k + 1) * STREET_STEP;
+        const bz0 = zA + (k < 0 ? 0 : ST_W / 2), bz1 = zB - (k + 1 >= STREET_COUNT ? 0 : ST_W / 2);
+        const cx = (bx0 + bx1) / 2, cz = (bz0 + bz1) / 2;
+        // keep if any sample point is on Manhattan and not in park
+        let land = 0;
+        for (let a = 0; a <= 4; a++) for (let b = 0; b <= 4; b++) {
+          const px = bx0 + (bx1 - bx0) * a / 4, pz = bz0 + (bz1 - bz0) * b / 4;
+          if (L.isManhattan(px, pz) && !L.inPark(px, pz)) land++;
+        }
+        if (land === 0) continue;
+        blocks.push({ x0: bx0, x1: bx1, z0: bz0, z1: bz1, cx, cz, district: null });
+      }
+    }
+    // Brooklyn: coarse warehouse blocks
+    for (let x = 480; x < 800; x += 70) for (let z = 400; z < 980; z += 60) {
+      const b = { x0: x + 7, x1: x + 63, z0: z + 7, z1: z + 53 };
+      b.cx = (b.x0 + b.x1) / 2; b.cz = (b.z0 + b.z1) / 2;
+      if (L.isBrooklyn(b.cx, b.cz)) blocks.push(b);
+    }
+  })();
+
+  /** District name + style hint at (x,z). */
+  L.districtAt = (x, z) => {
+    if (x >= INTERIOR_X_MIN) return 'interior';
+    if (L.isBrooklyn(x, z)) return 'brooklyn';
+    if (L.isIsland(x, z)) return 'harbor';
+    if (!L.isManhattan(x, z)) return 'water';
+    if (L.inPark(x, z)) return 'central_park';
+    if (z < -420) return x < 0 ? 'upper_west_side' : 'upper_east_side';
+    if (z < -140) return 'midtown';
+    if (z < 170) return 'midtown_south';
+    if (z < 520) return 'greenwich_village';
+    return 'financial_district';
+  };
+  // Style hints for generic buildings per district (map module may refine)
+  L.DISTRICT_STYLE = {
+    upper_west_side: { minH: 18, maxH: 60, style: 'prewar_apartment' },
+    upper_east_side: { minH: 18, maxH: 60, style: 'prewar_apartment' },
+    midtown: { minH: 40, maxH: 150, style: 'art_deco_skyscraper' },
+    midtown_south: { minH: 25, maxH: 90, style: 'commercial' },
+    greenwich_village: { minH: 10, maxH: 30, style: 'brownstone' },
+    financial_district: { minH: 40, maxH: 140, style: 'art_deco_skyscraper' },
+    brooklyn: { minH: 8, maxH: 25, style: 'warehouse' },
+  };
+  for (const b of blocks) b.district = L.districtAt(b.cx, b.cz);
+  L.blocks = blocks;
+
+  /** Location containing (x,z), nearest-first. */
+  L.locationAt = (x, z) => {
+    let best = null, bd = 1e9;
+    for (const l of LOCATIONS) { const d = Math.hypot(x - l.x, z - l.z); if (d <= l.r && d < bd) { bd = d; best = l; } }
+    return best;
+  };
+
+  G.LAYOUT = L;
+})();
+

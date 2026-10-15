@@ -1,0 +1,661 @@
+/* src/combat/35_reactions.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — COMBAT — 35: REACTIONS (the "reads like a real fight" layer)
+ * Owned by: combat.  Loaded after 30_combat (uses C.raySeg, C.freeSpot at call time).
+ *
+ * Small, cheap behaviours that sit on top of the AI state machine and make a
+ * firefight read like Fallout 3 / New Vegas / 4:
+ *
+ *  - GRENADE!        NPCs who see a live grenade land near them shout and
+ *                    sprint clear, crouch, and go back to the fight after the bang.
+ *  - KNOCKDOWN       explosions, super-sledge power hits and behemoth / deathclaw
+ *                    swipes throw bipeds off their feet; they lie there a beat and
+ *                    climb back up (G.chars fall + get-up animations).
+ *  - SUPPRESSION     rounds cracking past an NPC in a fight make it flinch,
+ *                    duck behind its cover and shoot worse for a second or two;
+ *                    shots whizzing past an UNAWARE enemy, or smacking into the wall
+ *                    next to it, put it on [CAUTION] and send it looking (toward the
+ *                    shooter's rough direction / the impact) — the stealth-sniper loop.
+ *  - BODY FOUND      a silent kill is noticed by friends who can see the body:
+ *                    "Man down!", then a search toward where the shot came from;
+ *                    NPCs walking past a fresh body later do the same.
+ *  - DISARMED        an NPC whose gun was shot out of its hands draws a sidearm
+ *                    from its inventory or runs to pick the gun back up.
+ *  - WATCHDOG        nobody stays stuck: actors found inside solid geometry are
+ *                    pushed to the nearest free spot, actors that fell under the
+ *                    street are put back on it, and actors that have tried to walk
+ *                    for 7 s without getting anywhere are nudged / re-planned (and,
+ *                    out of the player's sight, simply arrive at their goal).
+ *
+ * Hooks: 20_ai (C.reactOverride per actor, suppression spread in shoot),
+ *        30_combat (C.shotPassed in fire, C.tryKnockdown in explode/melee,
+ *        C.allyKilled in killActor), 10_actors (disarm keeps its pickup),
+ *        90_main (C.updateReactions per frame).  Debug: C.reactStats.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const THREE = window.THREE;
+  const C = G.__cmb;
+  const now = () => G.time.elapsed;
+  const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
+
+  const S = (C.reactStats = { evades: 0, knockdowns: 0, getups: 0, suppressed: 0, whizAlerts: 0, impactAlerts: 0, bodyFound: 0,
+    retrieved: 0, sidearms: 0, unstuckInside: 0, unstuckFell: 0, unstuckStall: 0, arrivedOffscreen: 0 });
+
+  // ------------------------------------------------------------------
+  // Bark lines (ALL ORIGINAL). Merged into C.BARKS per voice.
+  // ------------------------------------------------------------------
+  const LINES = {
+    raider: {
+      spotGrenade: ['Grenade! Move your ass!', 'Oh no no no — GRENADE!', 'Hot potato! RUN!'],
+      nearMiss: ['Whoa! That one parted my hair!', 'Missed me, sucker!', 'Hey! I felt that one go by!'],
+      bodyFound: ['Somebody popped Jimmy! Find \'em!', 'Wake up, boys — we got a shooter!', 'Aw hell, he\'s dead! Where\'d that come from?'],
+      getUp: ['Ugh... my everything...', 'That all you got?', 'Who turned the ground sideways?'],
+      retrieve: ['Mine! Mine mine mine!', 'Come to mama...'],
+      sidearm: ['Good thing I brought a backup!', 'Plan B, baby!'],
+    },
+    mutant: {
+      spotGrenade: ['Boom rock! Move!', 'Tiny bomb! Get away!'],
+      nearMiss: ['Ha! Puny human miss!', 'Bullet tickle.'],
+      bodyFound: ['Brother dead! Who did this?!', 'Something kill brother. Find it. Crush it!'],
+      getUp: ['Grrr... get up. Smash again.', 'Hurt... not dead.'],
+      retrieve: ['Gun! Give back gun!'],
+      sidearm: ['Got other gun. Better gun.'],
+    },
+    enclave: {
+      spotGrenade: ['Grenade! Clear the area!', 'Frag out — take cover!'],
+      nearMiss: ['Taking fire!', 'Rounds incoming, stay low!'],
+      bodyFound: ['Man down! Sniper, unknown position!', 'Soldier down. Sweep the area!'],
+      getUp: ['Still operational.', 'I\'m up. Re-engaging.'],
+      retrieve: ['Recovering my weapon!'],
+      sidearm: ['Switching to sidearm!'],
+    },
+    brotherhood: {
+      spotGrenade: ['Grenade! Scatter!', 'Explosive! Get clear!'],
+      nearMiss: ['Contact! We\'re taking fire!', 'Rounds close, stay on them!'],
+      bodyFound: ['Brother down! Find that shooter!', 'Knight down — eyes on the rooftops!'],
+      getUp: ['Armor held. Moving.', 'Ad Victoriam... ugh.'],
+      retrieve: ['Recovering my weapon!'],
+      sidearm: ['Sidearm!'],
+    },
+    settler: {
+      spotGrenade: ['Grenade! Get down!', 'Oh God — run!'],
+      nearMiss: ['Hey! Watch where you\'re shooting!', 'Whoa! That nearly took my ear off!'],
+      bodyFound: ['Someone\'s been shot! Oh God!', 'He\'s dead! Where did that come from?'],
+      getUp: ['Oof... I\'m okay... I think.'],
+      retrieve: ['Where\'s my gun... there!'],
+      sidearm: ['I\'ve still got this!'],
+    },
+    ghoul: {
+      spotGrenade: ['Grenade! Move them rotten legs!', 'Nope! Frag!'],
+      nearMiss: ['Hey! I\'m already ugly enough!', 'Watch it! I need all my holes where they are!'],
+      bodyFound: ['Somebody\'s been shot! Who\'s out there?!', 'Man down! Eyes on the rooftops!'],
+      getUp: ['Lost a bit of me there. Wasn\'t using it anyway.', 'Ow. Everything\'s where I left it. Mostly.'],
+      retrieve: ['My iron! Come here, you.'],
+      sidearm: ['Always carry a spare, kid.'],
+    },
+    guard: {
+      spotGrenade: ['Grenade! Clear out!', 'Frag! Everybody down!'],
+      nearMiss: ['Shots fired! Where\'s it coming from?', 'Rounds in the square! Take cover!'],
+      bodyFound: ['Man down! We got a shooter!', 'Somebody just dropped! Eyes up!'],
+      getUp: ['I\'m up. I\'m up.', 'Walls of the Neon don\'t fall that easy.'],
+      retrieve: ['Getting my rifle back!'],
+      sidearm: ['Going to the pistol!'],
+    },
+    merchant: {
+      spotGrenade: ['Grenade! Not near the stock!'],
+      nearMiss: ['Watch the merchandise!', 'Hey! You break it, you bought it!'],
+      bodyFound: ['Somebody\'s dead! That\'s bad for business!'],
+    },
+    atom: {
+      spotGrenade: ['The Glow comes early! Run!'],
+      bodyFound: ['A child of Atom has been split! Find the heretic!'],
+    },
+  };
+  (function mergeBarks() {
+    for (const v in LINES) {
+      const t = C.BARKS[v] || (C.BARKS[v] = {});
+      for (const cat in LINES[v]) t[cat] = (t[cat] || []).concat(LINES[v][cat]);
+    }
+  })();
+  function barkNow(a, cat, chance) {
+    if (!a.voice || a.isCreature || (chance !== undefined && Math.random() > chance)) return false;
+    const line = C.bark(a.voice, cat) || (C.BARKS.settler[cat] ? C.pick(C.BARKS.settler[cat]) : null);
+    if (!line) return false;
+    a._lastBark = now(); a.say(line, 2.6);
+    return true;
+  }
+  const biped = (a) => !!(a.td.human || (a.char && a.char.kind === 'biped'));
+
+  // ------------------------------------------------------------------
+  // 1. GRENADE! — see a live grenade land near you, get clear
+  // ------------------------------------------------------------------
+  let gScanT = 0;
+  function predictedRest(p, out) {
+    if (p.resting || p.stuck || p.vel.lengthSq() < 0.5) return out.copy(p.pos);
+    // flat-ground flight time (ignores walls: good enough to pick a side to run to)
+    const gy = G.world.groundHeight(p.pos.x, p.pos.z, p.pos.y + 0.5, 0.1);
+    const h = Math.max(0, p.pos.y - gy), vy = p.vel.y, g = p.gravity || 9.8;
+    const tf = Math.min((vy + Math.sqrt(vy * vy + 2 * g * h)) / g, Math.max(0, p.fuse - p.t));
+    return out.set(p.pos.x + p.vel.x * tf * 0.8, gy, p.pos.z + p.vel.z * tf * 0.8);
+  }
+  function scanGrenades(dt) {
+    gScanT -= dt; if (gScanT > 0) return; gScanT = 0.15;
+    let list = null; try { list = G.combat.projectiles(); } catch (e) { list = null; }
+    if (!list || !list.length) return;
+    const t = now();
+    for (const p of list) {
+      if (p.kind !== 'grenade' || p.mine || p.t < 0.2) continue;
+      const left = p.fuse - p.t; if (left < 0.25) continue;
+      const rest = predictedRest(p, _a);
+      const danger = (p.radius || 5) + 1.5;
+      let barked = !!p._barked;
+      for (const a of C.list) {
+        if (a.dead || !a.inScene || a.hover || a.holdPos || a.talking || a.burrowed || a.knockedOut) continue;
+        if (a.state === 'dormant' || a.state === 'knocked' || a._down || !biped(a)) continue;
+        if (a._evade && a._evade.g === p) continue;
+        const d = Math.hypot(a.pos.x - rest.x, a.pos.z - rest.z);
+        if (d > danger || Math.abs(a.pos.y - rest.y) > 4) continue;
+        // must notice it: in view (or close enough to hear it clatter), not the thrower mid-throw
+        if (p.from === a && p.t < 0.8) continue;
+        const dg = Math.hypot(a.pos.x - p.pos.x, a.pos.z - p.pos.z);
+        if (dg > 3.5 && !G.world.lineOfSight(a.eyePos(_b), _c.copy(p.pos).setY(p.pos.y + 0.15))) continue;
+        a._evade = { g: p, x: rest.x, z: rest.z, r: danger, start: t + 0.15 + Math.random() * 0.35, until: t + left + 0.4 };
+        S.evades++;
+        if (!barked && barkNow(a, 'spotGrenade', 0.9)) barked = p._barked = true;
+      }
+    }
+  }
+  function evadeUpdate(a, dt) {
+    const e = a._evade, t = now();
+    if (t > e.until) { a._evade = null; return 0; }
+    if (t < e.start) return 0;
+    const dx = a.pos.x - e.x, dz = a.pos.z - e.z, d = Math.hypot(dx, dz) || 0.01;
+    a.faceTarget = false; a.pendingMelee = null;
+    if (d < e.r + 1.2) {
+      // sprint away (a little sideways if the grenade is right between us and the wall)
+      C.steer(a, dx / d, dz / d, Math.max(a.runSpeed, 4.5) * 1.05, dt);
+      return 1;
+    }
+    // clear of it: crouch and wait for the bang, facing it
+    a.speed = 0;
+    a.faceTarget = true; a.faceTowards(e.x, e.z, 6, dt);
+    a.anim(a.td.human ? 'sneak' : 'idle');
+    return 2;
+  }
+
+  // ------------------------------------------------------------------
+  // 2. KNOCKDOWN — thrown off their feet, lie there, climb back up
+  // ------------------------------------------------------------------
+  /** strength 0..1 (explosion falloff / hit weight); dir = push direction (world). */
+  C.tryKnockdown = function (a, strength, dir, opts) {
+    if (!a || a.dead || !a.inScene || a._down || a.knockedOut || a.talking) return false;
+    if (!biped(a) || a.td.boss || a.isRobot || a.hover || a.holdPos || a.burrowed || a.state === 'dormant') return false;
+    if (!a.char || typeof a.char.setAnim !== 'function' || a.char.placeholder) return false;
+    const heavy = a.type === 'super_mutant' || a.type === 'brotherhood_paladin' || a.type === 'enclave_soldier' || a.maxHp > 300;
+    const need = heavy ? 0.55 : 0.32;
+    if (strength < need && !(opts && opts.force)) return false;
+    const t = now();
+    const dur = C.clamp(0.9 + strength * 1.6 + Math.random() * 0.6, 1.0, 3.0) * (heavy ? 0.8 : 1);
+    const d = dir ? _a.set(dir.x, 0, dir.z) : _a.set(Math.sin(a.yaw), 0, Math.cos(a.yaw));
+    if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
+    d.normalize();
+    a._down = { until: t + dur, up: 0, vx: d.x * (2.5 + strength * 4), vz: d.z * (2.5 + strength * 4) };
+    a.pendingMelee = null; a.lungeT = 0; a.chargeT = 0; a.speed = 0; a.ducked = false; a._evade = null;
+    if (a.nav) { a.nav.path = null; a.nav.search = null; }
+    try {
+      if (a.char.setAim) a.char.setAim(false);
+      a.char.setAnim('death', { dir: d.clone(), force: 20 + strength * 20 });
+    } catch (e) { a._down = null; return false; }
+    a._anim = '_down';
+    S.knockdowns++;
+    if (a.td.sounds && a.td.sounds.hurt) C.sfx(a.td.sounds.hurt, { pos: a.pos, volume: 0.8, pitch: 0.85 + Math.random() * 0.2 });
+    return true;
+  };
+  function downUpdate(a, dt) {
+    const k = a._down, t = now();
+    a.speed = 0; a.faceTarget = false;
+    // the push: slide a little along the blast (walls stop it)
+    if (Math.abs(k.vx) + Math.abs(k.vz) > 0.05) {
+      const r = G.world.moveCircle(a.pos, Math.min(a.radius, 0.5), 1.0, k.vx * dt, k.vz * dt);
+      if (isFinite(r.x) && isFinite(r.z)) {
+        const gy = G.world.groundHeight(r.x, r.z, a.pos.y + 0.6, 0.2);
+        if (gy > a.pos.y - 2.5 && gy > G.world.waterLevel - 0.3) { a.pos.x = r.x; a.pos.z = r.z; }
+      }
+      const damp = Math.exp(-7 * dt); k.vx *= damp; k.vz *= damp;
+    }
+    if (!k.up && t >= k.until) {
+      k.up = t + (a.type === 'super_mutant' ? 1.8 : 1.45);
+      try { a.char.revive('idle', { getup: true }); } catch (e) { k.up = t; }
+      a._anim = 'idle';
+      S.getups++;
+      if (a.inCombat) barkNow(a, 'getUp', 0.35);
+    }
+    if (k.up && t >= k.up) {
+      a._down = null;
+      if (a.inCombat) { a.aimT = t + 0.3 + Math.random() * 0.3; a.coverT = 0; }
+      return 0;
+    }
+    return 2;
+  }
+
+  // ------------------------------------------------------------------
+  // 3. SUPPRESSION & WHIZ — bullets passing close by
+  // ------------------------------------------------------------------
+  /**
+   * A shot went from origin along dir for len metres (from = 'player' | actor). hitActor = who it
+   * actually hit (no reaction for them — applyDamage handles that), impact = world hit point or null.
+   */
+  C.shotPassed = function (origin, dir, len, from, hitActor, impact) {
+    if (!(len > 1)) return;
+    const t = now(), isPlayer = from === 'player';
+    const minX = Math.min(origin.x, origin.x + dir.x * len) - 4, maxX = Math.max(origin.x, origin.x + dir.x * len) + 4;
+    const minZ = Math.min(origin.z, origin.z + dir.z * len) - 4, maxZ = Math.max(origin.z, origin.z + dir.z * len) + 4;
+    for (const a of C.list) {
+      if (a === from || a === hitActor || a.dead || !a.inScene || a.burrowed || a.state === 'dormant' || a.knockedOut) continue;
+      if (a.pos.x < minX || a.pos.x > maxX || a.pos.z < minZ || a.pos.z > maxZ) continue;
+      const cp = a.centerPos(_b);
+      const rs = C.raySeg(origin, dir, len, cp, cp);
+      const near = rs[1] < 1.7 * 1.7 && rs[0] > 1.5;
+      const nearImpact = impact && Math.hypot(impact.x - a.pos.x, impact.z - a.pos.z) < 3.5 && Math.abs(impact.y - cp.y) < 3;
+      if (!near && !nearImpact) continue;
+      const enemy = isPlayer ? a.isEnemy('player') : (from && a.isEnemy(from));
+      if (a.state === 'combat') {
+        if (!enemy || !near) continue;
+        // Suppressed: flinch, tuck in behind cover, worse aim for a moment
+        const fresh = !(a.suppressT > t);
+        a.suppressT = t + 1.4 + Math.random() * 0.6;
+        if (fresh) { S.suppressed++; a.aimT = Math.max(a.aimT || 0, t + 0.2 + Math.random() * 0.25); }
+        if (a.td.human && !a.holdPos) {
+          if (a.coverPos && a.coverPos.covered && Math.hypot(a.coverPos.x - a.pos.x, a.coverPos.z - a.pos.z) < 0.9) {
+            a.ducked = true; a.duckUntil = Math.max(a.duckUntil || 0, t + 0.6 + Math.random() * 0.8);
+          } else if (!a.coverPos && Math.random() < 0.45) a.coverT = Math.min(a.coverT, 0.05);
+        }
+        if (fresh && isPlayer && a.voice && Math.random() < 0.18 && (!a._lastBark || t - a._lastBark > 4)) barkNow(a, 'nearMiss');
+        continue;
+      }
+      if (!isPlayer) continue;
+      if (!enemy) {
+        // a neutral nearly hit by the player: startled, looks at you, complains (friendly-fire tolerance lives in onAttacked)
+        if (near && a.td.human && !a.talking && (!a._whizT || t - a._whizT > 12)) {
+          a._whizT = t; a.faceTowards(G.player.pos.x, G.player.pos.z);
+          barkNow(a, 'nearMiss', 0.8);
+        }
+        continue;
+      }
+      if (a.warden && C.wardenHold && C.wardenHold(a)) { if (C.wardenNoise) C.wardenNoise(a, 'gun', impact || origin); continue; }
+      if (a.state === 'search' && a.stateT < 0.6) continue;         // already reacting to the gunshot itself
+      // Unaware enemy: [CAUTION], then go and look — toward the impact, or back along the whiz
+      let px, pz;
+      if (nearImpact && !near) { px = impact.x; pz = impact.z; S.impactAlerts++; }
+      else {
+        const back = Math.min(rs[0], 12 + Math.random() * 10);
+        const sx = cp.x - dir.x * back, sz = cp.z - dir.z * back;
+        const j = Math.min(10, rs[0] * 0.15);
+        px = sx + (Math.random() - 0.5) * j; pz = sz + (Math.random() - 0.5) * j;
+        S.whizAlerts++;
+      }
+      a.awareness = Math.max(a.awareness || 0, Math.min(0.9, (a.awareness || 0) + (near ? 0.55 : 0.35)));
+      if (a.state === 'idle' || a.state === 'move' || a.state === 'search') {
+        if (a.state === 'search') a.setState('idle');
+        C.startSearch(a, { x: px, z: pz, y: a.pos.y });
+        a.searchT = 14 + Math.random() * 6;
+        a.faceTowards(px, pz);
+        if (a.voice && !a.isCreature && (!a._cautionBarkT || t - a._cautionBarkT > 6)) { a._cautionBarkT = t; a.say(C.cautionBark(a.voice), 2.2); }
+      }
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // 4. BODY FOUND — friends react to a kill they didn't see coming
+  // ------------------------------------------------------------------
+  function friends(o, a) { return o.faction === a.faction || G.combat.relation(o.faction, a.faction) === 'ally'; }
+  function searchFromBody(o, a, dir, shooterDist) {
+    let px = a.pos.x, pz = a.pos.z;
+    if (dir) {
+      const back = Math.min(shooterDist || 20, 10 + Math.random() * 14);
+      px -= dir.x * back; pz -= dir.z * back;
+    }
+    const j = 6;
+    px += (Math.random() - 0.5) * j; pz += (Math.random() - 0.5) * j;
+    o.awareness = Math.max(o.awareness || 0, 0.8);
+    o.cautionUntil = 0;
+    if (o.state === 'search') o.setState('idle');
+    C.startSearch(o, { x: px, z: pz, y: a.pos.y });
+    o.searchT = 20 + Math.random() * 10;
+  }
+  /** Called from killActor (after the death is resolved). */
+  C.allyKilled = function (a, info) {
+    const killer = info && info.source;
+    const P = G.player;
+    let barked = false;
+    const seen = a._bodySeenBy || (a._bodySeenBy = new Set());
+    for (const o of C.list) {
+      if (o === a || o.dead || !o.inScene || o.state === 'dormant' || o.knockedOut || o.talking) continue;
+      if (!friends(o, a) || o.following === 'player') continue;
+      const d = o.distTo(a.pos); if (d > 35) continue;
+      if (d > 6 && !G.world.lineOfSight(o.eyePos(_a), a.centerPos(_b))) continue;
+      seen.add(o.uid);
+      if (o.state === 'combat') { if (!barked && o.voice) { o.bark('allyDown', 0.5); barked = true; } continue; }
+      if (killer === 'player') {
+        if (!o.isEnemy('player')) {
+          // a friendly settler watching the player murder their friend: onAttacked-style aggro is the rpg/faction's job;
+          // here they just flee from the scene
+          if (o.td.human && !o.weapon) { o.setState('cower'); o.bark('cower', 0.5); }
+          continue;
+        }
+        if (o.warden && C.wardenHold && C.wardenHold(o)) { if (C.provokeWarden) C.provokeWarden(o.warden, 'attacked'); continue; }
+        const pd = o.distToPlayer();
+        if (o.seesPlayer || pd < 10) { C.enterCombat(o, 'player', 0.35 + Math.random() * 0.4); continue; }
+        searchFromBody(o, a, info && info.dir, Math.hypot(P.pos.x - a.pos.x, P.pos.z - a.pos.z));
+        S.bodyFound++;
+        if (!barked) barked = barkNow(o, 'bodyFound', 0.9) || barked;
+      } else if (killer && killer !== 'player' && !killer.dead && o.isEnemy(killer)) {
+        C.enterCombat(o, killer, 0.3 + Math.random() * 0.5);
+      }
+    }
+  };
+  /** Stumbling on a fresh body later (1 Hz, a few actors per tick). */
+  let bodyT = 0;
+  function scanBodies(dt) {
+    bodyT -= dt; if (bodyT > 0) return; bodyT = 1.0;
+    const t = now();
+    const bodies = [];
+    for (const b of C.list) if (b.dead && b.inScene && b.killer === 'player' && t - (b.deathT || 0) < 600 && !b.disintegrated) bodies.push(b);
+    if (!bodies.length) return;
+    for (const o of C.list) {
+      if (o.dead || !o.inScene || (o.state !== 'idle' && o.state !== 'move') || o.isCreature || !o.td.human || o.talking) continue;
+      if (!o.isEnemy('player') || (o.warden && C.wardenHold && C.wardenHold(o))) continue;
+      for (const b of bodies) {
+        if (!friends(o, b)) continue;
+        const seen = b._bodySeenBy || (b._bodySeenBy = new Set());
+        if (seen.has(o.uid)) continue;
+        const d = o.distTo(b.pos); if (d > 14) continue;
+        const dx = b.pos.x - o.pos.x, dz = b.pos.z - o.pos.z, dd = Math.hypot(dx, dz) || 1;
+        if (d > 3 && (dx * -Math.sin(o.yaw) + dz * -Math.cos(o.yaw)) / dd < 0.2) continue; // behind them
+        if (!G.world.lineOfSight(o.eyePos(_a), b.centerPos(_b))) continue;
+        seen.add(o.uid);
+        searchFromBody(o, b, null, 0);
+        o.lastKnown.set(b.pos.x + (Math.random() - 0.5) * 8, b.pos.y, b.pos.z + (Math.random() - 0.5) * 8);
+        S.bodyFound++;
+        barkNow(o, 'bodyFound', 0.85);
+        break;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 5. DISARMED — sidearm, or go get the gun back
+  // ------------------------------------------------------------------
+  function sidearmId(a) {
+    for (const e of a.inventory || []) {
+      const info = C.weaponInfo(e[0]);
+      if (info && !info.melee && info.id !== 'unarmed' && e[0] !== a._lostWeapon) return e[0];
+    }
+    return null;
+  }
+  function pickupAlive(p) {
+    if (!p || G.isStub('items') || typeof G.items.pickups !== 'function') return false;
+    try { return G.items.pickups().indexOf(p) >= 0; } catch (e) { return false; }
+  }
+  function disarmedUpdate(a, dt) {
+    const t = now();
+    if (a.weapon || a.state !== 'combat' || !a.td.human) return 0;
+    const r = a._rearm || (a._rearm = { t0: t, sidearmT: t + 0.7 + Math.random() * 0.5, tries: 0 });
+    // 1) a backup gun in the pockets
+    const side = sidearmId(a);
+    if (side && t > r.sidearmT) {
+      a.equipWeapon(side); a.oneShot('reload');
+      S.sidearms++; barkNow(a, 'sidearm', 0.7);
+      a._rearm = null; a.disarmed = false; a.aimT = t + 0.5;
+      return 0;
+    }
+    if (side) { a.speed = 0; return 1; }
+    // 2) the dropped gun, if it's still lying there and the fight isn't in our face
+    const dp = a._droppedGun;
+    if (!dp || !pickupAlive(dp.p) || t - r.t0 > 12) return 0;
+    const tp = a.target === 'player' ? G.player.pos : (a.target && a.target.pos);
+    if (tp && Math.hypot(tp.x - a.pos.x, tp.z - a.pos.z) < 3.5) return 0;     // punch first
+    const gx = dp.p.pos.x, gz = dp.p.pos.z, d = Math.hypot(gx - a.pos.x, gz - a.pos.z);
+    if (d > 16 || Math.abs(dp.p.pos.y - a.pos.y) > 2) return 0;
+    if (d > 0.9) { C.navMove(a, gx, gz, a.runSpeed, dt, 0.7); return 1; }
+    try { G.items.removePickup(dp.p); } catch (e) { return 0; }
+    a.inventory.push([dp.wid, 1]);
+    a.equipWeapon(dp.wid); a.oneShot('reload');
+    a._droppedGun = null; a._rearm = null; a.disarmed = false; a.aimT = t + 0.6;
+    S.retrieved++; barkNow(a, 'retrieve', 0.7);
+    return 1;
+  }
+
+  // ------------------------------------------------------------------
+  // 5b. LINE OF FIRE — a friend (or the friendly player) between the gun and its target
+  // ------------------------------------------------------------------
+  const _dir = new THREE.Vector3();
+  C.friendInLine = function (a, aim) {
+    const o = a.eyePos(_a);
+    const dx = aim.x - o.x, dy = aim.y - o.y, dz = aim.z - o.z, L = Math.hypot(dx, dy, dz);
+    if (L < 2.5) return null;
+    _dir.set(dx / L, dy / L, dz / L);
+    const minX = Math.min(o.x, aim.x) - 1.5, maxX = Math.max(o.x, aim.x) + 1.5, minZ = Math.min(o.z, aim.z) - 1.5, maxZ = Math.max(o.z, aim.z) + 1.5;
+    for (const f of C.list) {
+      if (f === a || f === a.target || f.dead || !f.inScene || f.burrowed || f.state === 'dormant') continue;
+      if (f.pos.x < minX || f.pos.x > maxX || f.pos.z < minZ || f.pos.z > maxZ) continue;
+      if (a.isEnemy(f)) continue;                                    // an enemy in the way is fair game
+      // body as a vertical capsule (knees to crown)
+      const r = Math.min(0.9, f.radius + 0.15);
+      _b.set(f.pos.x, f.pos.y + Math.min(0.5, f.height * 0.3), f.pos.z); _c.set(f.pos.x, f.pos.y + f.height * 0.95, f.pos.z);
+      const rs = C.raySeg(o, _dir, L - 0.6, _b, _c);
+      if (rs[0] > 0.7 && rs[1] < r * r) return f;
+    }
+    // companions / allied NPCs don't shoot through the player either
+    if (a.target !== 'player' && !a.isEnemy('player') && G.player.alive) {
+      const P = G.player.pos;
+      if (P.x > minX && P.x < maxX && P.z > minZ && P.z < maxZ) {
+        _b.set(P.x, P.y + 0.4, P.z); _c.set(P.x, P.y + 1.75, P.z);
+        const rs = C.raySeg(o, _dir, L - 0.6, _b, _c);
+        if (rs[0] > 0.7 && rs[1] < 0.55 * 0.55) return 'player';
+      }
+    }
+    return null;
+  };
+
+  // ------------------------------------------------------------------
+  // 5c. PACK TACTICS — melee attackers fan out around their target instead of queueing
+  // ------------------------------------------------------------------
+  C.surroundSlot = function (a, tp, reach, out) {
+    const t = now();
+    if (!a._slot || t > a._slot.t) {
+      const pack = [a];
+      let cx = a.pos.x, cz = a.pos.z;
+      for (const o of C.list) {
+        if (o === a || o.dead || !o.inScene || !o.inCombat || o.target !== a.target || o.hover || o.holdPos) continue;
+        if (o.weapon && !o.weapon.melee) continue;
+        if (Math.hypot(o.pos.x - tp.x, o.pos.z - tp.z) > 12) continue;
+        pack.push(o); cx += o.pos.x; cz += o.pos.z;
+      }
+      if (pack.length < 2) { a._slot = { t: t + 0.5, ang: null }; return false; }
+      pack.sort((p, q) => p.uid - q.uid);
+      const n = pack.length, i = pack.indexOf(a);
+      cx /= n; cz /= n;
+      const base = Math.atan2(cx - tp.x, cz - tp.z);
+      const step = Math.min(1.05, 5.2 / (n - 1 || 1));               // wider fan for bigger packs, never a full ring
+      a._slot = { t: t + 0.35 + Math.random() * 0.2, ang: base + (i - (n - 1) / 2) * step };
+    }
+    if (a._slot.ang === null) return false;
+    const r = reach * 0.9 + 0.4;
+    out.set(tp.x + Math.sin(a._slot.ang) * r, tp.y, tp.z + Math.cos(a._slot.ang) * r);
+    // don't pick a slot inside a wall
+    if (!G.world.lineOfSight(_a.set(tp.x, tp.y + 0.8, tp.z), _b.set(out.x, tp.y + 0.8, out.z))) return false;
+    return true;
+  };
+
+  // ------------------------------------------------------------------
+  // 5d. "POINT THAT SOMEWHERE ELSE" — aiming a drawn gun at a friendly NPC (FO4)
+  // ------------------------------------------------------------------
+  const AIMED = {
+    _default: ['Hey! Point that somewhere else!', 'Whoa, whoa! Easy with that thing!', 'You aiming at me, friend? Don\'t.', 'Lower the gun. Slowly.'],
+    ghoul: ['I\'ve been shot before, smoothskin. Didn\'t take then either.', 'Aim that somewhere I ain\'t standing.', 'Real brave. Pointing a gun at a ghoul.'],
+    guard: ['Lower that weapon. Now.', 'You want to point that at me? Think real hard.', 'Barrel down, or I put you down.'],
+    merchant: ['Whoa! I\'m open for business, not target practice!', 'Put it down or no discount. Ever.'],
+    brotherhood: ['Lower your weapon, civilian.', 'Aim that at me again and it\'ll be the last thing you aim.'],
+    raider: ['You pointin\' that at me? Cute.', 'Do it. I dare ya.'],
+  };
+  function playerGunDrawn() {
+    if (G.isStub('weapons') || typeof G.weapons.current !== 'function') return false;
+    try {
+      if (G.weapons.isHolstered && G.weapons.isHolstered()) return false;
+      const c = G.weapons.current(); if (!c || !c.id || c.holstered || c.id === 'unarmed') return false;
+      const info = C.weaponInfo(c.id); return !!(info && !info.melee);
+    } catch (e) { return false; }
+  }
+  let aimT = 0, aimedAt = null, aimedFor = 0;
+  function aimedWatch(dt) {
+    aimT -= dt; if (aimT > 0) return; const step = 0.25; aimT = step;
+    if (G.state !== 'play' || !G.player.alive || C.anyCombat || !playerGunDrawn()) { aimedAt = null; aimedFor = 0; return; }
+    let h = null; try { h = G.combat.targetUnderCrosshair(); } catch (e) { h = null; }
+    const a = h && h.actor;
+    if (!a || a.dead || a.hostile() || a.isCreature || a.isRobot || !a.voice || a.following === 'player' || a.talking || h.dist > 14 ||
+        (a.state !== 'idle' && a.state !== 'move')) { aimedAt = null; aimedFor = 0; return; }
+    if (a !== aimedAt) { aimedAt = a; aimedFor = 0; }
+    aimedFor += step;
+    if (aimedFor < 1.4 || (a._aimedWarnT && now() - a._aimedWarnT < 25)) return;
+    a._aimedWarnT = now(); aimedFor = 0;
+    a.faceTowards(G.player.pos.x, G.player.pos.z);
+    const lines = AIMED[a.neonGuard || a.safeGuard ? 'guard' : a.voice] || AIMED._default;
+    a.say(C.pick(lines), 3);
+    if (!a.weapon && a.td.human && !a.merchant && Math.random() < 0.5) a.setState('cower');
+  }
+
+  // ------------------------------------------------------------------
+  // Per-actor override (called by C.updateActor before its state switch).
+  // Returns 0 = not handled, 1 = handled (caller picks the animation), 2 = handled incl. animation.
+  // ------------------------------------------------------------------
+  C.reactOverride = function (a, dt) {
+    if (a.state === 'knocked' || a.state === 'dormant') return 0;
+    if (a._down) return downUpdate(a, dt);
+    if (a._evade) { const r = evadeUpdate(a, dt); if (r) return r; }
+    if (a.disarmed && !a.weapon && a.state === 'combat') { const r = disarmedUpdate(a, dt); if (r) return r; }
+    return 0;
+  };
+
+  // ------------------------------------------------------------------
+  // 6. WATCHDOG — nobody stays stuck (1 Hz, a slice of the list per tick)
+  // ------------------------------------------------------------------
+  const MOBILE_STATES = { combat: 1, search: 1, move: 1, follow: 1, flee: 1 };
+  function freeNear(a, maxR, sameFloorY, needLos) {
+    const y0 = sameFloorY;
+    for (let r = 0.6; r <= maxR; r += 0.6) {
+      const n = Math.max(8, Math.round(r * 6));
+      const off = Math.random() * Math.PI * 2;
+      for (let k = 0; k < n; k++) {
+        const ang = off + k / n * Math.PI * 2;
+        const x = a.pos.x + Math.sin(ang) * r, z = a.pos.z + Math.cos(ang) * r;
+        const y = C.freeSpot(x, z, Math.max(0.2, Math.min(a.radius, 0.5)), y0, true);
+        if (y === null || Math.abs(y - y0) > 0.9) continue;
+        if (!a.td.amphibious && y < G.world.waterLevel - 0.3) continue;
+        if (needLos && !G.world.lineOfSight(_a.set(a.pos.x, a.pos.y + 1.0, a.pos.z), _b.set(x, y + 1.0, z))) continue;
+        return { x, y, z };
+      }
+    }
+    return null;
+  }
+  function insideSolid(a) {
+    const cs = G.world.query(a.pos.x - 0.05, a.pos.z - 0.05, a.pos.x + 0.05, a.pos.z + 0.05);
+    const y = a.pos.y;
+    for (const c of cs) {
+      if (c.maxY <= y + 0.6 || c.minY >= y + Math.min(1.7, a.height * 0.9)) continue;
+      if (c.tag === 'actor' || c.tag === 'foliage' || c.tag === 'trigger') continue;
+      if (G.world.pointInCollider(c, a.pos.x, a.pos.z, -0.08)) return true;
+    }
+    return false;
+  }
+  function currentGoal(a) {
+    if (a.state === 'move' && a.moveGoal) return a.moveGoal;
+    if (a.state === 'combat' && a.coverPos) return a.coverPos;
+    if (a.state === 'search' && a.lastKnown) return a.lastKnown;
+    if (a.nav && a.nav.path && a.nav.path.length) return a.nav.path[Math.min(a.nav.i, a.nav.path.length - 1)];
+    if (a.wanderGoal) return a.wanderGoal;
+    return null;
+  }
+  function playerCanSee(x, y, z) {
+    const P = G.player;
+    const dx = x - P.pos.x, dz = z - P.pos.z, d = Math.hypot(dx, dz);
+    if (d > 120) return false;
+    const f = P.forward || _c.set(-Math.sin(P.yaw), 0, -Math.cos(P.yaw));
+    if (d > 4 && (dx * f.x + dz * f.z) / d < 0.35) return false;          // outside ~70° either side
+    return G.world.lineOfSight(_a.set(P.pos.x, P.pos.y + 1.6, P.pos.z), _b.set(x, y + 1.0, z));
+  }
+  let wdIdx = 0, wdT = 0;
+  function watchdog(dt) {
+    wdT -= dt; if (wdT > 0) return; wdT = 0.25;
+    const L = C.list, n = L.length; if (!n) return;
+    const t = now();
+    const per = Math.max(1, Math.ceil(n / 4));                 // every actor about once a second
+    for (let k = 0; k < per; k++) {
+      const a = L[(wdIdx++) % n];
+      if (!a || a.dead || !a.inScene || a.hover || a.burrowed || a.talking || a._down || a.state === 'dormant' || a.state === 'knocked') continue;
+      const mobile = !!MOBILE_STATES[a.state] || a.aiMode === 'wander' || a.aiMode === 'patrol';
+      // (a) fell under the street (exteriors only: interiors have floors over floors)
+      if (!G.LAYOUT.isInterior(a.pos.x) && !a.td.amphibious) {
+        const th = G.world.terrainHeight(a.pos.x, a.pos.z);
+        if (th > G.world.waterLevel && a.pos.y < th - 1.5) {
+          a.pos.y = G.world.groundHeight(a.pos.x, a.pos.z, th + 0.6, 0.2); a.vy = 0;
+          S.unstuckFell++;
+        }
+      }
+      if (a.holdPos) continue;
+      // (b) inside solid geometry (spawned into a wall, shoved by separation, bad anchor)
+      if (mobile && insideSolid(a)) {
+        a._insideN = (a._insideN || 0) + 1;
+        if (a._insideN >= 2) {
+          const s = freeNear(a, 4.2, a.pos.y, false);
+          if (s) { a.pos.set(s.x, s.y, s.z); S.unstuckInside++; if (a.nav) { a.nav.path = null; a.nav.search = null; } }
+          a._insideN = 0;
+        }
+      } else a._insideN = 0;
+      // (c) trying to walk but going nowhere
+      const w = a._wd || (a._wd = { x: a.pos.x, z: a.pos.z, t, tries: 0 });
+      const trying = t - (a._wantMoveT || -99) < 0.6;
+      if (!trying || Math.hypot(a.pos.x - w.x, a.pos.z - w.z) > 1.2) { w.x = a.pos.x; w.z = a.pos.z; w.t = t; if (!trying) w.tries = 0; continue; }
+      if (t - w.t < 7) continue;
+      // stalled for 7 s: re-plan, then nudge, then (out of sight) arrive
+      w.t = t; w.tries++;
+      S.unstuckStall++;
+      if (a.nav) { a.nav.path = null; a.nav.search = null; a.nav.failUntil = 0; a.nav.need = true; a.nav.checkT = 0; }
+      a.detourT = 0; a.avoid = null; a.stuckT = 0;
+      if (a.state === 'combat') a.coverPos = null;
+      if (a.state === 'idle' || a.aiMode === 'wander') a.wanderGoal = null;
+      const goal = currentGoal(a);
+      if (w.tries >= 2 && goal && a.state !== 'combat' && a.following !== 'player') {
+        const gd = Math.hypot(goal.x - a.pos.x, goal.z - a.pos.z);
+        const gy = C.freeSpot(goal.x, goal.z, 0.3, isFinite(goal.y) ? goal.y : a.pos.y, true);
+        if (gd < 80 && gy !== null && Math.abs(gy - (isFinite(goal.y) ? goal.y : a.pos.y)) < 2.5 &&
+            !playerCanSee(a.pos.x, a.pos.y, a.pos.z) && !playerCanSee(goal.x, gy, goal.z)) {
+          a.pos.set(goal.x, gy, goal.z); S.arrivedOffscreen++; w.tries = 0;
+          continue;
+        }
+      }
+      if (w.tries >= 2) {
+        const s = freeNear(a, 3.0, a.pos.y, true);
+        if (s) { a.pos.set(s.x, s.y, s.z); }
+      }
+      if (w.tries >= 4 && a.state === 'search') { a.searchT = 0; }
+      if (w.tries >= 4 && a.state === 'move') { a.moveGoal = null; a.setState(a.following ? 'follow' : 'idle'); w.tries = 0; }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Per-frame entry (90_main) & wiring
+  // ------------------------------------------------------------------
+  C.updateReactions = function (dt) {
+    if (dt <= 0) return;
+    try { scanGrenades(dt); } catch (e) { G.reportError('combat:react.grenade', e); }
+    try { scanBodies(dt); } catch (e) { G.reportError('combat:react.bodies', e); }
+    try { watchdog(dt); } catch (e) { G.reportError('combat:react.watchdog', e); }
+    try { aimedWatch(dt); } catch (e) { G.reportError('combat:react.aimed', e); }
+  };
+  G.events.on('reset', () => { gScanT = 0; bodyT = 0; wdT = 0; wdIdx = 0; aimedAt = null; aimedFor = 0; for (const k in S) S[k] = 0; });
+  void THREE;
+})();
+

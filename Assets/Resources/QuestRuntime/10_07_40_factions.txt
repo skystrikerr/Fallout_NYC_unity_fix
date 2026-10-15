@@ -1,0 +1,635 @@
+/* src/quests/40_factions.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 40: THE BROTHERHOOD, THE ENCLAVE & KONG
+ *   MQ04 "The Company You Keep"  — pick a side (or none)
+ *   MQ05 "King of the Empire"    — the Knickerbocker Core atop the
+ *                                  Empire State, held by KONG
+ *   SQ   "Overdue"               — NYPL books for Scribe Wexler
+ *   SQ   "Hostile Takeover"      — Knight Reyes' bounty on Bear Market Betty
+ * NPCs: Paladin Commander Stroud, Scribe Ingrid Wexler, Knight Tobias Reyes
+ * (quartermaster), Lieutenant Vesper Hale (Enclave), KONG (behemoth).
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+
+  const ROCK = { x: 80, z: -320 }, UN = { x: 313, z: -320 }, ESB = { x: 80, z: -72 }, NYPL = { x: 80, z: -162 };
+  const faction = () => L.flag('mq_faction') || null;   // 'bos' | 'enclave' | 'none'
+
+  const STOCK_BOS = [[['laser_pistol'], 1], [['laser_rifle'], 1], [['ammo_energy_cell'], 80], [['ammo_mf_cell'], 60], [['stimpak', /^stimpak$/i], 4],
+    [['frag_grenade'], 3], [['combat_armor', /combat armor/i], 1], [['radaway', /radaway/i], 2], [['ammo_556'], 60]];
+
+  // ------------------------------------------------------------------
+  // Quests
+  // ------------------------------------------------------------------
+  L.hook('init', function () {
+    L.quest({
+      id: 'mq04', main: true, order: 4, name: 'The Company You Keep', giver: 'Vinnie Valentine', location: 'Midtown',
+      desc: 'The Enclave is holding Zeke on Liberty Island. Two powers in Manhattan could get you there: the Brotherhood of Steel at ' +
+        'Rockefeller Center, and the Enclave itself at the United Nations Plaza.',
+      stages: [
+        { id: 'choose', text: 'Seek help from the Brotherhood of Steel (Rockefeller Center) or the Enclave (UN Plaza).',
+          markers: () => [{ npc: 'bos_stroud', label: 'Brotherhood of Steel' }, { npc: 'enc_hale', label: 'The Enclave' }],
+          onEnter() {
+            // The core was already taken from KONG before this quest began (onCore settled the story as "go it
+            // alone" and moved on to MQ06): nothing is left to choose — close it instead of leaving it open forever.
+            if (L.flag('core_obtained') && Q.isStarted('mq05')) { if (!faction()) L.setFlag('mq_faction', 'none'); Q.complete('mq04'); return; }
+            L.hint('karma', 'Your choices affect your Karma and how Manhattan remembers you. Check STAT → General in your Pip-Boy.', 6);
+          } },
+        { id: 'unterm', text: '(Optional) Find out what the Enclave really plans to do with the array.', sideObjective: true, optional: true,
+          showIf: () => !!L.flag('hale_evasive'), doneIf: () => !!(L.flag('knows_directive') || L.has('q_holo_directive_7a')),
+          markers: () => { const p = L.termPos('un_command'); return p ? [{ x: p.x, z: p.z, label: 'Enclave Command Terminal' }] : []; } },
+        { id: 'join_bos', text: '(Optional) Join the Brotherhood of Steel at Rockefeller Center.', sideObjective: true, optional: true,
+          showIf: () => !!L.flag('met_stroud') && !faction(), doneIf: () => faction() === 'bos' },
+        { id: 'join_enclave', text: '(Optional) Accept Lieutenant Hale\'s offer and work with the Enclave.', sideObjective: true, optional: true,
+          showIf: () => !!L.flag('met_hale') && !faction() && !L.flag('enclave_hostile'), doneIf: () => faction() === 'enclave' },
+        { id: 'go_alone', text: '(Optional) Go it alone: find the ignition core without either faction.', sideObjective: true, optional: true,
+          showIf: () => !!(L.flag('met_stroud') || L.flag('met_hale')) && !faction(), doneIf: () => faction() === 'none' },
+      ],
+      rewards: { xp: 200 },
+      onComplete() { if (!Q.isStarted('mq05')) Q.start('mq05'); },
+    });
+
+    L.quest({
+      id: 'mq05', main: true, order: 5, name: 'King of the Empire', location: 'Empire State Building',
+      desc: () => 'The Knickerbocker array needs an ignition core, and the core was hauled to the top of the Empire State Building by super mutants, ' +
+        'whose leader calls himself KONG, King of the Empire. ' + (faction() === 'bos' ? 'Paladin Commander Stroud wants it.' : faction() === 'enclave' ? 'Lieutenant Hale wants it.' : 'Everybody wants it.'),
+      stages: [
+        { id: 'core', text: 'Obtain the Knickerbocker Ignition Core from KONG at the Empire State Building.',
+          markers: () => [kongMarker()] },
+        { id: 'queen', text: '(Optional) Find KONG a "queen" who doesn\'t scream. Macy\'s is full of mannequins.', sideObjective: true, optional: true,
+          showIf: () => !!L.flag('kong_wants_queen') && !L.has('q_fay_mannequin') && !L.has('q_knickerbocker_core'), doneIf: () => !!L.flag('kong_friend'),
+          markers: () => (L.pickups.fay ? [{ x: L.pickups.fay.pos.x, z: L.pickups.fay.pos.z, label: 'Mannequin (Macy\'s)' }] : [{ x: 0, z: -50, label: 'Macy\'s' }]) },
+        { id: 'kg_talk', text: '(Optional) Talk KONG into giving up his "shiny rock".', sideObjective: true, optional: true,
+          showIf: () => false, doneIf: () => L.flag('kong_resolution') === 'speech' || L.flag('kong_resolution') === 'trick' },
+        { id: 'kg_kill', text: '(Optional) Kill KONG and take the core.', sideObjective: true, optional: true,
+          showIf: () => false, doneIf: () => !!L.flag('kong_dead') && !L.flag('kong_friend') && !L.flag('kong_resolution') },
+        { id: 'return_bos', text: 'Bring the Knickerbocker Core to Paladin Commander Stroud at Rockefeller Center.', markers: () => [{ npc: 'bos_stroud', label: 'Paladin Commander Stroud' }] },
+        { id: 'return_enclave', text: 'Bring the Knickerbocker Core to Lieutenant Hale at the UN Plaza.', markers: () => [{ npc: 'enc_hale', label: 'Lieutenant Hale' }] },
+      ],
+      rewards: { xp: 400 },
+      onComplete() {
+        L.news('This just in from Midtown: the super mutant king of the Empire State Building — yes, he calls himself Kong, no, I am not making that up — has lost his favourite toy. A little bird in a blue jumpsuit took it. ' +
+          (L.flag('kong_friend') ? 'And get this: the big guy\'s reportedly HAPPY about it. Says he\'s in love. With a mannequin. Congratulations to the couple.' : L.flag('kong_dead') ? 'The king is dead, folks. Long live... well, nobody, probably.' : 'Kong\'s reportedly confused. Kong is usually confused.'));
+        if (!Q.isStarted('mq06')) Q.start('mq06', { stage: faction() === 'enclave' ? 'vertibird' : 'ferry' });
+      },
+    });
+
+    L.quest({
+      id: 'sq_overdue', name: 'Overdue', giver: 'Scribe Ingrid Wexler', location: 'New York Public Library',
+      desc: 'Scribe Wexler of the Brotherhood of Steel wants three pre-war technical books recovered from the New York Public Library, ' +
+        'which is currently being used as a nest by feral ghouls.',
+      stages: [
+        { id: 'books', text: () => 'Recover the three technical books from the New York Public Library (' + bookCount() + '/3).',
+          markers: () => BOOKS.filter((b) => !L.has(b.id) && L.pickups[b.key]).map((b) => ({ x: L.pickups[b.key].pos.x, z: L.pickups[b.key].pos.z, label: b.label })) },
+        { id: 'od_catalog', text: '(Optional) Look the books up on the library\'s catalogue terminal.', sideObjective: true, optional: true,
+          showIf: () => Q.stage('sq_overdue') === 'books', doneIf: () => !!L.flag('nypl_catalog_read'),
+          markers: () => { const p = L.termPos('nypl_catalog'); return p ? [{ x: p.x, z: p.z, label: 'Library Catalogue' }] : []; } },
+        { id: 'od_haggle', text: '(Optional) Negotiate a better fee with Scribe Wexler.', sideObjective: true, optional: true,
+          showIf: () => false, doneIf: () => !!L.flag('overdue_haggled') },
+        { id: 'return', text: 'Return the books to Scribe Wexler at Rockefeller Center.', markers: () => [{ npc: 'bos_wexler', label: 'Scribe Wexler' }] },
+      ],
+      rewards: { xp: 250, caps: 150, items: [['ammo_energy_cell', 40]] },
+    });
+
+    L.quest({
+      id: 'sq_exchange', name: 'Hostile Takeover', giver: 'Knight Tobias Reyes', location: 'The Exchange (Wall Street)',
+      desc: 'Bear Market Betty and her raiders run a protection racket out of the New York Stock Exchange. The Brotherhood has put a bounty on her — ' +
+        'or on proof of the racket that would justify a raid.',
+      stages: [
+        { id: 'hunt', text: 'Deal with Bear Market Betty at the New York Stock Exchange.',
+          markers: () => { const m = [{ npc: 'ws_betty', label: 'Bear Market Betty', x: 0, z: 850 }]; if (L.pickups.betty_ledger && !L.has('q_note_betty_ledger')) m.push({ x: L.pickups.betty_ledger.pos.x, z: L.pickups.betty_ledger.pos.z, label: 'Betty\'s Ledger' }); return m; } },
+        { id: 'xc_kill', text: '(Optional) Kill Bear Market Betty.', sideObjective: true, optional: true,
+          showIf: () => !L.flag('betty_ledger_stolen'), doneIf: () => !!L.flag('betty_dead') },
+        { id: 'xc_ledger', text: '(Optional) Steal Betty\'s ledger from the Exchange as proof of the racket.', sideObjective: true, optional: true,
+          showIf: () => !L.flag('betty_dead'), doneIf: () => !!L.flag('betty_ledger_stolen') },
+        { id: 'xc_ghost', text: '(Optional) Take the ledger without being detected.', sideObjective: true, optional: true,
+          showIf: () => !L.flag('betty_dead') && !L.flag('betty_ledger_stolen') && !L.flag('exchange_alerted'), doneIf: () => !!L.flag('betty_ledger_ghost') },
+        { id: 'report', text: () => (L.flag('betty_dead') ? 'Bear Market Betty is dead. ' : 'You have Betty\'s ledger. ') + 'Report to Knight Reyes at Rockefeller Center.',
+          markers: () => [{ npc: 'bos_reyes', label: 'Knight Reyes' }] },
+      ],
+      rewards: { xp: 300 },
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Books (NYPL)
+  // ------------------------------------------------------------------
+  const BOOKS = [
+    { id: 'q_book_fusion', key: 'book_fusion', label: 'Practical Cold Fusion', anchors: ['book1', 'books', 'stacks'], off: { x: 22, z: -8 } },
+    { id: 'q_book_armor', key: 'book_armor', label: 'T-45 Field Servicing Manual', anchors: ['book2', 'loot1', 'reading_room'], off: { x: 30, z: 6 } },
+    { id: 'q_book_vertibird', key: 'book_vertibird', label: 'Rotorcraft for the Home Mechanic', anchors: ['book3', 'spawn4', 'steps'], off: { x: 34, z: 20 } },
+  ];
+  /** Kong lives on the observation deck: guide the player via lobby door → express elevator. */
+  function kongMarker() {
+    const k = L.npc('esb_kong');
+    const kp = k && !k.dead ? k.pos : null;
+    const P = G.player.pos;
+    if (!kp) return { x: ESB.x, z: ESB.z, label: 'Empire State Building' };
+    if (kp.y < 60 || P.y > 100) return { x: kp.x, z: kp.z, y: kp.y, label: 'KONG' };
+    const doors = L.doors();
+    const inLobby = P.x >= G.LAYOUT.INTERIOR_X_MIN && Math.hypot(P.x - 4000, P.z - 800) < 200;
+    if (inLobby) { const e = doors.find((d) => d.def.pos.x >= 2500 && d.def.target && d.def.target.y > 100); if (e) return { x: e.def.pos.x, z: e.def.pos.z, label: 'Express Elevator (to KONG)' }; }
+    const lobby = L.doorInto('empire_lobby');
+    if (lobby) return { x: lobby.def.pos.x, z: lobby.def.pos.z, label: 'Empire State Lobby (KONG is on the 86th floor)' };
+    return { x: kp.x, z: kp.z, label: 'KONG' };
+  }
+  /** Reading a catalogue entry ticks "Overdue"'s optional lookup (returns '' for the text). */
+  function catalogRead() {
+    if (!L.flag('nypl_catalog_read')) { L.setFlag('nypl_catalog_read'); if (Q.isActive('sq_overdue')) L.refresh('sq_overdue'); }
+    return '';
+  }
+  function bookCount() { return BOOKS.filter((b) => L.has(b.id)).length; }
+
+  G.events.on('itemAdded', (id) => {
+    if (BOOKS.some((b) => b.id === id)) {
+      if (!Q.isStarted('sq_overdue')) Q.start('sq_overdue');
+      if (Q.stage('sq_overdue') === 'books') {
+        if (bookCount() >= 3) Q.setStage('sq_overdue', 'return');
+        else L.refresh('sq_overdue');
+      }
+    }
+    if (id === 'q_knickerbocker_core') onCore();
+    if (id === 'q_note_betty_ledger' && (Q.stage('sq_exchange') === 'hunt' || !Q.isStarted('sq_exchange'))) {
+      L.setFlag('betty_ledger_stolen');
+      // A clean lift: Betty alive and nobody at the Exchange ever spotted you.
+      if (!L.flag('exchange_alerted') && L.alive('ws_betty')) { L.setFlag('betty_ledger_ghost'); L.xp(50, 'Sneak: Insider trading'); }
+      if (!Q.isStarted('sq_exchange')) Q.start('sq_exchange', { stage: 'report' }); else Q.setStage('sq_exchange', 'report');
+    }
+    if (id === 'q_holo_directive_7a') L.setFlag('knows_directive');
+  });
+  // "Hostile Takeover" ghost run: were you ever seen at the Exchange?
+  function nearExchange() {
+    const P = G.player.pos, pts = [];
+    const b = L.npc('ws_betty'); if (b && !b.dead) pts.push(b.pos);
+    if (L.pickups.betty_ledger) pts.push(L.pickups.betty_ledger.pos);
+    return pts.some((q) => Math.hypot(P.x - q.x, P.z - q.z) < 60);
+  }
+  G.events.on('playerDetected', (a) => { if (a && a.faction === 'raiders' && !L.flag('betty_ledger_stolen') && nearExchange()) L.setFlag('exchange_alerted'); });
+  let xcT = 0;
+  L.hook('update', function (dt, realDt) {
+    xcT -= realDt; if (xcT > 0) return; xcT = 0.5;
+    if (L.flag('exchange_alerted') || L.flag('betty_ledger_stolen') || L.flag('sq_exchange_done')) return;
+    const inCombat = !G.isStub('combat') && G.combat.inCombat && G.combat.inCombat();
+    if (inCombat && nearExchange()) { L.setFlag('exchange_alerted'); if (Q.isActive('sq_exchange')) L.refresh('sq_exchange'); }
+  });
+  G.events.on('actorKilled', (a) => {
+    if (!a) return;
+    if (a.id === 'esb_kong') { L.setFlag('kong_dead'); }
+    if (a.id === 'ws_betty') { L.setFlag('betty_dead'); if (Q.stage('sq_exchange') === 'hunt') Q.setStage('sq_exchange', 'report'); else if (!Q.isStarted('sq_exchange')) { Q.start('sq_exchange', { stage: 'report' }); } }
+    if (a.id === 'enc_hale') {
+      L.setFlag('hale_dead');
+      // Hale was the Enclave turn-in: with her gone the core is simply yours (the "go it alone" outcome)
+      if (Q.stage('mq05') === 'return_enclave' && Q.isActive('mq05')) { L.setFlag('mq_faction', 'none'); Q.complete('mq05'); }
+    }
+    if (a.id === 'bos_stroud') { L.setFlag('stroud_dead'); }
+  });
+
+  function onCore() {
+    if (L.flag('core_obtained')) return;
+    L.setFlag('core_obtained');
+    if (!Q.isStarted('mq05')) {
+      // Explorer got here early: fold the earlier quests together.
+      if (Q.isActive('mq04')) { L.setFlag('mq_faction', faction() || 'none'); Q.complete('mq04'); }
+      if (!Q.isStarted('mq05')) Q.start('mq05', { stage: 'core' });
+    }
+    if (Q.isActive('mq04')) { if (!faction()) L.setFlag('mq_faction', 'none'); Q.complete('mq04'); }
+    const f = faction();
+    if (f === 'bos') Q.setStage('mq05', 'return_bos');
+    else if (f === 'enclave') Q.setStage('mq05', 'return_enclave');
+    else { L.setFlag('mq_faction', 'none'); Q.complete('mq05'); }
+  }
+
+  /** Remove an item from an actor's inventory whatever its representation. */
+  function actorTake(actor, id) {
+    if (!actor || !actor.inventory) return;
+    const inv = actor.inventory;
+    try {
+      if (inv instanceof Map) inv.delete(id);
+      else if (Array.isArray(inv)) { for (let i = inv.length - 1; i >= 0; i--) if ((Array.isArray(inv[i]) ? inv[i][0] : inv[i].id) === id) inv.splice(i, 1); }
+      else if (typeof inv.remove === 'function') inv.remove(id, 99);
+      else if (typeof inv === 'object') delete inv[id];
+    } catch (e) { /* ignore */ }
+  }
+  function kongGives(how) {
+    L.setFlag('kong_resolution', how);
+    actorTake(L.npc('esb_kong'), 'q_knickerbocker_core');
+    L.give('q_knickerbocker_core', 1);
+  }
+
+  // Enclave ceasefire around the UN while the player is a guest. This is a LOCAL
+  // truce zone: only the UN garrison stands down — Enclave patrols elsewhere in the
+  // city stay hostile (the global relation only changes when you actually join).
+  const unGuest = () => !L.flag('enclave_hostile') && (Q.isActive('mq04') || faction() === 'enclave') && !L.flag('ending_played');
+  L.hook('init', function () { L.truceZone('un_guest', { faction: 'enclave', x: UN.x, z: UN.z, r: 220, cond: unGuest }); });
+  L.hook('reset', function () { L.truceZone('un_guest', { faction: 'enclave', x: UN.x, z: UN.z, r: 220, cond: unGuest }); });
+  L.trigger({ id: 'un_truce', x: UN.x, z: UN.z, r: 120, once: false, cooldown: 3,
+    cond: unGuest,
+    fire() {
+      if (L.once('un_truce_bark')) L.say('enc_hale', 'HOLD YOUR FIRE! That\'s the vault dweller. Nobody touches the vault dweller.');
+    } });
+
+  // Refused Hale's offer: the ceasefire lasts only until you leave the plaza.
+  L.trigger({ id: 'un_refused', once: true,
+    cond: () => !!L.flag('enclave_refused') && !L.flag('enclave_hostile') && faction() !== 'enclave' && L.dist(UN.x, UN.z) > 170,
+    fire() { L.setFlag('enclave_hostile'); L.factionTruce('enclave', undefined, undefined, 0, true); L.notify('The Enclave no longer considers you a guest.'); } });
+
+  // ------------------------------------------------------------------
+  // World & NPCs
+  // ------------------------------------------------------------------
+  L.hook('world', function () {
+    const t1 = L.anchor('rockefeller', ['terminal', 'command', 'bos_terminal'], { x: ROCK.x - 12, z: ROCK.z + 30 });
+    if (t1) L.spawnTerminal('bos_rock', t1, Math.PI);
+    const t2 = L.anchor('un_hq', ['terminal', 'command', 'enclave_terminal'], { x: UN.x - 22, z: UN.z + 12 });
+    if (t2) L.spawnTerminal('un_command', t2, -Math.PI / 2);
+    const t3 = L.anchor('empire_state', ['terminal', 'observatory_terminal', 'lobby_terminal'], { x: ESB.x + 18, z: ESB.z + 24 });
+    if (t3) L.spawnTerminal('esb_observatory', t3, 0);
+    const t4 = L.anchor('nypl', ['terminal', 'catalog', 'desk'], { x: NYPL.x + 33, z: NYPL.z + 2 });
+    if (t4) L.spawnTerminal('nypl_catalog', t4, -Math.PI / 2);
+  });
+
+  L.hook('spawn', function () {
+    const f = faction();
+    // ---- Brotherhood of Steel, Rockefeller Center ----
+    L.spawnNPC({ id: 'bos_stroud', type: 'human', name: 'Paladin Commander Stroud', outfit: 'bos_power_armor', gender: 'm', faction: 'brotherhood', ai: 'guard', home: 'here', homeR: 3,
+      at: { site: 'rockefeller', anchors: ['commander', 'boss', 'leader', 'plaza'], fallback: { x: ROCK.x, z: ROCK.z + 32 } }, dialogue: 'dlg_bos_stroud', essential: true,
+      weapon: ['laser_rifle'], level: 14, hp: 400, barks: ['Ad Victoriam.', 'Eyes on the rooftops.', 'Steel stands.'], voice: 'm_gruff' });
+    L.spawnNPC({ id: 'bos_wexler', type: 'human', name: 'Scribe Ingrid Wexler', outfit: 'lab_coat', gender: 'f', faction: 'brotherhood', ai: 'guard', home: 'here', homeR: 3,
+      at: { site: 'rockefeller', anchors: ['scribe', 'merchant1', 'rink'], fallback: { x: ROCK.x - 10, z: ROCK.z + 28 } }, dialogue: 'dlg_bos_wexler', essential: true,
+      weapon: ['laser_pistol'], level: 6, barks: ['Knowledge is the only armour that does not rust.', 'Please don\'t touch that.'], hair: 'bun' });
+    L.spawnNPC({ id: 'bos_reyes', type: 'human', name: 'Knight Tobias Reyes', outfit: 'combat_armor', gender: 'm', faction: 'brotherhood', ai: 'merchant', home: 'here',
+      at: { site: 'rockefeller', anchors: ['quartermaster', 'power_armor', 'workbench'], fallback: { x: ROCK.x + 12, z: ROCK.z + 30 } }, dialogue: 'dlg_bos_reyes', essential: true, // Hostile Takeover's turn-in
+      weapon: ['laser_rifle', 'assault_rifle'], level: 9, merchant: { caps: 700, stock: STOCK_BOS, restock: 3 }, barks: ['Requisitions. Make it quick.', 'You break it, the Brotherhood bills you.'], skinTone: 0.55 });
+
+    // ---- Enclave, UN Plaza ----
+    if (!L.flag('hale_left')) {
+      L.spawnNPC({ id: 'enc_hale', type: 'human', name: 'Lieutenant Vesper Hale', outfit: 'enclave_power_armor', gender: 'f', faction: 'enclave', ai: 'guard', home: 'here', homeR: 3,
+        hostile: !!L.flag('enclave_hostile'), essential: !L.flag('enclave_hostile'),
+        at: { site: 'un_hq', anchors: ['recruiter', 'entrance', 'gate', 'plaza'], fallback: { x: 286, z: -318 } }, dialogue: 'dlg_enc_hale',
+        weapon: ['plasma_rifle', 'laser_rifle'], level: 14, hp: 350, barks: ['God bless America.', 'Stay behind the line, civilian.'], voice: 'f_stern' });
+    }
+
+    // ---- KONG, Empire State Building ----
+    {
+      const hasCore = !L.flag('kong_resolution');
+      L.spawnNPC({ id: 'esb_kong', type: 'super_mutant_behemoth', name: 'KONG', faction: 'super_mutants', ai: 'guard', home: 'here', homeR: 6,
+        hostile: !!L.flag('kong_hostile'), level: 14, hp: 900, damage: 45, aggroRange: 14,
+        at: { site: 'empire_state', anchors: ['observation_deck', 'rooftop', 'boss', 'lobby_boss'], fallback: { x: ESB.x, z: ESB.z + 26 } },
+        dialogue: 'dlg_esb_kong', inventory: hasCore ? [['q_knickerbocker_core', 1], ['q_note_kong_manifesto', 1]] : [['q_note_kong_manifesto', 1]],
+        barks: L.flag('kong_friend') ? ['KONG IS HAPPY.', 'QUEEN FAY IS BEAUTIFUL TODAY.', 'SMALL FRIEND!'] : ['KONG IS KING!', 'THE EMPIRE IS TALLEST!', 'SMALL HUMANS GO SQUISH.'], voice: 'mutant' });
+    }
+
+    // ---- A captive of the super mutants: Pete Ruiz, Hattie Caldwell's missing driver ----
+    if (!L.flag('pete_rescued')) {
+      L.spawnNPC({ id: 'esb_pete', type: 'human', name: 'Pete Ruiz (Captive)', outfit: 'wastelander', gender: 'm', faction: 'settlers', ai: 'static', hostile: false,
+        at: { site: 'empire_state', anchors: ['captive', 'captive2'], fallback: { x: ESB.x + 32, z: ESB.z - 8 } }, dialogue: 'dlg_esb_pete', skinTone: 0.55,
+        barks: ['Psst! Hey! Over here!', 'Please... they\'re talking about "lunch" again.'] });
+    }
+
+    // ---- Macy's mannequin "Fay" (for Kong) ----
+    if (!L.flag('kong_resolution')) {
+      const fay = L.anchor('macys', ['mannequin', 'display', 'loot1', 'loot', 'entrance'], { x: 0, z: -50 });
+      if (fay) L.pickup('fay', 'q_fay_mannequin', 1, fay);
+    }
+
+    // ---- NYPL books ----
+    for (const b of BOOKS) {
+      if (L.has(b.id) || L.flag('overdue_done')) continue;
+      const p = L.anchor('nypl', b.anchors, { x: NYPL.x + b.off.x, z: NYPL.z + b.off.z });
+      if (p) L.pickup(b.key, b.id, 1, p);
+    }
+
+    // ---- The Exchange: Bear Market Betty + ledger ----
+    {
+      L.spawnNPC({ id: 'ws_betty', type: 'human', name: 'Bear Market Betty', outfit: 'raider_heavy', gender: 'f', faction: 'raiders', ai: 'guard', home: 'here', homeR: 5,
+        hostile: true, level: 10, hp: 260, weapon: ['closing_bell', 'magnum_44'], inventory: [['caps', 180], ['closing_bell', 1]],
+        // on the trading floor in front of her throne (the 'boss' anchor sits ON the throne, inside its collider)
+        at: { site: 'nyse', anchors: ['trading_floor', 'boss', 'bell'], fallback: { x: 0, z: 850 } },
+        barks: ['Sell! SELL!', 'The market\'s crashing, and so are you!', 'Ring the bell, boys!'] });
+    }
+    const led = L.anchor('nyse', ['ledger', 'loot', 'desk', 'loot1'], { x: 8, z: 848 });
+    if (led && !L.flag('sq_exchange_done')) L.pickup('betty_ledger', 'q_note_betty_ledger', 1, led);
+    void f;
+  });
+
+  // ------------------------------------------------------------------
+  // Terminals
+  // ------------------------------------------------------------------
+  L.hook('register', function () {
+    L.terminal('bos_rock', {
+      title: 'BROTHERHOOD OF STEEL — CHAPTER ROCKEFELLER', header: 'CODEX TERMINAL — AUTHORIZED PERSONNEL\nAD VICTORIAM',
+      lock: 50,
+      entries: [
+        { title: 'Chapter History', text: 'Chapter Rockefeller was founded when Paladin Commander Stroud\'s expedition, sent east to recover pre-war technology, found the Plaza abandoned, fortified it, and declined to go home. Headquarters has sent four recall orders. Stroud has replied to each with a status report consisting of the word "No."' },
+        { title: 'Intel: Liberty Island', text: 'Enclave presence on Liberty Island: est. 1 platoon, 2 eyebots, 1 Vertibird (grounded — rotor damage). Commander: Col. Augustus Crane.\nObjective: unknown pre-war installation in the statue\'s torch. Vault-Tec / Poseidon joint project: KNICKERBOCKER.\nAssessment: If the Enclave is guarding it, it is a weapon.' },
+        { title: 'Memo: Wexler to Stroud', text: 'Paladin Commander — respectfully — the Poseidon documents describe Knickerbocker as a RECLAMATION array. Atmospheric scrubbing. If even half the specifications are accurate it could end the radstorms over Manhattan permanently.\n\nI understand the Codex. I also understand that we are standing in a city of people who breathe.\n\n— Scribe I. Wexler' },
+        { title: 'Memo: Stroud to Wexler', text: 'Scribe — Noted. The Codex exists because every machine that could save the world has also been used to end it. We secure the array first. We debate its use after there is no Enclave to debate with.\n\n— H.S.' },
+      ],
+    });
+    L.terminal('un_command', {
+      title: 'ENCLAVE FORWARD COMMAND — UN PLAZA', header: 'UNITED STATES ENCLAVE — SECURE TERMINAL\nWARNING: UNAUTHORIZED ACCESS IS TREASON',
+      lock: 75,
+      entries: [
+        { title: 'Standing Orders', text: '1. The vault dweller from 120 is NOT to be engaged. We want them smiling.\n2. Maintain the eyebot broadcast net.\n3. Report all Brotherhood movement on 5th Avenue.' },
+        { title: 'Project Knickerbocker (Summary)', text: 'The Knickerbocker Atmospheric Reclamation Array ("the Torch") can be operated in two modes:\n\nRECLAMATION: region-wide scrubbing of airborne radionuclides. Duration: permanent. Beneficiaries: everyone.\n\nSELECTIVE: reclamation field tuned to the unmutated human genome. Beneficiaries: see Directive 7-A.' },
+        { title: 'Directive 7-A (Executive)', text: 'The full text of Executive Directive 7-A is stored on holotape for Colonel Crane\'s eyes only. A copy has been made available for download below, in violation of every security protocol, because Specialist Ortiz forgot to lock the drive again.' },
+        { title: '>> Download Directive 7-A to Pip-Boy', cond: () => !L.has('q_holo_directive_7a'), action: () => { L.give('q_holo_directive_7a', 1); L.xp(30, 'Enclave secrets'); } },
+      ],
+      onUnlock() { L.setFlag('un_terminal_hacked'); },
+    });
+    L.terminal('esb_observatory', {
+      title: 'EMPIRE STATE BUILDING — OBSERVATORY RELAY', header: 'POSEIDON ENERGY / WNYC TRANSMITTER CONTROL\n[Someone has taped a crayon drawing of a crown to the screen.]',
+      lock: 25,
+      entries: [
+        { title: 'Relay Status', text: 'KNICKERBOCKER IGNITION CORE (UNIT 2): REMOVED FROM CRADLE.\nREMOVED BY: [no badge]\nRELAY CAPACITY: 0%\n\nNOTE: Core is live. Do not lick the core.' },
+        { title: 'KONG\'S LOG (typed, one letter at a time)', text: 'KONG FOUND TALKING BOX.\nKONG TYPES ON TALKING BOX.\nTALKING BOX DOES NOT TALK BACK. RUDE.\n\nKONG IS KING OF EMPIRE. KONG HAS SHINY ROCK. KONG NEEDS QUEEN.\n\nKONG ALSO NEEDS BIGGER CLUB. KONG ALREADY WROTE THAT IN BOOK. KONG WRITES IT AGAIN BECAUSE IT IS TRUE.' },
+        { title: 'Visitor Notice (2077)', text: 'The Observation Deck is closed today for a special event: the dedication of the WNYC-Poseidon Knickerbocker Relay. Visitors may view the ceremony from the lobby monitors. Refreshments will be served. Please do not ask about the refreshments.' },
+      ],
+    });
+    L.terminal('nypl_catalog', {
+      title: 'NEW YORK PUBLIC LIBRARY — CATALOG', header: 'NYPL CIRCULATION SYSTEM — ROBCO LIBRARIAN v1.2\n"KNOWLEDGE IS FREE. LATE FEES ARE NOT."',
+      lock: 0,
+      entries: [
+        { title: 'Search: Fusion', text: () => catalogRead() + '"Practical Cold Fusion, Vol. II" — REFERENCE — Location: Rose Main Reading Room, Table 12\nStatus: ON SHELF (214 years)' },
+        { title: 'Search: Power Armor', text: () => catalogRead() + '"T-45 Field Servicing Manual" — RESTRICTED (Army loan) — Location: Periodicals, Rm. 108\nStatus: ON SHELF. Note: Reader was a Private Nguyen. Private Nguyen is still in Rm. 108.' },
+        { title: 'Search: Vertibird', text: () => catalogRead() + '"Rotorcraft for the Home Mechanic" — Location: Returns cart, main steps\nStatus: RETURNED (not re-shelved). Staff reminder: re-shelve the returns cart.' },
+        { title: 'Your Account', text: () => 'PATRON: ' + (G.player.name || 'UNKNOWN').toUpperCase() + '\nITEMS OUT: ' + bookCount() + '\nLATE FEES OWED: ' + (bookCount() * 78110) + ' caps\n\nThe Library thanks you for your patronage.' },
+      ],
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Dialogue
+  // ------------------------------------------------------------------
+  L.hook('register', function () {
+    // ---------------- Paladin Commander Stroud ----------------
+    L.dialogue('dlg_bos_stroud', {
+      start: () => {
+        if (Q.stage('mq05') === 'return_bos' && L.has('q_knickerbocker_core')) return 'return';
+        if (Q.isActive('mq04') && !faction()) return L.flag('met_stroud') ? 'pitch' : 'first';
+        if (faction() === 'enclave') return 'traitor';
+        return 'again';
+      },
+      nodes: {
+        first: { text: 'Halt. That\'s close enough. ...A Vault 120 jumpsuit. So you\'re the one the Enclave eyebots have been singing about. Paladin Commander Harlan Stroud, Brotherhood of Steel. State your business, and state it quickly.',
+          onEnter() { L.setFlag('met_stroud'); },
+          responses: [
+            { text: 'The Enclave has my guardian on Liberty Island. I need to get there.', next: 'help' },
+            { text: 'What is the Brotherhood doing in Manhattan?', next: 'why' },
+            { text: 'Nothing. Sorry to bother you.' },
+          ] },
+        why: { text: 'Securing technology that the wasteland isn\'t ready for. Which, in my experience, is all of it. We came east for a reactor. We found a city full of machines that could end the world a second time. So we stayed.',
+          responses: [{ text: 'The Enclave has my guardian on Liberty Island.', next: 'help' }] },
+        pitch: { text: 'Back again, vault dweller. Have you considered my offer?', responses: [{ text: 'Remind me what the offer is.', next: 'deal' }, { text: 'Tell me about the array.', next: 'array' }, { text: 'Not yet.' }] },
+        help: { text: 'The Enclave has a lot of things that aren\'t theirs. The UN building. The sky over Liberty Island. My patience. We\'ve watched Liberty for a year — we know about the array in the torch. And now we know about you.',
+          responses: [{ text: 'What is the array?', next: 'array' }, { text: 'Will you help me?', next: 'deal' }] },
+        array: { text: 'Pre-war atmospheric reclamation. Poseidon Energy and Vault-Tec called it Knickerbocker. In theory it could scrub the radiation from Manhattan\'s sky. In the Enclave\'s hands it would scrub everything they consider impure out of it — and they have a long list.',
+          responses: [{ text: 'How do you know that?', next: 'know' }, { text: 'Will you help me?', next: 'deal' }] },
+        know: { text: 'I don\'t. I assume it. That is the difference between the Brotherhood and every dead civilization in this city: we assume the worst about machines, and we are usually right.', responses: [{ text: 'Will you help me?', next: 'deal' }] },
+        deal: { text: 'Here are my terms. You carry the Vault 120 key — the array\'s civilian handshake is keyed to a living 120 tenant, so the Enclave needs you breathing. It also needs an ignition core, which the super mutants dragged to the top of the Empire State Building. Bring me that core. My squad escorts you onto Liberty Island, we put the Enclave in the ground, and the array comes under Brotherhood protection.',
+          responses: [
+            { text: 'Deal. I\'ll get the core.', next: 'join' },
+            { text: 'And if I want the array turned on — for everyone?', check: { skill: 'speech', value: 55 }, next: 'wexler', failNext: 'codex' },
+            { text: 'Why should I trust you over the Enclave?', next: 'trust' },
+            { text: 'I need to think about it.' },
+          ] },
+        trust: { text: 'You shouldn\'t trust either of us. But I\'ll tell you what I\'ll do with that array, and I\'ll tell you to your face. Ask the Enclave what they\'ll do with it. Watch their eyes. Then remember they wear helmets.',
+          responses: [{ text: 'Deal. I\'ll get the core.', next: 'join' }, { text: 'I\'ll think about it.' }] },
+        wexler: { text: '[A long pause.] You sound like my scribe. I\'ll tell you what I told her: we will debate turning it on when there is no Enclave left to debate with. If that day comes... I will listen. That is more than I promise most people.',
+          onEnter() { L.setFlag('stroud_will_listen'); L.xp(20, 'Speech'); }, responses: [{ text: 'Good enough. I\'ll get the core.', next: 'join' }] },
+        codex: { text: 'The Codex is not a debate club, vault dweller. We secure it first. Everything else comes after.', responses: [{ text: 'Fine. I\'ll get the core.', next: 'join' }, { text: 'I\'ll think about it.' }] },
+        join: { text: 'Good. The Empire State Building is on 34th and 5th — you can\'t miss it; it\'s the tall one with the mutants hanging off it. Knight Reyes will outfit you. Ad Victoriam, vault dweller.',
+          onEnter() {
+            L.setFlag('mq_faction', 'bos'); L.setFlag('enclave_hostile');
+            L.factionTruce('enclave', undefined, undefined, 0, true);
+            if (Q.isActive('mq04')) Q.complete('mq04');
+            L.give(['stimpak', /^stimpak$/i], 3); L.give(['ammo_energy_cell'], 30);
+          },
+          responses: [{ text: 'Ad Victoriam.' }] },
+        return: { text: 'Is that it? [He takes the humming core in both gauntlets and turns it over slowly.] It\'s warm. Machines shouldn\'t be warm. ...Keep it. The array needs its key-bearer and its core in the same pair of hands, and yours have earned it. Take this as well.',
+          onEnter() {
+            if (!L.flag('stroud_rewarded')) {
+              L.setFlag('stroud_rewarded');
+              L.give('q_holo_codex_override', 1);
+              L.give(['manhattan_project', 'laser_rifle'], 1);
+              L.give(['ammo_mf_cell', 'ammo_energy_cell'], 40);
+            }
+          },
+          responses: [{ text: 'What\'s the plan for Liberty Island?', next: 'plan' }] },
+        plan: { text: 'My squad will meet you at the Battery Park pier. The ghoul who runs the ferry has agreed to carry us — after a very convincing conversation involving a minigun. When you\'re on the island, we hit the Enclave hard. You find Marlow and the torch controls. The Codex Override on that holotape hands the array to us.',
+          responses: [{ text: 'Understood. Ad Victoriam.', action: () => Q.complete('mq05') }] },
+        again: { text: () => L.flag('ending_played') ? 'The Enclave is broken. Whatever else happened on that island, vault dweller... you did that. The Brotherhood remembers.' : 'Vault dweller. The Brotherhood has a long memory. Make sure it remembers you kindly.',
+          responses: [{ text: 'Ad Victoriam.' }] },
+        traitor: { text: 'You\'ve been seen with the Enclave, vault dweller. You are tolerated on this plaza because my scribe asked me nicely. Do not make her regret it.', responses: [{ text: '[Leave.]' }] },
+      },
+    });
+
+    // ---------------- Scribe Ingrid Wexler ----------------
+    L.dialogue('dlg_bos_wexler', {
+      start: () => Q.stage('sq_overdue') === 'return' ? 'return' : (L.flag('met_wexler') ? 'again' : 'first'),
+      nodes: {
+        first: { text: 'Oh — hello! Scribe Ingrid Wexler. Please don\'t touch the laser rifles, they\'re catalogued. You\'re from a vault? A real one? Do you have books? Does your vault have a library? Did anyone ever check anything out?',
+          onEnter() { L.setFlag('met_wexler'); },
+          responses: [
+            { text: 'We had a library. Mostly Vault-Tec pamphlets.', next: 'pamphlets' },
+            { text: 'You seem excited about books.', next: 'books' },
+            { text: 'What does a scribe do?', next: 'scribe' },
+          ] },
+        pamphlets: { text: '"So You\'ve Been Sealed Underground!" I have that one. It\'s a masterpiece of denial. Vault-Tec should have won a prize for copywriting, right before they lost everything else.',
+          responses: [{ text: 'You seem to need books.', next: 'books' }] },
+        scribe: { text: 'We preserve knowledge. The Paladins protect it with guns; we protect it with footnotes. Honestly, the footnotes do more damage.', responses: [{ text: 'Any work for a vault dweller?', next: 'books' }] },
+        books: { text: 'I need three specific books from the Public Library on 42nd: a cold fusion text, a T-45 servicing manual, and — don\'t laugh — a home-mechanic\'s guide to Vertibirds. The Library\'s full of feral ghouls. The Paladin Commander won\'t spare a squad for "homework." Would you?',
+          responses: [
+            { text: 'I\'ll get your books.', cond: () => !Q.isStarted('sq_overdue'), action: () => Q.start('sq_overdue') },
+            { text: 'What\'s in it for me?', next: 'pay', cond: () => !Q.isStarted('sq_overdue') },
+            { text: 'Tell me about the Knickerbocker array.', next: 'array' },
+            { text: 'Not right now.' },
+          ] },
+        pay: { text: 'Caps — a hundred and fifty. Energy cells. And the eternal gratitude of a scribe, which is worth absolutely nothing in trade but is very sincere.', responses: [{ text: 'Deal.', action: () => Q.start('sq_overdue') }, { text: 'Maybe later.' }] },
+        array: { text: '[She lowers her voice.] I\'ve read the Poseidon papers. Knickerbocker was built to scrub radiation from the air. The whole city. No more radstorms, no more glowing rain. The Paladin Commander thinks every machine is a bomb. Some of them are just... medicine.',
+          onEnter() { L.setFlag('wexler_array_talk'); },
+          responses: [{ text: 'If I get the chance, I\'ll turn it on.', karma: 2, next: 'promise' }, { text: 'Stroud might be right.', next: 'maybe' }] },
+        promise: { text: 'Then... then I\'ll be listening to Vinnie Valentine every night until I hear that you did. Don\'t tell the Commander I said this. Please.', onEnter() { L.setFlag('wexler_promise'); }, responses: [{ text: 'Your secret\'s safe.' }] },
+        maybe: { text: 'He might. He usually is. That\'s the worst thing about him.', responses: [{ text: 'Goodbye, Scribe.' }] },
+        again: { text: () => Q.stage('sq_overdue') === 'books' ? 'Any luck at the library? ' + bookCount() + ' of 3 — oh, I\'m keeping count, sorry, it\'s a scribe thing.' : 'Vault dweller! Have you read anything good lately? Anything at all? A cereal box?',
+          responses: [
+            { text: 'About those books...', next: 'books', cond: () => !Q.isStarted('sq_overdue') },
+            { text: 'Tell me about the Knickerbocker array.', next: 'array' },
+            { text: 'See you around.' },
+          ] },
+        return: { text: 'Is that — all three? "Practical Cold Fusion"! And the T-45 manual — oh, there\'s a coffee ring on page forty, somebody actually USED it. And "Rotorcraft for the Home Mechanic." [She hugs the book.] I\'ve wanted this one since I was eight.',
+          responses: [
+            { text: 'Happy reading, Scribe.', action: () => finishOverdue(false) },
+            { text: 'These were dangerous to get. The fee should reflect that.', check: { skill: 'barter', value: 50 }, next: 'haggle', failNext: 'haggle_fail' },
+          ] },
+        haggle: { text: 'You\'re... right. The ghouls. Of course. [She counts out extra caps from a very small purse.] Two hundred and fifty. Please don\'t tell the quartermaster where it came from.', onEnter() { L.setFlag('overdue_haggled'); }, responses: [{ text: 'Pleasure doing business.', action: () => finishOverdue(true) }] },
+        haggle_fail: { text: 'I\'m a scribe. I\'m paid in ration bars and disappointment. A hundred and fifty is everything I have.', responses: [{ text: 'Fair enough.', action: () => finishOverdue(false) }] },
+      },
+    });
+    function finishOverdue(extra) {
+      for (const b of BOOKS) L.take(b.id, 1);
+      L.setFlag('overdue_done');
+      if (extra) L.giveCaps(100);
+      Q.complete('sq_overdue');
+      L.news('Culture corner, folks: three books went BACK INTO a library this week. A library! I know! The Brotherhood\'s own Scribe Wexler reportedly wept. Returned by a vault dweller, no late fees charged. That\'s the kind of news I like to read. Well — hear. I don\'t read. I\'m on the radio.');
+    }
+
+    // ---------------- Knight Tobias Reyes (quartermaster) ----------------
+    L.dialogue('dlg_bos_reyes', {
+      start: () => Q.stage('sq_exchange') === 'report' ? 'report' : 'hello',
+      nodes: {
+        hello: { text: () => 'Knight Reyes, quartermaster. ' + (faction() === 'bos' ? 'Commander says you\'re with us now. That means you get the good prices — which are the same as the bad prices, but I say them nicer.' : 'I trade with outsiders when the Commander says so. The Commander says so. Make it quick.'),
+          responses: [
+            { text: 'Show me what you\'ve got.', barter: true },
+            { text: 'Any bounties?', next: 'bounty', cond: () => !Q.isStarted('sq_exchange') },
+            { text: 'What\'s it like in the Brotherhood?', next: 'life' },
+            { text: 'Nothing, thanks.' },
+          ] },
+        life: { text: 'Early mornings. Heavy armour. A lot of speeches about the Codex. You get used to it. Then one day you catch yourself giving the speech to somebody else, and you realise it\'s been used to you all along.', responses: [{ text: 'Any bounties?', next: 'bounty', cond: () => !Q.isStarted('sq_exchange') }, { text: 'Thanks.' }] },
+        bounty: { text: 'There\'s a raider on Wall Street. Calls herself Bear Market Betty. Runs the Exchange like a protection racket — every caravan going south pays her or burns. The Commander wants her gone, or wants proof of the racket so he can justify a raid to Headquarters. Her ledger would do it. Three hundred for her head, one-fifty for the book.',
+          responses: [{ text: 'Consider it done.', action: () => Q.start('sq_exchange') }, { text: 'Maybe later.' }] },
+        report: { text: () => L.flag('betty_dead') ? 'Betty\'s done? [He checks a list.] Confirmed by our scouts. The Exchange is leaderless and the southern caravans are already talking. Here\'s your three hundred. Ad Victoriam.'
+          : 'Her ledger. "Liabilities: Kevin." ...Who\'s Kevin? Doesn\'t matter. This is enough to justify a raid. Headquarters will be thrilled. Here\'s one-fifty.',
+          responses: [{ text: 'Pleasure.', action: () => { L.giveCaps(L.flag('betty_dead') ? 300 : 150); if (!L.flag('betty_dead')) L.take('q_note_betty_ledger', 1); L.setFlag('sq_exchange_done'); Q.complete('sq_exchange');
+            L.news(L.flag('betty_dead') ? 'Market report: The Exchange on Wall Street is under new management, by which I mean no management, by which I mean Bear Market Betty is dead. Caravans heading south, you can breathe a little easier.' : 'Word from Wall Street: the Brotherhood is planning a little audit of the Exchange. I don\'t think Bear Market Betty\'s going to like the numbers.'); } }] },
+      },
+    });
+
+    // ---------------- Lieutenant Vesper Hale (Enclave) ----------------
+    L.dialogue('dlg_enc_hale', {
+      start: () => {
+        if (Q.stage('mq05') === 'return_enclave' && L.has('q_knickerbocker_core')) return 'return';
+        if (faction() === 'bos') return 'enemy';
+        if (Q.isActive('mq04')) return L.flag('met_hale') ? 'pitch' : 'first';
+        return 'again';
+      },
+      nodes: {
+        first: { text: 'Hold your fire! ...Vault 120. You\'re exactly who we\'ve been waiting for. Lieutenant Vesper Hale, United States Enclave. Please don\'t reach for the pistol — my soldiers have orders not to shoot you, but they are very bad at orders.',
+          onEnter() { L.setFlag('met_hale'); },
+          responses: [
+            { text: 'You have Zeke Marlow.', next: 'zeke' },
+            { text: 'What does the Enclave want with me?', next: 'want' },
+            { text: 'The Enclave? The "government"?', next: 'gov' },
+          ] },
+        gov: { text: 'The legitimate government of the United States of America — what\'s left of it, which is more than you\'d think and less than we\'d like. We never stopped governing. The country just stopped answering the phone.', responses: [{ text: 'You have Zeke Marlow.', next: 'zeke' }, { text: 'What do you want with me?', next: 'want' }] },
+        zeke: { text: 'Mr. Marlow is our guest on Liberty Island. He is safe, fed, and remarkably rude. He is also helping us restore something that will clean the air of this entire city. You could help, too.', responses: [{ text: 'What do you want?', next: 'want' }] },
+        pitch: { text: 'Have you decided, vault dweller? The Colonel isn\'t a patient man, but I\'ve been told I\'m a persuasive woman.', responses: [{ text: 'Remind me of the offer.', next: 'want' }, { text: 'Clean the air for whom, exactly?', next: 'whom' }, { text: 'Not yet.' }] },
+        want: { text: 'You carry Cartridge 120-A — the Liberty Key — and the array only accepts it from a living tenant of 120. Colonel Crane also needs an ignition core, which the super mutants dragged up the Empire State Building. Bring the core to me, and the Colonel will fly you to Liberty, reunite you with Mr. Marlow, and let you watch the sky turn blue.',
+          responses: [
+            { text: 'Clean the air for whom, exactly?', next: 'whom' },
+            { text: 'Fine. I\'ll get your core.', next: 'join' },
+            { text: 'I\'ll never work for the Enclave.', next: 'refuse' },
+          ] },
+        whom: { text: 'For Americans. [A beat.] For everyone. That\'s what I was told, and it\'s what I believe.',
+          onEnter() { L.setFlag('hale_evasive'); },
+          responses: [
+            { text: '"Americans." Does that include the ghouls at the Neon?', check: { skill: 'speech', value: 50 }, next: 'doubt', failNext: 'doubt_fail' },
+            { text: '[Play Directive 7-A for her.]', cond: () => L.has('q_holo_directive_7a'), next: 'truth' },
+            { text: 'Alright. I\'ll get your core.', next: 'join' },
+            { text: 'I don\'t trust you.', next: 'refuse' },
+          ] },
+        doubt: { text: '[She hesitates for exactly one second too long.] ...I\'d have to ask the Colonel. I will ask the Colonel. [Quieter.] There\'s a command terminal in the lobby behind me. If there was something I should know, it would be on there. I wouldn\'t know. My clearance doesn\'t go that high.',
+          onEnter() { L.setFlag('hale_doubts_1'); L.xp(20, 'Speech'); }, responses: [{ text: 'Maybe you should find out.' }, { text: 'I\'ll get your core.', next: 'join' }] },
+        doubt_fail: { text: 'Of course it does. Every American counts. That\'s what makes us American. [She says it very quickly, like a pledge.]', responses: [{ text: 'I\'ll get your core.', next: 'join' }, { text: 'I\'ll think about it.' }] },
+        truth: { text: '[The tape plays. Hale\'s helmet lamps flicker as she listens. When the line "keep this tape away from Lieutenant Hale" plays, she takes the helmet off entirely. She\'s younger than you expected.] ...Ninety-four percent. They said "cleaning the air." They said it to me and I said it to you. [She stares at the UN tower.] I need to think. Whatever you decide to do out there — I won\'t stand in your way.',
+          onEnter() { L.setFlag('hale_knows'); L.karma(50, 'Told Hale the truth'); L.xp(50, 'The truth about Directive 7-A'); },
+          responses: [{ text: 'Come with me. Help me stop Crane.', check: { special: 'C', value: 7 }, next: 'defect', failNext: 'nodefect' }, { text: 'Do the right thing, Lieutenant.', next: 'nodefect' }] },
+        defect: { text: '[She puts the helmet back on.] Not with you. Not yet. But when you hit Liberty, the eyebot net will go down at exactly the wrong moment for the Colonel. Call it a technical fault. I\'ll call it my oath.',
+          onEnter() { L.setFlag('hale_defects'); L.xp(40, 'Charisma'); }, responses: [{ text: 'Thank you, Vesper.' }] },
+        nodefect: { text: 'I swore an oath to a country. I just need to work out whether it\'s the same country the Colonel swore to. Go. Before somebody else asks why my helmet\'s off.', onEnter() { L.setFlag('hale_doubts_1'); }, responses: [{ text: '[Leave.]' }] },
+        join: { text: 'Excellent. You won\'t regret it. The Empire State Building is on 34th Street — follow the smell. Take these; the Colonel likes his guests alive. When you have the core, come back to me and I\'ll call in a Vertibird.',
+          onEnter() {
+            L.setFlag('mq_faction', 'enclave');
+            // Real allegiance change: the Enclave stops shooting at you city-wide.
+            L.factionTruce('enclave', undefined, undefined, 0, false);
+            if (Q.isActive('mq04')) Q.complete('mq04');
+            L.give('q_note_enclave_orders', 1); L.give(['stimpak', /^stimpak$/i], 3); L.give(['ammo_mf_cell', 'ammo_energy_cell'], 24);
+            L.karma(-100, 'Joined the Enclave');
+          },
+          responses: [{ text: 'See you soon, Lieutenant.' }] },
+        refuse: { text: 'That\'s... disappointing. You have until you leave the plaza before my soldiers remember their training. I\'d walk quickly.',
+          onEnter() { L.setFlag('enclave_refused'); }, responses: [{ text: '[Leave.]' }] },
+        return: { text: 'The core. [She doesn\'t touch it — nobody in the Enclave seems to want to touch it.] Keep it; the array wants it in your hands with the key. The Vertibird is fuelled on the plaza. The Colonel has asked me to give you this for the array — his program. Don\'t play it. It\'s just code.',
+          onEnter() {
+            if (!L.flag('hale_rewarded')) { L.setFlag('hale_rewarded'); L.give('q_holo_directive_7a', 1); L.give(['plasma_pistol', 'laser_pistol'], 1); L.give(['ammo_mf_cell', 'ammo_energy_cell'], 30); }
+          },
+          responses: [{ text: 'Let\'s go to Liberty.', action: () => Q.complete('mq05'), next: 'vertibird' }, { text: 'What if I play it anyway?', next: 'playit' }] },
+        playit: { text: 'Then you\'ll hear a lot of numbers, and you\'ll be as bored as I was when they briefed me. [She almost smiles.] Go on. The Colonel is waiting.', responses: [{ text: 'Let\'s go.', action: () => Q.complete('mq05'), next: 'vertibird' }] },
+        again: { text: () => faction() === 'enclave' ? 'Vault dweller. The Colonel sends his regards. He sends them to everyone, but he means yours.' : L.flag('enclave_refused') ? 'I told you to walk quickly.' : 'God bless America, civilian.',
+          responses: [{ text: '[Leave.]' }] },
+        enemy: { text: 'You threw in with the tin cans. That\'s your right. It\'s also my right to ask you to leave before this conversation becomes a firefight.', responses: [{ text: '[Leave.]' }] },
+      },
+    });
+
+    // ---------------- Pete Ruiz (captive) ----------------
+    L.dialogue('dlg_esb_pete', {
+      start: () => (L.flag('pete_rescued') ? 'gone' : 'hello'),
+      nodes: {
+        hello: { text: 'Oh thank God, a person! A normal-sized person! Name\'s Pete Ruiz — I drive for Caldwell & Daughters. The muties grabbed me off Broadway four days ago. They keep asking each other if I\'m "ready." I don\'t want to find out what for.',
+          responses: [
+            { text: '[Cut him loose.] Run for the Flatiron. Hattie\'s worried sick.', karma: 50, next: 'free' },
+            { text: 'What happened to your caravan?', next: 'caravan' },
+            { text: 'What\'s it worth to you?', next: 'worth' },
+          ] },
+        caravan: { text: 'Raiders hit us at Madison Square — took Dolly\'s strongbox and ran south to the Woolworth. Then, while I was hiding, the muties found me. Worst day of my life, and I once ate Moe\'s tunnel shrimp.',
+          onEnter() { if (Q.stage('sq_caravan') === 'wreck') Q.setStage('sq_caravan', 'woolworth'); }, responses: [{ text: '[Cut him loose.] Go. Get to the Flatiron.', karma: 50, next: 'free' }] },
+        worth: { text: 'Worth? I got twenty-two caps and a lucky rabbit\'s foot. The rabbit\'s foot hasn\'t been very lucky lately. Take \'em both, just get me out of here!', responses: [{ text: '[Take the caps and cut him loose.]', karma: -15, action: () => L.giveCaps(22), next: 'free' }, { text: '[Cut him loose.] Keep your caps.', karma: 60, next: 'free' }] },
+        free: { text: 'You\'re a saint. A saint in a jumpsuit! I\'m gone — I\'m so gone! Tell Hattie I\'m coming home!',
+          onEnter() { L.setFlag('pete_rescued'); L.xp(50, 'Rescued Pete Ruiz'); L.later(1.5, () => L.removeNPC('esb_pete'));
+            L.news('A caravan driver named Pete Ruiz stumbled into the Flatiron Trading Post today, three days overdue and very, very pale. Says a vault dweller cut him loose from a super mutant larder in the Empire State. Welcome home, Pete.'); },
+          responses: [{ text: 'Go!' }] },
+        gone: { text: '...', responses: [{ text: '[Leave.]' }] },
+      },
+    });
+
+    // ---------------- KONG ----------------
+    L.dialogue('dlg_esb_kong', {
+      start: () => L.flag('kong_friend') ? 'friend' : L.flag('kong_resolution') ? 'after' : L.flag('met_kong') ? 'again' : 'hello',
+      nodes: {
+        hello: { speaker: 'KONG', text: 'SMALL HUMAN! STOP! [The ground shakes as something enormous turns around. It wears a bent traffic light as a crown.] KONG SEES YOU. KONG IS KING OF THE EMPIRE. EMPIRE IS TALLEST. THEREFORE KONG IS TALLEST KING. WHY IS SMALL HUMAN IN KONG\'S EMPIRE?',
+          onEnter() { L.setFlag('met_kong'); },
+          responses: [
+            { text: 'I\'ve come for the shiny rock.', next: 'rock' },
+            { text: 'A king deserves tribute, not a rock. I\'ll take it off your hands, your majesty.', check: { skill: 'speech', value: 60 }, next: 'speech', failNext: 'speech_fail' },
+            { text: 'That rock is radioactive. It\'s been making you smaller.', check: { special: 'I', value: 7 }, next: 'trick', failNext: 'trick_fail' },
+            { text: 'I brought you a queen. [Present Fay.]', cond: () => L.has('q_fay_mannequin'), next: 'queen' },
+            { text: 'Your reign is over, mutant.', next: 'fight' },
+          ] },
+        again: { text: 'SMALL HUMAN IS BACK. DID SMALL HUMAN BRING QUEEN?',
+          responses: [
+            { text: 'I brought you a queen. [Present Fay.]', cond: () => L.has('q_fay_mannequin'), next: 'queen' },
+            { text: 'About the shiny rock...', next: 'rock' },
+            { text: 'That rock is radioactive. It\'s been making you smaller.', check: { special: 'I', value: 7 }, next: 'trick', failNext: 'trick_fail', cond: () => !L.flag('kong_trick_failed') },
+            { text: 'Not yet.' },
+            { text: 'Your reign is over, mutant.', next: 'fight' },
+          ] },
+        rock: { text: 'SHINY ROCK IS KONG\'S. SHINY ROCK HUMS FOR KONG. HUMMING MEANS IT LIKES KONG. KONG WILL TRADE SHINY ROCK ONLY FOR... [he leans in; his breath is a war crime] ...A QUEEN. SMALL. PRETTY. DOES NOT SCREAM.',
+          onEnter() { L.setFlag('kong_wants_queen'); L.refresh('mq05'); },
+          responses: [
+            { text: 'Where would I find a queen who doesn\'t scream?', next: 'where' },
+            { text: 'Why do all your queens scream?', next: 'scream' },
+            { text: 'Forget it. I\'ll take the rock by force.', next: 'fight' },
+          ] },
+        scream: { text: 'KONG DOES NOT KNOW. KONG SAYS "HELLO, PRETTY." THEY SCREAM. KONG SAYS "PLEASE DO NOT SCREAM." THEY SCREAM MORE. KONG IS VERY SAD ABOUT THIS. KONG HAS BIG FEELINGS.', responses: [{ text: 'Where could I find one who won\'t scream?', next: 'where' }] },
+        where: { text: 'BIG STORE WITH RED STAR. MANY SMALL PRETTY HUMANS STANDING VERY STILL. THEY NEVER RUN. THEY NEVER SCREAM. KONG WENT THERE. GHOULS BIT KONG. KONG DOES NOT GO THERE NOW.', responses: [{ text: 'I\'ll see what I can do.' }] },
+        speech: { text: 'TRIBUTE... [He scratches his crown.] KINGS GET TRIBUTE. KONG IS KING. SO KONG... GIVES... NO. KONG GETS. BUT SMALL HUMAN SAYS KONG... [His face works through several expressions.] TAKE ROCK. TAKE IT BEFORE KONG UN-CONFUSES.',
+          onEnter() { kongGives('speech'); L.xp(60, 'Speech: Royal tribute'); }, responses: [{ text: 'Long live the king.' }] },
+        speech_fail: { text: 'SMALL HUMAN USES BIG WORDS. KONG DOES NOT LIKE BIG WORDS. KONG LIKES SMALL WORDS. LIKE "SQUISH."', responses: [{ text: 'Let\'s talk about the rock.', next: 'rock' }, { text: 'Okay, okay. I\'m going.' }] },
+        trick: { text: 'ROCK MAKES KONG... SMALL? [He stares at his enormous hands. He holds them further away. He holds them closer.] ...KONG FELT SMALLER THIS MORNING. TAKE IT! TAKE IT AWAY FROM KONG!',
+          onEnter() { kongGives('trick'); L.xp(60, 'Intelligence: Size matters'); L.karma(-10, 'Lied to a lonely mutant'); }, responses: [{ text: 'Glad I could help.' }] },
+        trick_fail: { text: 'KONG IS NOT SMALLER. KONG MEASURED HIMSELF AGAINST DOOR. DOOR IS SMALLER. SMALL HUMAN IS LIAR.', onEnter() { L.setFlag('kong_trick_failed'); }, responses: [{ text: 'Worth a try.' }] },
+        queen: { text: '[You set the mannequin down. Kong goes very, very still. He kneels — the floor groans — and very gently touches the scorched evening gown with one enormous finger.] ...SHE IS PERFECT. SHE DOES NOT SCREAM. SHE DOES NOT RUN. SHE IS... FAY. KONG WILL CALL HER FAY. KONG IS IN LOVE.',
+          onEnter() { L.take('q_fay_mannequin', 1); L.setFlag('kong_friend'); kongGives('queen'); L.give('q_kong_crown', 1); L.karma(75, 'Found a king his queen'); L.xp(100, 'Royal wedding'); },
+          responses: [{ text: 'You two make a lovely couple.', next: 'crown' }] },
+        crown: { text: 'SMALL FRIEND TAKE SHINY ROCK. AND TAKE OLD CROWN. KONG HAS NEW CROWN NOW. [He gestures at Fay.] SHE IS KONG\'S CROWN. [He sniffs, enormously.] KONG HAS BIG FEELINGS.', responses: [{ text: 'Goodbye, Kong.' }] },
+        fight: { text: 'THEN SMALL HUMAN WILL BE SMALL PANCAKE! KONG SMASH!', onEnter() { L.setFlag('kong_hostile'); L.hostile('esb_kong', true); L.factionTruce('super_mutants', ESB.x, ESB.z, 120, true); }, responses: [{ text: '[Fight!]' }] },
+        friend: { speaker: 'KONG', text: () => ['SMALL FRIEND! FAY SAYS HELLO. FAY DOES NOT SAY IT OUT LOUD. KONG HEARS IT.', 'KONG AND FAY ARE VERY HAPPY. KONG ONLY SMASHES BAD HUMANS NOW. MOSTLY.', 'KONG IS WRITING POEM FOR FAY. IT IS ALL ONE WORD. THE WORD IS "FAY."'][Math.floor(Math.random() * 3)],
+          responses: [{ text: 'Good to see you, Kong.' }] },
+        after: { text: 'SMALL HUMAN HAS SHINY ROCK. KONG IS STILL KING. KONG IS KING OF SLIGHTLY LESS.', responses: [{ text: '[Leave.]' }] },
+      },
+    });
+  });
+})();
+

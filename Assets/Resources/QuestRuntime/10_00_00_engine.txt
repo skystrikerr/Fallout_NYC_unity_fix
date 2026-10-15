@@ -1,0 +1,1155 @@
+/* src/quests/00_engine.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS MODULE — 00: QUEST ENGINE + CONTENT LIBRARY
+ * Owned by: quests (order 60).   Namespace: G.quests
+ *
+ * This file provides:
+ *   1. The quest engine exactly per CONTRACT.md §2 (define / start /
+ *      setStage / complete / fail / markers / tracking / flags / save /
+ *      events / playEnding).
+ *   2. `G.quests.lib` — a private toolkit used by the content files in this
+ *      directory (10_… 90_…): phase hooks (init / register / world /
+ *      newGame / spawn / update), defensive wrappers around every other
+ *      module (items, inventory, rpg, actors, props, landmarks, radio…),
+ *      anchor + free-spot placement, proximity triggers, kill counters,
+ *      tutorial hints and door-aware quest markers.
+ *
+ * Every call into another module happens at CALL time through G.x.y() and
+ * is guarded, so the whole quest layer degrades gracefully when any other
+ * module is missing or still a stub.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const THREE = window.THREE;
+
+  // ------------------------------------------------------------------
+  // Internal state
+  // ------------------------------------------------------------------
+  const DEFS = new Map();         // questId -> definition
+  const STATE = new Map();        // questId -> {status, stage, log:[stageIds], t}
+  let FLAGS = {};                 // arbitrary persistent flags / counters
+  let TRACKED = null;             // tracked quest id
+  const ENDINGS = new Map();      // endingId -> fn() => slides
+
+  const HOOKS = { init: [], register: [], world: [], newGame: [], spawn: [], loaded: [], update: [], reset: [] };
+  const DIALOGUES = new Map();    // id -> tree (kept so we can (re)register late)
+  const TERMINALS = new Map();    // id -> def
+  const TRIGGERS = [];            // proximity triggers
+  let worldBuilt = false;
+  const DYN = [];                 // dynamic props/pickups spawned by quests (cleared on reset)
+  function clearDynamic() {
+    for (const h of DYN.splice(0)) {
+      try {
+        if (h.key !== undefined && h.itemId === undefined && !G.isStub('items') && G.items.removePickup) { G.items.removePickup(h); continue; }
+        if (typeof h.remove === 'function') h.remove();
+        else if (typeof h.dispose === 'function') h.dispose();
+        if (h.object3d && h.object3d.parent) h.object3d.parent.remove(h.object3d);
+        if (h.interactable) G.world.removeInteractable(h.interactable);
+        if (h.collider) G.world.removeCollider(h.collider);
+        if (h.container && G.containers && G.containers.remove && !G.isStub('containers')) G.containers.remove(h.container);
+      } catch (e) { /* already gone */ }
+    }
+  }
+
+  function safe(where, fn) {
+    try { return fn(); } catch (e) { G.reportError('quests:' + where, e); return undefined; }
+  }
+
+  // ------------------------------------------------------------------
+  // Quest engine (public API)
+  // ------------------------------------------------------------------
+  function getState(id) {
+    let s = STATE.get(id);
+    if (!s) { s = { status: 'inactive', stage: null, log: [], t: 0 }; STATE.set(id, s); }
+    return s;
+  }
+  function stageDef(q, stageId) { return q && q.stages ? q.stages.find((s) => s.id === stageId) || null : null; }
+  function evalText(t) { if (typeof t === 'function') { try { return String(t()); } catch (e) { return '...'; } } return t || ''; }
+
+  /** Public, UI-friendly snapshot of a quest (what events carry and list() returns). */
+  function view(id) {
+    const q = DEFS.get(id); if (!q) return null;
+    const s = getState(id);
+    const cur = stageDef(q, s.stage);
+    const objectives = [];
+    // Completed stages first (struck through in Pip-Boy), then the current one.
+    for (const sid of s.log) {
+      const sd = stageDef(q, sid); if (!sd || sd.hidden) continue;
+      const done = sid !== s.stage || s.status !== 'active';
+      objectives.push({ id: sid, text: evalText(sd.text), done, current: !done && s.status === 'active', optional: !!sd.optional,
+        failed: s.status === 'failed' && sid === s.stage });
+    }
+    // Optional side objectives (FO3/NV "(Optional) ..." lines). Each solution to a
+    // quest can be a sideObjective with doneIf() (ticked off once that path was taken,
+    // and kept in the log after completion so the Pip-Boy records HOW it was solved)
+    // and showIf() (only offered once the player could know about it).
+    if (q.stages) {
+      for (const sd of q.stages) {
+        if (!sd.sideObjective || s.log.indexOf(sd.id) >= 0) continue;
+        if (sideDone(sd)) { objectives.push({ id: sd.id, text: evalText(sd.text), done: true, current: false, optional: true }); continue; }
+        if (s.status !== 'active') continue;
+        if (sd.failIf && safe('failIf', sd.failIf)) { objectives.push({ id: sd.id, text: evalText(sd.text), done: false, current: false, optional: true, failed: true }); continue; }
+        if (sd.showIf && !safe('showIf', sd.showIf)) continue;
+        objectives.push({ id: sd.id, text: evalText(sd.text), done: false, current: true, optional: true });
+      }
+    }
+    return {
+      id: q.id, name: q.name, main: !!q.main, giver: q.giver || '', desc: evalText(q.desc), location: q.location || '',
+      status: s.status, active: s.status === 'active', completed: s.status === 'completed', failed: s.status === 'failed',
+      stage: s.stage, stageText: cur ? evalText(cur.text) : '', objectives, tracked: TRACKED === q.id,
+      rewards: q.rewards || {}, startedAt: s.t, order: q.order || 0,
+    };
+  }
+
+  /** A side objective whose solution has been carried out. */
+  function sideDone(sd) { return !!(sd.doneIf && safe('doneIf', sd.doneIf)); }
+  /** What listeners get for a stage: a resolved snapshot, never the raw definition (whose
+   *  text may be a function and which carries onEnter / markers closures). */
+  function stageSnap(sd) { return sd ? { id: sd.id, text: evalText(sd.text), optional: !!sd.optional, main: !sd.sideObjective } : null; }
+
+  function defineQuest(def) {
+    if (!def || !def.id) return null;
+    def.stages = def.stages || [];
+    def.rewards = def.rewards || {};
+    DEFS.set(def.id, def);
+    return def;
+  }
+
+  function start(id, opts) {
+    const q = DEFS.get(id); if (!q) { console.warn('[quests] unknown quest ' + id); return false; }
+    const s = getState(id);
+    if (s.status !== 'inactive') return false;
+    s.status = 'active'; s.t = G.time ? G.time.elapsed : 0; s.log = []; s.stage = null;
+    const first = (opts && opts.stage) || (q.stages[0] && q.stages[0].id);
+    if (!TRACKED || q.main || (TRACKED && !isActive(TRACKED))) TRACKED = id;
+    else if (q.track) TRACKED = id;
+    const sd = first ? stageDef(q, first) : null;
+    if (sd) { s.stage = first; s.log.push(first); }
+    // NOTE: the jingle (quest_start / quest_update / quest_complete) is played by the
+    // sound module from these events — never play it here too (it doubled up).
+    G.events.emit('questStarted', view(id));
+    if (sd && sd.onEnter) safe('onEnter:' + id + '/' + first, sd.onEnter);
+    if (sd && sd.complete) complete(id);
+    return true;
+  }
+
+  function enterStage(q, s, stageId, silent) {
+    const sd = stageDef(q, stageId);
+    if (!sd) { console.warn('[quests] unknown stage ' + q.id + '/' + stageId); return false; }
+    s.stage = stageId;
+    if (s.log.indexOf(stageId) < 0) s.log.push(stageId);
+    lib.markerCache.clear();
+    if (!silent) G.events.emit('questUpdated', view(q.id), stageSnap(sd));
+    if (sd.onEnter) safe('onEnter:' + q.id + '/' + stageId, sd.onEnter);
+    if (sd.complete) complete(q.id);
+    return true;
+  }
+
+  function setStage(id, stageId) {
+    const q = DEFS.get(id); if (!q) return false;
+    const s = getState(id);
+    if (s.status === 'completed' || s.status === 'failed') return false;
+    if (s.status === 'inactive') { start(id, { stage: stageId }); return true; }
+    if (s.stage === stageId) return false;
+    return enterStage(q, s, stageId, false);
+  }
+
+  function complete(id) {
+    const q = DEFS.get(id); if (!q) return false;
+    const s = getState(id);
+    if (s.status === 'completed') return false;
+    if (s.status === 'inactive') { s.status = 'active'; s.log = []; }
+    s.status = 'completed';
+    const r = q.rewards || {};
+    // Rewards — each guarded so a missing module never blocks completion.
+    if (r.xp) lib.xp(r.xp, 'Quest: ' + q.name);
+    if (r.caps) lib.giveCaps(r.caps);
+    if (r.items) for (const it of r.items) lib.give(it[0], it[1] || 1);
+    if (r.karma) lib.karma(r.karma, q.name);
+    if (q.onComplete) safe('onComplete:' + id, q.onComplete);
+    G.events.emit('questCompleted', view(id));
+    if (TRACKED === id) { TRACKED = pickNextTracked(); G.events.emit('questTracked', TRACKED); }
+    return true;
+  }
+
+  function fail(id) {
+    const q = DEFS.get(id); if (!q) return false;
+    const s = getState(id);
+    if (s.status === 'completed' || s.status === 'failed') return false;
+    s.status = 'failed';
+    if (q.onFail) safe('onFail:' + id, q.onFail);
+    G.events.emit('questFailed', view(id));   // HUD banner plays its own error sting
+    if (TRACKED === id) { TRACKED = pickNextTracked(); G.events.emit('questTracked', TRACKED); }
+    return true;
+  }
+
+  /**
+   * Write a quest straight into the completed state without banners, jingles or
+   * rewards (used when a new game skips the vault intro). `stages` = the stage ids
+   * to record as done in the log, in order.
+   */
+  function completeSilently(id, stages) {
+    const q = DEFS.get(id); if (!q) return false;
+    const s = getState(id);
+    if (s.status === 'completed') return false;
+    s.status = 'completed'; s.t = s.t || (G.time ? G.time.elapsed : 0);
+    s.log = (stages || q.stages.filter((x) => !x.sideObjective).map((x) => x.id)).slice();
+    s.stage = s.log[s.log.length - 1] || null;
+    if (TRACKED === id) TRACKED = pickNextTracked();
+    lib.markerCache.clear();
+    return true;
+  }
+
+  function pickNextTracked() {
+    let best = null;
+    for (const [id, s] of STATE) {
+      if (s.status !== 'active') continue;
+      const q = DEFS.get(id);
+      if (!best || (q.main && !DEFS.get(best).main) || (s.t > getState(best).t && !!q.main === !!DEFS.get(best).main)) best = id;
+    }
+    return best;
+  }
+
+  function isActive(id) { const s = STATE.get(id); return !!s && s.status === 'active'; }
+  function isComplete(id) { const s = STATE.get(id); return !!s && s.status === 'completed'; }
+  function isFailed(id) { const s = STATE.get(id); return !!s && s.status === 'failed'; }
+  function isStarted(id) { const s = STATE.get(id); return !!s && s.status !== 'inactive'; }
+  function stage(id) { const s = STATE.get(id); return s && s.status !== 'inactive' ? s.stage : null; }
+  /** Has the quest ever reached this stage (it's in the log)? */
+  function reached(id, stageId) { const s = STATE.get(id); return !!s && s.log.indexOf(stageId) >= 0; }
+
+  function list() {
+    const out = [];
+    for (const id of DEFS.keys()) { const s = STATE.get(id); if (s && s.status !== 'inactive') out.push(view(id)); }
+    // Main quests first, then active before completed, then newest first.
+    const rank = (v) => (v.active ? 0 : v.completed ? 2 : 3) + (v.main ? 0 : 0.5);
+    out.sort((a, b) => rank(a) - rank(b) || b.startedAt - a.startedAt);
+    return out;
+  }
+
+  // ---- markers --------------------------------------------------------
+  const IXM = () => (G.LAYOUT ? G.LAYOUT.INTERIOR_X_MIN : 2500);
+  const doorCache = { n: -1, map: new Map() };
+  const anchorCache = new Map();                   // lib.anchor() memo (static world)   // redirect(): candidate doors per (player cell → target cell)
+  function rawMarkers(id) {
+    const q = DEFS.get(id); const s = STATE.get(id);
+    if (!q || !s || s.status !== 'active') return [];
+    const sd = stageDef(q, s.stage); if (!sd) return [];
+    let ms = sd.markers;
+    if (typeof ms === 'function') ms = safe('markers:' + id, ms);
+    const out = [];
+    if (Array.isArray(ms)) for (const m of ms) { const r = resolveMarkerSpec(m); if (r) out.push(Object.assign(r, { questId: id, questName: q.name, main: !!q.main })); }
+    // open side objectives may carry markers too
+    for (const so of q.stages) {
+      if (!so.sideObjective || !so.markers || s.log.indexOf(so.id) >= 0) continue;
+      if (sideDone(so) || (so.failIf && safe('failIf', so.failIf))) continue;
+      if (so.showIf && !safe('showIf', so.showIf)) continue;
+      let mm = so.markers; if (typeof mm === 'function') mm = safe('markers:' + id, mm);
+      if (Array.isArray(mm)) for (const m of mm) { const r = resolveMarkerSpec(m); if (r) out.push(Object.assign(r, { questId: id, questName: q.name, optional: true })); }
+    }
+    return out;
+  }
+  /** Marker spec may be {x,z,label}, {npc:'id', label}, {anchor:[site,name], fallback:{x,z}, label}, or a function. */
+  function resolveMarkerSpec(m) {
+    if (!m) return null;
+    if (typeof m === 'function') m = safe('marker', m);
+    if (!m) return null;
+    if (m.npc) {
+      const a = lib.npc(m.npc);
+      if (a && !a.dead && a.pos) return { x: a.pos.x, z: a.pos.z, y: a.pos.y, label: m.label || a.name, interior: a.pos.x >= IXM() };
+      if (m.x === undefined) return null;
+    }
+    if (m.anchor) {
+      // Anchors are static: resolve once (the fallback path runs a spiral free-spot
+      // search with dozens of collider queries — far too slow for every compass poll).
+      const key = m.anchor[0] + '|' + [].concat(m.anchor[1]).join(',') + '|' + (m.fallback ? m.fallback.x + ',' + m.fallback.z : '');
+      let p = lib.markerCache.get(key);
+      if (p === undefined) { p = lib.anchor(m.anchor[0], [].concat(m.anchor[1]), m.fallback) || null; lib.markerCache.set(key, p); }
+      if (p) return snapOut({ x: p.x, z: p.z, y: p.y, label: m.label, interior: p.x >= IXM() }, m);
+    }
+    if (m.pos) return { x: m.pos.x, z: m.pos.z, y: m.pos.y || 0, label: m.label, interior: m.pos.x >= IXM() };
+    if (m.x === undefined || m.z === undefined) return null;
+    return snapOut({ x: m.x, z: m.z, y: m.y || 0, label: m.label || '', interior: m.interior || m.x >= IXM() }, m);
+  }
+  /**
+   * FO-style: a street-level objective given as a point INSIDE a solid building footprint (a site centre, an
+   * anchor on a sealed façade) points at that building's door instead — or at the nearest spot a player can
+   * stand. Only static street-level markers (not NPCs, not rooftops, not interiors, not {exact:true}); memoised.
+   */
+  const snapCache = new Map();
+  function snapOut(r, spec) {
+    if (!r || r.interior || spec.exact || spec.npc || (r.y || 0) > 2.5 || !worldBuilt || !G.world || !G.world.query) return r;
+    const key = Math.round(r.x * 2) + ',' + Math.round(r.z * 2);
+    let s = snapCache.get(key);
+    if (s === undefined) {
+      s = null;
+      const W = G.world, gy = W.groundHeight(r.x, r.z, (r.y || 0) + 0.6, 0.3);
+      const up = W.groundHeight(r.x, r.z, (r.y || 0) + 12, 0.3);
+      const raised = up > gy + 0.3 && !lib.blocked(r.x, up, r.z, 0.3, 0.45);   // library steps, a deck: fine as it is
+      if (!raised && lib.blocked(r.x, gy, r.z, 0.3, 0.45)) {
+        let best = null, bd = 30;
+        for (const d of lib.doors()) {
+          const p = d.def && d.def.pos, t = d.def && d.def.target; if (!p || !t || p.x >= IXM() || t.x < IXM()) continue;
+          const dd = Math.hypot(p.x - r.x, p.z - r.z); if (dd < bd) { bd = dd; best = d; }
+        }
+        if (best) s = { x: best.def.pos.x, z: best.def.pos.z, y: best.def.pos.y || 0, viaDoor: true, doorLabel: best.def.label || '' };
+        else { const f = lib.freeSpot(r.x, r.z, gy, { maxR: 30, noCache: true }); if (f && !f.forced) s = { x: f.x, z: f.z, y: f.y }; }
+      }
+      snapCache.set(key, s);
+    }
+    return s ? Object.assign({}, r, s, { trueX: r.x, trueZ: r.z }) : r;
+  }
+  /**
+   * Door-aware redirection (Fallout-style): when the objective is on the other
+   * side of a load door, the compass points at the door instead.
+   */
+  function redirect(m) {
+    const P = G.player && G.player.pos; if (!P) return m;
+    const pIn = P.x >= IXM(), mIn = m.x >= IXM();
+    if (!pIn && !mIn) return m;
+    if (pIn && mIn && Math.hypot(P.x - m.x, P.z - m.z) < 320) return m;
+    const doors = (G.world && G.world.doors) || [];
+    // Candidate doors depend only on (player cell, target cell): cache them and just
+    // pick the nearest candidate per poll. Invalidated when the door list changes.
+    if (doorCache.n !== doors.length) { doorCache.n = doors.length; doorCache.map.clear(); }
+    const cell = (x, z) => Math.round(x / 150) + ',' + Math.round(z / 150);
+    const key = (pIn ? 'in:' + cell(P.x, P.z) : 'out') + '>' + (mIn ? cell(m.x, m.z) : 'out:' + Math.round(m.x) + ',' + Math.round(m.z));
+    let cands = doorCache.map.get(key);
+    if (!cands) {
+      cands = [];
+      if (pIn) {
+        // leave the current interior cell: any door inside this cell leading elsewhere
+        let direct = null;
+        for (const d of doors) {
+          const dp = d.def && d.def.pos, t = d.def && d.def.target; if (!dp || !t) continue;
+          if (Math.hypot(dp.x - P.x, dp.z - P.z) > 320) continue;
+          if (mIn && Math.hypot(t.x - m.x, t.z - m.z) < 320) { direct = d; break; } // direct link to target cell
+          if (t.x >= IXM()) continue;
+          cands.push(d);
+        }
+        if (direct) cands = [direct];
+      } else {
+        // outside, target inside: the exterior door(s) leading into the target cell
+        for (const d of doors) {
+          const dp = d.def && d.def.pos, t = d.def && d.def.target; if (!dp || !t) continue;
+          if (dp.x >= IXM() || t.x < IXM()) continue;
+          if (Math.hypot(t.x - m.x, t.z - m.z) > 320) continue;
+          cands.push(d);
+        }
+      }
+      doorCache.map.set(key, cands);
+    }
+    let best = null, bd = 1e9;
+    for (const d of cands) { const dp = d.def.pos; const dd = Math.hypot(dp.x - P.x, dp.z - P.z); if (dd < bd) { bd = dd; best = d; } }
+    if (!best) return m;
+    return Object.assign({}, m, { x: best.def.pos.x, z: best.def.pos.z, y: best.def.pos.y || 0, viaDoor: true, doorLabel: best.def.label || '', trueX: m.x, trueZ: m.z });
+  }
+  /** Markers for the HUD compass: the tracked quest's objective(s) (FO3/NV behaviour). all=true → every active quest. */
+  function activeMarkers(all) {
+    const ids = [];
+    if (all || !TRACKED || !isActive(TRACKED)) { for (const [id, s] of STATE) if (s.status === 'active') ids.push(id); }
+    else ids.push(TRACKED);
+    const out = [];
+    for (const id of ids) for (const m of rawMarkers(id)) out.push(redirect(m));
+    return out;
+  }
+  function allMarkers() { return activeMarkers(true); }
+
+  function setTracked(id) { if (id === null || isActive(id)) { TRACKED = id; G.events.emit('questTracked', id); return true; } return false; }
+  function tracked() { return TRACKED; }
+
+  // ---- flags ------------------------------------------------------------
+  function flag(name) { return FLAGS[name]; }
+  function setFlag(name, v) { FLAGS[name] = v === undefined ? true : v; G.events.emit('questFlag', name, FLAGS[name]); return FLAGS[name]; }
+  function incFlag(name, n) { FLAGS[name] = (Number(FLAGS[name]) || 0) + (n === undefined ? 1 : n); return FLAGS[name]; }
+
+  // ---- endings ----------------------------------------------------------
+  function defineEnding(id, fn) { ENDINGS.set(id, fn); }
+  function playEnding(id) {
+    let slides = null;
+    const fn = ENDINGS.get(id) || ENDINGS.get('default');
+    if (fn) slides = safe('ending:' + id, fn);
+    if (!slides || !slides.length) slides = [{ title: 'THE END', text: 'The sirens stopped two hundred years ago. The city never did.' }];
+    setFlag('ending_played', id);
+    G.events.emit('ending', slides, id);
+    if (G.isStub('hud')) fallbackSlideshow(slides);
+    return slides;
+  }
+  /** Minimal slideshow used only when ui_hud is absent. */
+  function fallbackSlideshow(slides) {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;inset:0;background:#000;color:#d8c9a0;z-index:950;display:flex;flex-direction:column;align-items:center;justify-content:center;font:20px/1.5 "Special Elite","Courier New",monospace;padding:10vh 15vw;text-align:center;cursor:pointer';
+    document.body.appendChild(el);
+    let i = 0;
+    const show = () => {
+      if (i >= slides.length) { el.remove(); return; }
+      el.innerHTML = '<div style="font-size:30px;letter-spacing:4px;margin-bottom:28px">' + slides[i].title + '</div><div>' + slides[i].text + '</div><div style="margin-top:40px;font-size:13px;opacity:.6">[click to continue]</div>';
+      i++;
+    };
+    el.onclick = show; show();
+  }
+
+  // ------------------------------------------------------------------
+  // The content library (G.quests.lib)
+  // ------------------------------------------------------------------
+  const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+  const lib = {
+    DEFS, STATE, TRIGGERS, DIALOGUES, TERMINALS, ENDINGS,
+    markerCache: new Map(),   // resolved {anchor, fallback} marker specs
+    npcs: {},            // stable npc id -> actor (current session)
+    npcDefs: [],         // roster entries {id, spawn()}
+    pickups: {},         // pickupKey -> handle
+    world: {},           // static things built once (terminals...)
+    hintsShown: {},
+    V3,
+    rng: G.util.rng(1201),
+
+    // ---- phase hooks ----
+    hook(phase, fn) { (HOOKS[phase] = HOOKS[phase] || []).push(fn); },
+    run(phase, arg) { for (const fn of (HOOKS[phase] || [])) safe('hook:' + phase, () => fn(arg)); },
+
+    // ---- quest / dialogue / terminal registration ----
+    quest: defineQuest,
+    dialogue(id, tree) { DIALOGUES.set(id, tree); if (!G.isStub('dialogue') && G.dialogue.register) safe('dlg:' + id, () => G.dialogue.register(id, tree)); return id; },
+    terminal(id, def) { TERMINALS.set(id, def); if (!G.isStub('terminals') && G.terminals.register) safe('term:' + id, () => G.terminals.register(id, def)); return id; },
+    ending: defineEnding,
+    registerAll() {
+      if (!G.isStub('dialogue') && G.dialogue.register) for (const [id, t] of DIALOGUES) safe('dlg:' + id, () => G.dialogue.register(id, t));
+      if (!G.isStub('terminals') && G.terminals.register) for (const [id, t] of TERMINALS) safe('term:' + id, () => G.terminals.register(id, t));
+    },
+
+    // ---- flags shortcuts ----
+    flag, setFlag, incFlag,
+    allFlags() { return JSON.parse(JSON.stringify(FLAGS)); },
+    once(name) { if (FLAGS['once_' + name]) return false; FLAGS['once_' + name] = true; return true; },
+
+    // ---- feedback ----
+    notify(text, opts) { safe('notify', () => G.notify(text, opts)); },
+    sfx(name, opts) { if (!G.isStub('sfx')) safe('sfx', () => G.sfx.play(name, opts)); },
+    news(text) { if (!G.isStub('radio') && G.radio.addNews) safe('news', () => G.radio.addNews(text)); lib.incFlag('news_count'); },
+    /** Contextual tutorial hint (shown once per game). */
+    hint(key, text, delay) {
+      if (lib.hintsShown[key] || FLAGS['hint_' + key]) return;
+      lib.hintsShown[key] = true; FLAGS['hint_' + key] = true;
+      // Hints are queued so two never stack on screen (FO shows one tutorial card at a time).
+      const show = () => {
+        const now = G.time.elapsed, wait = Math.max(0, (lib.hintBusyUntil || 0) - now);
+        if (wait > 0.05) { lib.later(wait, show); return; }
+        lib.hintBusyUntil = now + 7.5;
+        lib.notify(text, { tutorial: true, hint: true, duration: 7 });
+      };
+      if (delay) lib.later(delay, show); else show();
+    },
+
+    // ---- items / inventory ----
+    /** Resolve the first existing item id from candidates (ids or /regex/ on name). */
+    item() {
+      const c = Array.prototype.slice.call(arguments).flat();
+      if (G.isStub('items') || !G.items.get) return typeof c[0] === 'string' ? c[0] : null;
+      for (const x of c) {
+        if (typeof x === 'string') { if (G.items.get(x)) return x; }
+        else if (x instanceof RegExp && G.items.all) { const d = G.items.all().find((it) => x.test(it.name) || x.test(it.id)); if (d) return d.id; }
+      }
+      return null;
+    },
+    defineItem(def) { if (G.isStub('items') || !G.items.define) return null; return safe('define:' + def.id, () => G.items.define(def)); },
+    has(id, n) { if (G.isStub('inventory') || !id) return false; return (safe('count', () => G.inventory.count(id)) || 0) >= (n || 1); },
+    count(id) { if (G.isStub('inventory') || !id) return 0; return safe('count', () => G.inventory.count(id)) || 0; },
+    /** give(idOrCandidates, n, silent) */
+    give(id, n, silent) {
+      const rid = Array.isArray(id) ? lib.item(id) : id;
+      if (!rid || G.isStub('inventory')) return false;
+      if (rid === 'caps') return lib.giveCaps(n);
+      if (!G.isStub('items') && G.items.get && !G.items.get(rid)) return false;
+      safe('give:' + rid, () => G.inventory.add(rid, n || 1, silent ? { silent: true } : undefined));
+      return true;
+    },
+    take(id, n) { if (!id || G.isStub('inventory')) return false; if (!lib.has(id, n || 1)) return false; safe('take', () => G.inventory.remove(id, n || 1)); return true; },
+    caps() { if (G.isStub('inventory')) return 0; return safe('caps', () => (G.inventory.caps ? G.inventory.caps() : G.inventory.count('caps'))) || 0; },
+    giveCaps(n) {
+      if (G.isStub('inventory') || !n) return false;
+      safe('caps', () => { if (G.inventory.addCaps) G.inventory.addCaps(n); else if (n > 0) G.inventory.add('caps', n); else G.inventory.remove('caps', -n); });
+      if (n < 0) lib.notify((-n) + ' caps removed.'); else lib.sfx('pickup_caps');
+      return true;
+    },
+    pay(n) { if (lib.caps() < n) { lib.notify('You don\'t have enough caps.'); lib.sfx('ui_error'); return false; } lib.giveCaps(-n); lib.sfx('barter_trade'); return true; },
+    equipped(id) { return !G.isStub('inventory') && !!safe('isEquipped', () => G.inventory.isEquipped(id)); },
+
+    // ---- rpg ----
+    xp(n, reason) { if (!G.isStub('rpg') && G.rpg.addXP) safe('xp', () => G.rpg.addXP(n, reason)); else lib.notify('+' + n + ' XP'); },
+    karma(n, reason) { if (!G.isStub('rpg') && G.rpg.addKarma) safe('karma', () => G.rpg.addKarma(n, reason)); lib.incFlag('karma_acc', n); },
+    karmaValue() { if (!G.isStub('rpg') && typeof G.rpg.karma === 'number') return G.rpg.karma; return Number(FLAGS.karma_acc) || 0; },
+    /**
+     * Karma tier 0 Very Good · 1 Good · 2 Neutral · 3 Evil · 4 Very Evil. Uses rpg's own
+     * karmaTier() so endings and NPC reactions always agree with the Pip-Boy STAT title.
+     */
+    karmaTier() {
+      if (!G.isStub('rpg') && typeof G.rpg.karmaTier === 'function') { const t = safe('karmaTier', () => G.rpg.karmaTier()); if (typeof t === 'number') return t; }
+      const k = lib.karmaValue();
+      return k >= 750 ? 0 : k >= 250 ? 1 : k > -250 ? 2 : k > -750 ? 3 : 4;
+    },
+    karmaTitle() { if (!G.isStub('rpg') && typeof G.rpg.karmaTitle === 'function') return safe('karmaTitle', () => G.rpg.karmaTitle()) || ''; return ''; },
+    skill(id) { if (G.isStub('rpg') || !G.rpg.skill) return 25; return safe('skill', () => G.rpg.skill(id)) || 0; },
+    special(k) { if (G.isStub('rpg') || !G.rpg.special) return 5; return (G.rpg.special && G.rpg.special[k]) || 5; },
+    level() { return (!G.isStub('rpg') && G.rpg.level) || 1; },
+    healFull() {
+      const P = G.player; if (!P) return;
+      P.heal(P.maxHp);
+      P.rads = 0; G.events.emit('radsChanged', 0, 0);
+      if (!G.isStub('rpg') && G.rpg.cureLimbs) safe('limbs', () => G.rpg.cureLimbs());
+      lib.sfx('stimpak');
+    },
+    removeRads(n) { const P = G.player; P.rads = Math.max(0, P.rads - (n === undefined ? 1e9 : n)); G.events.emit('radsChanged', P.rads, 0); },
+
+    // ---- world queries ----
+    inInterior() { return G.player && G.player.pos.x >= IXM(); },
+    near(x, z, r) { const p = G.player.pos; return Math.hypot(p.x - x, p.z - z) <= r; },
+    dist(x, z) { const p = G.player.pos; return Math.hypot(p.x - x, p.z - z); },
+    site(id) { return G.LAYOUT.getSite(id); },
+    siteCenter(id) { const s = G.LAYOUT.getSite(id); return s ? { x: (s.x0 + s.x1) / 2, z: (s.z0 + s.z1) / 2 } : null; },
+    loc(id) { return G.LAYOUT.getLocation(id); },
+
+    /**
+     * Landmark anchor lookup: tries each name in order on G.landmarks, then
+     * returns the fallback (resolved to a free, grounded spot).
+     */
+    anchor(siteId, names, fallback, opts) {
+      names = [].concat(names || []);
+      // Memoised: anchors and static colliders never move, and the fallback path is a
+      // spiral search (up to ~200 collider queries + ground raycasts). `los` checks and
+      // explicit {noCache} lookups bypass the cache.
+      const ck = (opts && (opts.los || opts.noCache)) ? null
+        : siteId + '|' + names.join(',') + '|' + (fallback ? fallback.x + ',' + fallback.z + ',' + (fallback.y === undefined ? '' : fallback.y) : '-') + '|' + ((opts && opts.maxR) || '');
+      if (ck && anchorCache.has(ck)) { const c = anchorCache.get(ck); return c ? Object.assign({}, c) : null; }
+      let out = null;
+      if (!G.isStub('landmarks') && G.landmarks.getAnchor) {
+        for (const n of names) {
+          const a = safe('anchor', () => G.landmarks.getAnchor(siteId, n));
+          if (a && isFinite(a.x) && isFinite(a.z)) { out = { x: a.x, y: a.y || 0, z: a.z, anchored: true, name: n }; break; }
+        }
+      }
+      if (!out && fallback) out = lib.freeSpot(fallback.x, fallback.z, fallback.y, opts);
+      if (ck && worldBuilt) anchorCache.set(ck, out ? Object.assign({}, out) : null);
+      return out;
+    },
+
+    /**
+     * Is a cylinder at (x,y,z) blocked by colliders?  stepTol: colliders whose top is
+     * at most this far above y are treated as walkable (default 0.45 = a stair step;
+     * NPC placement passes 0.15 so kerbs, planters and sandbags count as obstacles).
+     */
+    blocked(x, y, z, r, stepTol) {
+      const W = G.world; r = r || 0.4;
+      const tol = stepTol === undefined ? 0.45 : stepTol;
+      const cs = W.query(x - r - 0.5, z - r - 0.5, x + r + 0.5, z + r + 0.5);
+      for (const c of cs) {
+        if (c.maxY <= y + tol || c.minY >= y + 1.7) continue;
+        if (W.pointInCollider(c, x, z, r)) return true;
+      }
+      return false;
+    },
+    /**
+     * Find a free, grounded spot near (x,z). Spirals outwards up to maxR.
+     * opts: {y (reference height), maxR, los: {x,y,z} must see, radius}
+     * Pass 1 is strict: the spot must be on the reference floor itself (±0.35 m) and
+     * clear of anything taller than a kerb — no NPCs standing in planters or on desks.
+     * Pass 2 (only if pass 1 finds nothing) accepts steps/raised floors as before.
+     */
+    freeSpot(x, z, y, opts) {
+      opts = opts || {};
+      const W = G.world;
+      const hasY = y !== undefined && y !== null;
+      const maxR = opts.maxR || 14;
+      const mk = (strict) => (px, pz) => {
+        // Off the land mask only with an explicit height (a pier deck, a ship, a jetty): the
+        // spot must then be a real walkable surface above the water line.
+        const land = px >= IXM() || !G.LAYOUT || G.LAYOUT.isLand(px, pz);
+        if (!land && !hasY) return null;
+        // Without an explicit height we want street / floor level, never a rooftop or car roof.
+        const base = hasY ? y : (px >= IXM() ? 0 : W.terrainHeight(px, pz));
+        const gy = W.groundHeight(px, pz, base + 0.6, 0.3);
+        if (Math.abs(gy - base) > (strict ? 0.35 : 1.6)) return null;
+        if (px < IXM() && gy < W.waterLevel + (land ? -0.2 : 0.3)) return null;
+        if (lib.blocked(px, gy, pz, opts.radius || 0.45, strict ? 0.15 : 0.45)) return null;
+        if (opts.los) {
+          const a = V3(px, gy + 1.2, pz), b = V3(opts.los.x, (opts.los.y || 0) + 1.2, opts.los.z);
+          if (!W.lineOfSight(a, b)) return null;
+        }
+        return gy;
+      };
+      for (const strict of [true, false]) {
+        const ok = mk(strict);
+        let g = ok(x, z);
+        if (g !== null) return { x, y: g, z };
+        for (let r = 0.8; r <= maxR; r += 0.8) {
+          const n = Math.max(6, Math.round(r * 5));
+          for (let i = 0; i < n; i++) {
+            const a = (i / n) * Math.PI * 2 + r;
+            const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
+            g = ok(px, pz);
+            if (g !== null) return { x: px, y: g, z: pz };
+          }
+        }
+      }
+      // give up gracefully: raw point on the ground
+      const b0 = hasY ? y : (x >= IXM() ? 0 : W.terrainHeight(x, z));
+      return { x, y: W.groundHeight(x, z, b0 + 0.6, 0.3), z, forced: true };
+    },
+
+    /** Door lookups. */
+    doors() { return (G.world && G.world.doors) || []; },
+    /** The door inside Vault 120 that leads out to LAYOUT.vaultExit. */
+    vaultExitDoor() {
+      const ex = G.LAYOUT.vaultExit, o = G.LAYOUT.INTERIORS.vault120.origin;
+      let best = null, bd = 1e9;
+      for (const d of lib.doors()) {
+        const t = d.def && d.def.target, p = d.def && d.def.pos; if (!t || !p) continue;
+        if (p.x < IXM() || Math.hypot(p.x - o.x, p.z - o.z) > 260) continue;
+        const dd = Math.hypot(t.x - ex.x, t.z - ex.z);
+        if (dd < 60 && dd < bd) { bd = dd; best = d; }
+      }
+      return best;
+    },
+    /** Exterior door whose target lies inside the given interior cell. */
+    doorInto(interiorKey) {
+      const o = G.LAYOUT.INTERIORS[interiorKey] && G.LAYOUT.INTERIORS[interiorKey].origin; if (!o) return null;
+      for (const d of lib.doors()) { const t = d.def && d.def.target, p = d.def && d.def.pos; if (t && p && p.x < IXM() && Math.hypot(t.x - o.x, t.z - o.z) < 200) return d; }
+      return null;
+    },
+
+    // ---- actors ----
+    npc(id) {
+      const a = lib.npcs[id];
+      if (a && !a._removed) return a;
+      if (!G.isStub('actors') && G.actors.get) { const b = safe('actors.get', () => G.actors.get(id)); if (b) { lib.npcs[id] = b; return b; } }
+      return null;
+    },
+    alive(id) { const a = lib.npc(id); return !!a && !a.dead; },
+    isDead(id) { return !!FLAGS['dead_' + id]; },
+    /**
+     * Spawn a named NPC (idempotent per stable id). def is a G.actors.spawn def
+     * plus {at:{site, anchors:[..], fallback:{x,z,y?}, los?}} for placement.
+     */
+    spawnNPC(def) {
+      if (G.isStub('actors') || !G.actors.spawn) return null;
+      if (def.skip) return null;
+      // Stable ids: combat restores saved state (position, hostility, corpse + loot) on spawn.
+      const existing = safe('actors.get', () => G.actors.get && G.actors.get(def.id));
+      if (existing && !existing.removed && !existing._removed) { lib.npcs[def.id] = existing; return existing; }
+      let pos = def.pos;
+      if (def.at) {
+        const at = def.at;
+        pos = at.site ? lib.anchor(at.site, at.anchors, at.fallback, { los: at.los, maxR: at.maxR })
+          : lib.freeSpot(at.fallback.x, at.fallback.z, at.fallback.y, { los: at.los, maxR: at.maxR });
+      }
+      if (!pos) return null;
+      const spawnDef = Object.assign({}, def);
+      delete spawnDef.at;
+      spawnDef.pos = { x: pos.x, y: pos.y || 0, z: pos.z };
+      if (spawnDef.home === 'here') spawnDef.home = { x: pos.x, z: pos.z, r: def.homeR || 4 };
+      if (spawnDef.merchant && spawnDef.merchant.stock) spawnDef.merchant = Object.assign({}, spawnDef.merchant, { stock: lib.resolveStock(spawnDef.merchant.stock) });
+      if (spawnDef.inventory) spawnDef.inventory = lib.resolveStock(spawnDef.inventory);
+      if (spawnDef.weapon && Array.isArray(spawnDef.weapon)) spawnDef.weapon = lib.item(spawnDef.weapon) || undefined;
+      const a = safe('spawn:' + def.id, () => G.actors.spawn(spawnDef));
+      if (a) {
+        lib.npcs[def.id] = a;
+        a.questNpc = true;
+        // Killed earlier (older save without combat state): keep them dead, corpse lootable.
+        if (FLAGS['dead_' + def.id] && !a.dead && a.kill) safe('restoreDead', () => a.kill({ silent: true, restore: true }));
+        if (def.lookYaw !== undefined) a.yaw = def.lookYaw;
+      }
+      return a;
+    },
+    /** stock: [[idOrCandidates, n], ...] → only resolvable ids. */
+    resolveStock(stock) {
+      const out = [];
+      for (const s of stock || []) { const id = Array.isArray(s[0]) || s[0] instanceof RegExp ? lib.item(s[0]) : lib.item(s[0]); if (id) out.push([id, s[1] || 1]); }
+      return out;
+    },
+    removeNPC(id) {
+      const a = lib.npc(id); if (!a) return;
+      if (!G.isStub('actors') && G.actors.remove) safe('remove', () => G.actors.remove(a));
+      a._removed = true; delete lib.npcs[id];
+    },
+    say(id, text, dur) { const a = lib.npc(id); if (a && a.say && !a.dead) safe('say', () => a.say(text, dur)); },
+    hostile(id, v) { const a = lib.npc(id); if (a && a.setHostile && !a.dead) safe('hostile', () => a.setHostile(v !== false)); },
+    /**
+     * Faction truce / hostility.
+     *  - GLOBAL (x undefined): changes the player↔faction relation city-wide through
+     *    G.combat.setRelation (saved by combat). Use only for real allegiance changes
+     *    (joining the Brotherhood makes the Enclave hostile everywhere, etc.).
+     *  - LOCAL, hostile=false: registers a truce ZONE (see truceZone) — only actors of
+     *    that faction inside the radius stand down; patrols elsewhere stay hostile.
+     *  - LOCAL, hostile=true: ends overlapping truce zones and turns the actors in the
+     *    radius hostile. Never touches the global relation.
+     * opts (local truces): {id, cond()} — a cond'd zone lifts itself when cond() is false.
+     */
+    factionTruce(faction, x, z, r, hostile, opts) {
+      if (x === undefined) {
+        if (!G.isStub('combat') && G.combat.setRelation) safe('relation', () => G.combat.setRelation('player', faction, hostile ? 'hostile' : 'neutral'));
+        let n = 0;
+        for (const a of lib.actorsOf(faction)) {
+          if (!a.setHostile) continue;
+          // per-actor overrides would shadow the new relation: clear them (keep quest-scripted ones)
+          safe('truce', () => a.setHostile(hostile ? true : undefined)); delete a.questTruce; n++;
+        }
+        for (const id in truceZones()) if (truceZones()[id].faction === faction && hostile) lib.endTruce(id, false);
+        return n;
+      }
+      if (!hostile) {
+        const id = (opts && opts.id) || (faction + '@' + Math.round(x) + ',' + Math.round(z));
+        lib.truceZone(id, { faction, x, z, r, cond: opts && opts.cond });
+        return applyTruceZone(id, TRUCE_LIVE.get(id) || truceZones()[id]);
+      }
+      // local hostility: lift any truce zone that covers this area, then aggro the locals
+      const zs = truceZones();
+      for (const id in zs) { const t = zs[id]; if (t.faction === faction && Math.hypot(t.x - x, t.z - z) < t.r + r) lib.endTruce(id, false); }
+      for (const [id, t] of TRUCE_LIVE) if (t.faction === faction && Math.hypot(t.x - x, t.z - z) < t.r + r) lib.endTruce(id, false);
+      let n = 0;
+      for (const a of lib.actorsOf(faction)) {
+        if (Math.hypot(a.pos.x - x, a.pos.z - z) > r || !a.setHostile) continue;
+        delete a.questTruce; safe('hostile', () => a.setHostile(true)); n++;
+      }
+      return n;
+    },
+    /** Live actors of a faction. */
+    actorsOf(faction) {
+      if (G.isStub('actors') || !G.actors.list) return [];
+      return (safe('list', () => G.actors.list()) || []).filter((a) => a && !a.dead && a.faction === faction && a.pos);
+    },
+    /**
+     * Register (or refresh) a local truce zone. Zones without `cond` are persistent
+     * (saved in flags); zones with `cond` live in memory and are re-registered by the
+     * content that owns them. Poll: truced actors are tagged `a.questTruce = id`.
+     */
+    truceZone(id, def) {
+      if (def.cond) { TRUCE_LIVE.set(id, Object.assign({ id }, def)); return; }
+      const zs = truceZones(); zs[id] = { faction: def.faction, x: def.x, z: def.z, r: def.r };
+    },
+    /** Lift a truce zone: its actors fall back to the normal faction relation. */
+    endTruce(id, keepZone) {
+      const t = TRUCE_LIVE.get(id) || truceZones()[id];
+      if (t) revertTruceZone(id);
+      if (!keepZone) { TRUCE_LIVE.delete(id); delete truceZones()[id]; }
+    },
+    /** Teleport an NPC (fade-free) */
+    moveNPC(id, pos) {
+      const a = lib.npc(id); if (!a || a.dead) return;
+      const p = pos.x !== undefined ? pos : null; if (!p) return;
+      a.pos.set(p.x, p.y || 0, p.z);
+      if (a.home) { a.home.x = p.x; a.home.z = p.z; }
+    },
+    startDialogue(dlgId, actorId) {
+      if (G.isStub('dialogue') || !G.dialogue.start) return false;
+      const a = actorId ? lib.npc(actorId) : null;
+      safe('dlgstart', () => G.dialogue.start(dlgId, a));
+      return true;
+    },
+
+    // ---- world objects ----
+    /** Spawn a terminal (props module, or a small procedural fallback). */
+    spawnTerminal(terminalId, pos, yaw) {
+      if (!pos) return null;
+      let h = null;
+      // Anchors sitting on a desk/console (well above the floor) get a desk-top terminal.
+      const floorY = G.world.groundHeight(pos.x, pos.z, (pos.y || 0) - 0.6, 0.1);
+      const onDesk = (pos.y || 0) - floorY > 0.4;
+      if (!G.isStub('props') && G.props.spawn) h = safe('props.terminal', () => G.props.spawn('terminal', { x: pos.x, y: pos.y || 0, z: pos.z, yaw: yaw || 0, terminalId, mount: onDesk ? 'desk' : undefined, persistent: true }));
+      if (!h) h = fallbackTerminal(terminalId, pos, yaw || 0);
+      lib.world['term_' + terminalId] = { pos: V3(pos.x, (pos.y || 0) + 1.1, pos.z), handle: h };
+      return h;
+    },
+    termPos(terminalId) { const t = lib.world['term_' + terminalId]; return t ? t.pos : null; },
+    /** Spawn a prop through props (defensive). */
+    prop(type, opts) { if (G.isStub('props') || !G.props.spawn) return null; return safe('props.' + type, () => G.props.spawn(type, opts)); },
+    /** Place a world pickup once per game (key = persistent flag). */
+    pickup(key, itemId, n, pos) {
+      if (FLAGS['got_' + key]) return null;
+      const id = Array.isArray(itemId) ? lib.item(itemId) : itemId; if (!id) return null;
+      pos = lib.unburyPickup(pos);
+      let h = null;
+      if (!G.isStub('items') && G.items.spawnPickup) h = safe('spawnPickup:' + id, () => G.items.spawnPickup(id, n || 1, V3(pos.x, pos.y || 0, pos.z), { static: false, noSave: true, keepY: pos.y !== undefined }));
+      if (!h) h = fallbackPickup(key, id, n || 1, pos);
+      lib.pickups[key] = { id, pos, handle: h };
+      lib.dyn(h);
+      return h;
+    },
+
+    /**
+     * Quest items are placed at landmark anchors ('safe', 'loot', 'footlocker'…) where a solid prop often
+     * stands: the item then sat INSIDE the safe / crate / counter and could never be focused (every line of
+     * sight hits the box) — e.g. Wendell's ring, the NYPL books, two bobbleheads. Lift an enclosed item onto
+     * the top of what encloses it (up to 1.5 m), else put it on the floor beside it.
+     */
+    unburyPickup(pos) {
+      const W = G.world; if (!pos || !W || !W.query || !worldBuilt) return pos;
+      const floor = pos.x >= IXM() ? 0 : W.terrainHeight(pos.x, pos.z);
+      const y0 = pos.y !== undefined ? pos.y : W.groundHeight(pos.x, pos.z, floor + 0.6, 0.3);
+      let enc = null;
+      for (const c of W.query(pos.x - 0.2, pos.z - 0.2, pos.x + 0.2, pos.z + 0.2)) {
+        if (c.minY <= y0 + 0.05 && c.maxY > y0 + 0.1 && W.pointInCollider(c, pos.x, pos.z, 0.04)) { if (!enc || c.maxY > enc.maxY) enc = c; }
+      }
+      if (!enc) return pos;
+      // where the player would stand to reach it
+      const f = lib.freeSpot(pos.x, pos.z, Math.min(y0, enc.minY + 0.05), { maxR: 3, radius: 0.25 });
+      const stand = f && !f.forced ? f.y : Math.min(y0, enc.minY);
+      const top = W.groundHeight(pos.x, pos.z, enc.maxY + 0.3, 0.1);
+      // on top of it only while that stays below eye level (an item above the eye is hidden by the box itself)
+      if (top > y0 + 0.05 && top - stand <= 1.3 && !lib.blocked(pos.x, top, pos.z, 0.08, 0.02)) return { x: pos.x, y: top + 0.02, z: pos.z };
+      return f && !f.forced ? { x: f.x, y: f.y, z: f.z } : pos;
+    },
+    /** Register a dynamic world object (prop/pickup handle) to be removed on reset. */
+    dyn(h) { if (h) DYN.push(h); return h; },
+
+    // ---- triggers ----
+    /**
+     * Proximity trigger: {id, x,z,r | pos(): {x,z}, interior?, cond?(), fire(), once=true, y?, dy?}
+     * Fires while the player is within r (checked 5×/s). once-triggers persist via flags.
+     */
+    trigger(def) { if (def.once === undefined) def.once = true; TRIGGERS.push(def); return def; },
+
+    // ---- counters for kill/collect objectives ----
+    counter(name) { return Number(FLAGS['cnt_' + name]) || 0; },
+    bump(name, n) { return lib.incFlag('cnt_' + name, n || 1); },
+
+    /** Fade + teleport the player (ferries, elevators, scripted moves). */
+    travel(x, y, z, yaw, midFn) {
+      G.fadeTransition(() => {
+        G.player.teleport(x, y, z, yaw);
+        if (midFn) safe('travel', midFn);
+      }, 0.6);
+    },
+    /**
+     * Scripted delays in GAME time (ticked from update with dt, so they pause with the
+     * Pip-Boy, dialogue, menus and loading screens) and cancelled on reset / load.
+     * tag (optional) lets other code ask whether something is pending (hasPending).
+     */
+    later(sec, fn, tag) { LATER.push({ t: Math.max(0, sec || 0), fn, tag: tag || null, gen: lib.gen }); },
+    hasPending(tag) { return LATER.some((e) => e.tag === tag && e.gen === lib.gen); },
+    /**
+     * A tiny camera-script runner driven from update() (never requestAnimationFrame):
+     * step(e, t) receives eased 0..1 progress; freezes the player while running and
+     * always unfreezes (also on reset). Pauses with the game.
+     */
+    cinematic(dur, step, done) {
+      if (CINE && CINE.done) safe('cine', CINE.done);
+      CINE = { t: 0, dur: Math.max(0.01, dur), step, done, gen: lib.gen };
+      if (G.player) G.player.frozen = true;
+    },
+    cineActive() { return !!CINE; },
+    /** Counter refresh ("2/3 roaches"): HUD line + Pip-Boy refresh WITHOUT the quest jingle. */
+    refresh(id) {
+      const v = view(id); if (!v || !v.active) return;
+      G.events.emit('questCounter', v);
+      if (v.stageText) lib.notify(v.stageText, { sub: v.name, quiet: true });
+    },
+    /** Full-screen colour wash (cosmetic DOM overlay; removed on reset). */
+    overlay(color, fadeIn, hold, fadeOut, maxOpacity) {
+      if (G.SMOKE) return null;
+      const el = document.createElement('div');
+      el.style.cssText = 'position:fixed;inset:0;background:' + color + ';opacity:' + (fadeIn ? 0 : (maxOpacity || 1)) + ';pointer-events:none;z-index:870;transition:opacity ' + (fadeIn || fadeOut || 1) + 's ease-in-out';
+      document.body.appendChild(el); OVERLAYS.push(el);
+      const kill = () => { const i = OVERLAYS.indexOf(el); if (i >= 0) OVERLAYS.splice(i, 1); el.remove(); };
+      if (fadeIn) { void el.offsetWidth; el.style.opacity = String(maxOpacity || 0.92); }
+      lib.later((fadeIn || 0) + (hold || 0), () => { el.style.transition = 'opacity ' + (fadeOut || 1) + 's ease-in-out'; el.style.opacity = '0'; });
+      lib.later((fadeIn || 0) + (hold || 0) + (fadeOut || 1) + 0.3, kill);
+      return el;
+    },
+    gen: 0,
+    completeSilently,
+    /**
+     * Hand over the Pip-Boy: the real equippable apparel (rpg 'pipboy_3000') when it
+     * exists, equipped straight onto the wrist; the quest's misc item only as a
+     * fallback when the rpg module is absent.
+     */
+    givePipboy(silent) {
+      FLAGS.got_pipboy = true;
+      const real = lib.item('pipboy_3000');
+      if (real && !G.isStub('items') && G.items.get && G.items.get(real) && !G.isStub('inventory')) {
+        if (!lib.has(real)) lib.give(real, 1, silent !== false);
+        if (G.inventory.equip) safe('equipPipboy', () => G.inventory.equip(real, { silent: true, force: true }));
+      } else lib.give('q_pipboy', 1, silent !== false);
+      G.events.emit('questFlag', 'got_pipboy', true);
+    },
+  };
+  // Marker internals for the quest audit (75_audit.js) and debug tooling.
+  lib.resolveMarker = (m) => resolveMarkerSpec(m);
+  lib.redirectMarker = (m) => redirect(m);
+  lib.stageDef = stageDef;
+  lib.isWorldBuilt = () => worldBuilt;
+
+  // ------------------------------------------------------------------
+  // Fallbacks when props / items modules are absent
+  // ------------------------------------------------------------------
+  let fbMats = null;
+  function fbMat() {
+    if (fbMats) return fbMats;
+    fbMats = {
+      body: new THREE.MeshStandardMaterial({ color: 0x6b6452, roughness: 0.7, metalness: 0.4 }),
+      screen: new THREE.MeshStandardMaterial({ color: 0x0a1a0e, emissive: 0x2cff74, emissiveIntensity: 0.9, roughness: 0.3 }),
+      paper: new THREE.MeshStandardMaterial({ color: 0xd9ceb0, roughness: 0.9 }),
+      tape: new THREE.MeshStandardMaterial({ color: 0x3a3a40, roughness: 0.4, metalness: 0.5 }),
+    };
+    for (const k in fbMats) fbMats[k].userData.shared = true;
+    return fbMats;
+  }
+  function fallbackTerminal(terminalId, pos, yaw) {
+    const m = fbMat();
+    const g = new THREE.Group();
+    const desk = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.8, 0.6), m.body); desk.position.y = 0.4; g.add(desk);
+    const mon = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.52, 0.5), m.body); mon.position.set(0, 1.08, -0.02); g.add(mon);
+    const scr = new THREE.Mesh(new THREE.PlaneGeometry(0.46, 0.36), m.screen); scr.position.set(0, 1.1, 0.235); g.add(scr);
+    const kb = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 0.2), m.body); kb.position.set(0, 0.83, 0.18); g.add(kb);
+    g.position.set(pos.x, pos.y || 0, pos.z); g.rotation.y = yaw;
+    G.scene.add(g);
+    const col = G.world.addCollider(pos.x, pos.z, 1.1, 0.6, pos.y || 0, (pos.y || 0) + 1.35, yaw, { tag: 'prop' });
+    const it = G.world.addInteractable({
+      pos: V3(pos.x, (pos.y || 0) + 1.1, pos.z), radius: 0.7, label: 'Terminal', verb: 'Access',
+      onInteract() { if (!G.isStub('terminals')) G.terminals.open(terminalId); else lib.notify('The terminal flickers but nothing happens.'); },
+    });
+    return { object3d: g, interactable: it, collider: col, fallback: true };
+  }
+  function fallbackPickup(key, id, n, pos) {
+    const m = fbMat();
+    const def = !G.isStub('items') && G.items.get ? G.items.get(id) : null;
+    const isTape = def && def.type === 'holotape';
+    const mesh = new THREE.Mesh(isTape ? new THREE.BoxGeometry(0.14, 0.03, 0.1) : new THREE.BoxGeometry(0.22, 0.01, 0.3), isTape ? m.tape : m.paper);
+    const y = (pos.y || 0) + 0.05;
+    mesh.position.set(pos.x, y, pos.z);
+    G.scene.add(mesh);
+    const h = { object3d: mesh };
+    h.interactable = G.world.addInteractable({
+      pos: V3(pos.x, y, pos.z), radius: 0.5, label: def ? def.name : id, verb: 'Take',
+      onInteract() {
+        lib.give(id, n);
+        G.world.removeInteractable(h.interactable); G.scene.remove(mesh);
+        lib.setFlag('got_' + key); G.events.emit('itemAdded', id, n);
+      },
+    });
+    return h;
+  }
+
+  // ------------------------------------------------------------------
+  // Game-time scheduler, camera scripts, overlays
+  // ------------------------------------------------------------------
+  const LATER = [];               // [{t, fn, tag, gen}] — see lib.later
+  let CINE = null;                // active lib.cinematic
+  const OVERLAYS = [];            // DOM washes to remove on reset
+  function tickLater(dt) {
+    if (!LATER.length || !(dt > 0)) return;
+    // Snapshot: callbacks may schedule more work (runs next tick at the earliest).
+    const due = [];
+    for (let i = LATER.length - 1; i >= 0; i--) {
+      const e = LATER[i];
+      if (e.gen !== lib.gen) { LATER.splice(i, 1); continue; }
+      e.t -= dt;
+      if (e.t <= 0) { LATER.splice(i, 1); due.push(e); }
+    }
+    for (let i = due.length - 1; i >= 0; i--) safe('later', due[i].fn);
+  }
+  function tickCine(dt) {
+    if (!CINE) return;
+    if (CINE.gen !== lib.gen) { CINE = null; if (G.player) G.player.frozen = false; return; }
+    CINE.t += dt;
+    const t = Math.min(1, CINE.t / CINE.dur), e = t * t * (3 - 2 * t);
+    const c = CINE;
+    safe('cine', () => c.step(e, t));
+    if (t >= 1 && CINE === c) { CINE = null; if (G.player) G.player.frozen = false; if (c.done) safe('cine', c.done); }
+  }
+  function clearScheduled() {
+    LATER.length = 0;
+    if (CINE) { CINE = null; if (G.player) G.player.frozen = false; }
+    for (const el of OVERLAYS.splice(0)) { try { el.remove(); } catch (e) { /* gone */ } }
+  }
+
+  // ------------------------------------------------------------------
+  // Local truce zones (see lib.factionTruce)
+  // ------------------------------------------------------------------
+  const TRUCE_LIVE = new Map();   // id -> {id, faction, x, z, r, cond} (cond'd, in-memory)
+  function truceZones() { if (!FLAGS.__truces || typeof FLAGS.__truces !== 'object') FLAGS.__truces = {}; return FLAGS.__truces; }
+  /** Stand down every not-yet-processed actor of the zone's faction inside it. */
+  function applyTruceZone(id, t) {
+    if (!t) return 0;
+    let n = 0;
+    for (const a of lib.actorsOf(t.faction)) {
+      if (a.questTruce === id || !a.setHostile) continue;       // processed already (and maybe re-angered by the player since)
+      if (Math.hypot(a.pos.x - t.x, a.pos.z - t.z) > t.r) continue;
+      if (a.wasFriendly && a.hostOverride === true) continue;   // the player shot at them: combat's call
+      a.questTruce = id;
+      safe('truce', () => a.setHostile(false)); n++;
+    }
+    return n;
+  }
+  /** Lift a zone: its actors return to the normal faction relation. */
+  function revertTruceZone(id) {
+    for (const a of (G.isStub('actors') || !G.actors.list ? [] : (safe('list', () => G.actors.list()) || []))) {
+      if (!a || a.questTruce !== id) continue;
+      delete a.questTruce;
+      if (!a.dead && a.setHostile && a.hostOverride === false) safe('truce', () => a.setHostile(undefined));
+    }
+  }
+  let truceT = 0;
+  function pollTruces(dt) {
+    truceT -= dt; if (truceT > 0) return; truceT = 1;
+    const zs = truceZones();
+    for (const id in zs) applyTruceZone(id, zs[id]);
+    for (const [id, t] of TRUCE_LIVE) {
+      const on = !t.cond || !!safe('truceCond:' + id, t.cond);
+      if (on) { t.off = false; applyTruceZone(id, t); }
+      else if (!t.off) { t.off = true; revertTruceZone(id); }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Trigger + objective polling
+  // ------------------------------------------------------------------
+  let trigTimer = 0;
+  function pollTriggers(dt) {
+    trigTimer -= dt; if (trigTimer > 0) return; trigTimer = 0.2;
+    const p = G.player.pos;
+    for (const t of TRIGGERS) {
+      if (t.once && FLAGS['trig_' + t.id]) continue;
+      if (t._cool && G.time.real < t._cool) continue;
+      let x = t.x, z = t.z;
+      if (t.pos) { const pp = safe('trigpos', t.pos); if (!pp) continue; x = pp.x; z = pp.z; }
+      if (x === undefined) { if (!t.cond || !safe('trigcond', t.cond)) continue; }
+      else {
+        if (Math.hypot(p.x - x, p.z - z) > t.r) continue;
+        if (t.y !== undefined && Math.abs(p.y - t.y) > (t.dy || 6)) continue;
+        if (t.cond && !safe('trigcond:' + t.id, t.cond)) continue;
+      }
+      if (t.once) FLAGS['trig_' + t.id] = true; else t._cool = G.time.real + (t.cooldown || 3);
+      safe('trigger:' + t.id, t.fire);
+    }
+  }
+
+  /** Has a pickup handle left the world (collected)? Handles differ per items module. */
+  function pickupTaken(pk) {
+    const h = pk && pk.handle; if (!h) return false;
+    if (h.collected || h.taken || h.removed) return true;
+    const o = h.object3d || h.mesh || (h.isObject3D ? h : null);
+    return !!(o && !o.parent);
+  }
+
+  // ------------------------------------------------------------------
+  // Pip-Boy gate: before the Overseer straps it on at the party you don't
+  // have one (FO3). Quests update before ui_hud each frame, so consuming the
+  // key here stops the Pip-Boy / map / journal / light from opening.
+  // ------------------------------------------------------------------
+  function pipboyGate() {
+    if (FLAGS.got_pipboy || G.SHOT || !isActive('mq01') || !G.input || !G.input.actionPressed) return;
+    for (const act of ['pipboy', 'map', 'journal', 'light']) {
+      if (!G.input.actionPressed(act)) continue;
+      G.input.consumeAction(act);
+      const now = G.time.real;
+      if (!(lib._pipNagT > now)) {
+        lib._pipNagT = now + 2.5;
+        lib.notify('You don\'t have a Pip-Boy yet. Tenants receive theirs on their nineteenth birthday — the Overseer is waiting.');
+        lib.sfx('ui_error');
+      }
+    }
+  }
+
+  // Track item pickups & deaths of named NPCs.
+  function onActorKilled(actor, killer) {
+    if (!actor) return;
+    if (actor.id && lib.npcs[actor.id] === actor) FLAGS['dead_' + actor.id] = true;
+    else if (actor.id && actor.questNpc) FLAGS['dead_' + actor.id] = true;
+  }
+
+  // ------------------------------------------------------------------
+  // Save / load
+  // ------------------------------------------------------------------
+  G.save.register('quests', {
+    save() {
+      const q = {};
+      for (const [id, s] of STATE) if (s.status !== 'inactive') q[id] = { s: s.status, st: s.stage, log: s.log.slice(), t: s.t };
+      return { q, flags: FLAGS, tracked: TRACKED };
+    },
+    load(d) {
+      STATE.clear(); FLAGS = {}; TRACKED = null;
+      if (!d) return;
+      for (const id in (d.q || {})) { const x = d.q[id]; STATE.set(id, { status: x.s, stage: x.st, log: x.log || [], t: x.t || 0 }); }
+      FLAGS = d.flags || {};
+      TRACKED = d.tracked || null;
+      lib.hintsShown = {};
+    },
+  });
+
+  function resetAll() {
+    STATE.clear(); FLAGS = {}; TRACKED = null;
+    lib.npcs = {}; lib.pickups = {}; lib.hintsShown = {}; lib.hintBusyUntil = 0;
+    lib.gen++;
+    clearScheduled();
+    anchorCache.clear(); lib.markerCache.clear(); doorCache.map.clear(); snapCache.clear();
+    for (const t of TRUCE_LIVE.values()) t.off = false;
+    clearDynamic();
+    for (const t of TRIGGERS) t._cool = 0;
+    lib.run('reset');
+  }
+
+  // ------------------------------------------------------------------
+  // Public namespace (replaces the core stub wholesale)
+  // ------------------------------------------------------------------
+  G.quests = {
+    define: defineQuest, start, setStage, complete, fail,
+    isActive, isComplete, isFailed, isStarted, stage, reached,
+    list, get: view, activeMarkers, allMarkers, setTracked, tracked,
+    flag, setFlag, incFlag,
+    playEnding, defineEnding,
+    /** Debug helpers: G.quests.debug.skipTo('mq03') etc. are defined by content files. */
+    debug: {},
+    lib,
+  };
+
+  // ------------------------------------------------------------------
+  // Module registration
+  // ------------------------------------------------------------------
+  G.registerModule({
+    name: 'quests',
+    order: 60,
+    init() {
+      lib.run('init');        // items, quests
+      lib.run('register');    // dialogue trees & terminals (collected into DIALOGUES/TERMINALS)
+      lib.registerAll();
+      G.events.on('initDone', () => {
+        lib.registerAll();    // again, in case ui_interact (order 70) rebuilt its registries in init
+        if (!worldBuilt) { worldBuilt = true; lib.run('world'); }
+      });
+      G.events.on('reset', () => resetAll());
+      G.events.on('newGame', (opts) => {
+        if (!worldBuilt) { worldBuilt = true; lib.run('world'); }
+        lib.run('newGame', opts || {});
+        lib.run('spawn', { newGame: true });
+      });
+      G.events.on('loaded', () => {
+        if (!worldBuilt) { worldBuilt = true; lib.run('world'); }
+        lib.run('spawn', { loaded: true });
+        lib.run('loaded');
+      });
+      G.events.on('actorKilled', onActorKilled);
+      // Remember collected quest pickups so they don't respawn after loading. Only the
+      // pickup the player actually took counts: the same item id bought from a merchant
+      // (or looted elsewhere) must not mark a world copy as collected.
+      G.events.on('itemAdded', (id) => {
+        const P = G.player && G.player.pos;
+        for (const k in lib.pickups) {
+          const pk = lib.pickups[k];
+          if (pk.id !== id || FLAGS['got_' + k]) continue;
+          if (pickupTaken(pk) || (P && pk.pos && Math.hypot(P.x - pk.pos.x, P.z - pk.pos.z) < 4.5 && Math.abs(P.y - (pk.pos.y || 0)) < 4)) FLAGS['got_' + k] = true;
+        }
+      });
+    },
+    update(dt, realDt) {
+      tickLater(dt);                      // game time: 0 while paused / in menus
+      if (G.state !== 'play' && G.state !== 'cutscene') return;
+      if (G.state === 'play') pipboyGate();
+      tickCine(realDt);                   // camera scripts run at real speed (VATS slow-mo excluded)
+      pollTruces(realDt);
+      pollTriggers(realDt);
+      for (const fn of HOOKS.update) safe('update', () => fn(dt, realDt));
+    },
+  });
+})();
+

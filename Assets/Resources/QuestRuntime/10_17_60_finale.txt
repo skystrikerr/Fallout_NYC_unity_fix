@@ -1,0 +1,677 @@
+/* src/quests/60_finale.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 60: FINALE — MQ06 "Give Me Liberty"
+ *
+ * Liberty Island. Colonel Augustus Crane, Zeke Marlow, and the
+ * Knickerbocker Array hidden in the Statue of Liberty's torch.
+ * Four outcomes at the torch terminal:
+ *   RECLAMATION (purify the sky for everyone)      — good
+ *   SELECTIVE   (Enclave Directive 7-A: genocide)   — very evil
+ *   CODEX OVERRIDE (hand it to the Brotherhood)    — neutral
+ *   OVERLOAD    (destroy it — nobody gets it)      — neutral/grey
+ * …then a Fallout-style ending slideshow built from every flag the
+ * player set along the way (G.quests.playEnding('main')).
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+  const pname = () => G.player.name || 'the Vault Dweller';
+  const faction = () => L.flag('mq_faction') || 'none';
+  const LIB = () => G.LAYOUT.LIBERTY;
+
+  // ------------------------------------------------------------------
+  // Placement helpers (statue anchors, else a ring around the pedestal)
+  // ------------------------------------------------------------------
+  function statueSpot(names, angle, dist) {
+    const c = LIB();
+    const dock = L.spots && L.spots.libertyDock ? L.spots.libertyDock() : { x: c.x + 30, z: c.z - 30 };
+    // face the dock side (towards Manhattan)
+    const base = Math.atan2(dock.z - c.z, dock.x - c.x) + (angle || 0);
+    return { site: 'statue_of_liberty', anchors: names, fallback: { x: c.x + Math.cos(base) * dist, z: c.z + Math.sin(base) * dist }, maxR: 10 };
+  }
+  function torchTerminalSpot() {
+    const a = statueSpot(['torch_control', 'terminal', 'control', 'pedestal_terminal'], 0.35, 20);
+    return L.anchor(a.site, a.anchors, a.fallback, { maxR: 10 });
+  }
+
+  // ------------------------------------------------------------------
+  // Quest
+  // ------------------------------------------------------------------
+  L.hook('init', function () {
+    L.quest({
+      id: 'mq06', main: true, order: 6, name: 'Give Me Liberty', location: 'Liberty Island',
+      desc: () => 'Zeke is being held on Liberty Island by Colonel Augustus Crane of the Enclave, beneath the Knickerbocker Array hidden in the Statue of Liberty\'s torch. ' +
+        'You carry both the Liberty Key and the Ignition Core. ' + (faction() === 'bos' ? 'The Brotherhood of Steel will support your landing.' : faction() === 'enclave' ? 'The Enclave expects you to finish what they started.' : 'You are on your own.'),
+      stages: [
+        { id: 'ferry', text: () => faction() === 'bos' ? 'Meet the Brotherhood squad at the Battery Park pier and cross to Liberty Island.' : 'Get to Liberty Island. Ossie runs a ferry from the Battery Park pier.',
+          markers: () => [{ npc: 'bp_ossie', label: 'Battery Park Ferry' }] },
+        { id: 'vertibird', text: 'Board the Enclave Vertibird with Lieutenant Hale at the UN Plaza.', markers: () => [{ npc: 'enc_hale', label: 'Lieutenant Hale' }] },
+        { id: 'storm', text: 'Fight your way into the Statue of Liberty\'s pedestal.', markers: () => [{ npc: 'lib_crane', label: 'Colonel Crane', x: LIB().x, z: LIB().z }],
+          onEnter() { stormBeach(); } },
+        { id: 'crane', text: () => L.flag('crane_fight') ? 'Defeat Colonel Crane.' : 'Confront Colonel Crane in the pedestal command post.', markers: () => [{ npc: 'lib_crane', label: 'Colonel Crane' }] },
+        { id: 'zeke', text: 'Free Zeke.', markers: () => [{ npc: 'lib_zeke', label: 'Zeke Marlow' }], onEnter() { L.say('lib_zeke', 'KID? Is that you? Over here!'); } },
+        { id: 'torch', text: 'Decide the fate of the Knickerbocker Array at the torch control terminal.',
+          markers: () => { const p = L.termPos('liberty_torch'); return p ? [{ x: p.x, z: p.z, label: 'Torch Control' }] : []; } },
+        { id: 'cr_talk', text: '(Optional) Talk Colonel Crane into standing down.', sideObjective: true, optional: true,
+          showIf: () => false, doneIf: () => !!L.flag('crane_surrendered') && !L.flag('crane_genome') },
+        { id: 'cr_genome', text: '(Optional) Show Crane that his own men would fail the reference genome.', sideObjective: true, optional: true,
+          showIf: () => false, doneIf: () => !!L.flag('crane_genome') },
+        { id: 'cr_kill', text: '(Optional) Defeat Colonel Crane.', sideObjective: true, optional: true,
+          showIf: () => false, doneIf: () => !!L.flag('crane_dead') },
+        { id: 'cr_ally', text: '(Optional) Stand with Colonel Crane at the torch.', sideObjective: true, optional: true,
+          showIf: () => false, doneIf: () => !!L.flag('crane_ally') },
+        { id: 'done', text: () => ({
+          purify: 'The torch is lit. The sky over Manhattan is clean — for everyone.',
+          selective: 'The torch burned green. Directive 7-A has been carried out.',
+          brotherhood: 'The Knickerbocker Array is in the hands of the Brotherhood of Steel.',
+          destroy: 'The Knickerbocker Array is at the bottom of the harbour.',
+        }[L.flag('ending_choice')] || 'The torch is lit.'), hidden: false },
+      ],
+      rewards: { xp: 1000 },
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Arrival on the island (ferry, vertibird, swimming — all count)
+  // ------------------------------------------------------------------
+  L.trigger({ id: 'liberty_arrive', once: false, cooldown: 2,
+    cond: () => {
+      const s = Q.stage('mq06'); if (s !== 'ferry' && s !== 'vertibird') return false;
+      const c = LIB(), p = G.player.pos; return Math.hypot(p.x - c.x, p.z - c.z) < c.r + 28 || (p.x >= G.LAYOUT.INTERIOR_X_MIN && Math.hypot(p.x - 4000, p.z - 1200) < 150);
+    },
+    fire() {
+      if (faction() === 'enclave') {
+        Q.setStage('mq06', 'crane');
+        L.later(1, () => L.say('lib_crane', 'There you are. Come, come — history is waiting, and it hates to be kept waiting.'));
+      } else Q.setStage('mq06', 'storm');
+    } });
+  // No Hale, no Vertibird: fall back to Ossie's ferry.
+  L.trigger({ id: 'vertibird_lost', once: false, cooldown: 3,
+    cond: () => Q.stage('mq06') === 'vertibird' && (L.flag('hale_dead') || !L.alive('enc_hale')) && !!L.flag('hale_dead'),
+    fire() { Q.setStage('mq06', 'ferry'); L.notify('With Lieutenant Hale gone, the Vertibird isn\'t going anywhere. Ossie\'s ferry, then.'); } });
+  // Keep the Enclave garrison friendly on the island for Enclave-path players
+  // (local truce zone around the statue; lifts itself if the Colonel is crossed).
+  const libertyGuest = () => faction() === 'enclave' && !L.flag('crane_fight') && !L.flag('enclave_hostile');
+  function libertyZone() { L.truceZone('liberty_guest', { faction: 'enclave', x: LIB().x, z: LIB().z, r: 200, cond: libertyGuest }); }
+  L.hook('init', libertyZone);
+  L.hook('reset', libertyZone);
+
+  // Walking up to Crane moves the story on.
+  L.trigger({ id: 'crane_near', once: false, cooldown: 2,
+    pos: () => { const a = L.npc('lib_crane'); return a && !a.dead ? a.pos : null; }, r: 22,
+    cond: () => Q.stage('mq06') === 'storm',
+    fire() { Q.setStage('mq06', 'crane'); L.say('lib_crane', 'Hold your fire! HOLD. I want to speak to the tenant.'); } });
+
+  function stormBeach() {
+    L.hint('storm', 'The Enclave garrison is dug in around the statue. Use cover, V.A.T.S. and your Stimpaks.', 1);
+    if (faction() === 'bos') {
+      spawnBoSSquad();
+      L.later(1.5, () => L.say('lib_bos_castillo', 'Brotherhood! Advance on the statue! Ad Victoriam!'));
+    }
+    if (L.flag('hale_defects')) {
+      L.later(4, () => {
+        L.notify('Every Enclave eyebot on the island drops out of the sky at once. Somewhere across the water, Lieutenant Hale has kept her word.');
+        if (!G.isStub('actors') && G.actors.list) for (const a of G.actors.list()) if (!a.dead && a.type === 'eyebot' && Math.hypot(a.pos.x - LIB().x, a.pos.z - LIB().z) < 200) { try { a.kill(); } catch (e) { /* */ } }
+      });
+    }
+    if (!G.isStub('music') && G.music.setMood) try { G.music.setMood('combat'); } catch (e) { /* */ }
+  }
+  function spawnBoSSquad() {
+    const d = L.spots.libertyDock();
+    const around = (dx, dz) => ({ fallback: { x: d.x + dx, z: d.z + dz, y: d.y }, maxR: 8 });
+    if (!L.flag('stroud_dead')) {
+      L.removeNPC('bos_stroud');
+      L.spawnNPC({ id: 'bos_stroud', type: 'human', name: 'Paladin Commander Stroud', outfit: 'bos_power_armor', gender: 'm', faction: 'brotherhood', ai: 'follow', level: 14, hp: 400,
+        at: around(2, 2), weapon: ['laser_rifle'], dialogue: 'dlg_bos_stroud', essential: true, barks: ['Push forward!', 'Target the heavy armour!', 'Steel stands!'] });
+    }
+    L.spawnNPC({ id: 'lib_bos_castillo', type: 'human', name: 'Knight Castillo', outfit: 'bos_power_armor', gender: 'f', faction: 'brotherhood', ai: 'follow', level: 10, hp: 300,
+      at: around(-2, 3), weapon: ['laser_rifle', 'assault_rifle'], barks: ['Contact!', 'Moving up!', 'For the Codex!'] });
+    L.spawnNPC({ id: 'lib_bos_albright', type: 'human', name: 'Knight-Sergeant Albright', outfit: 'bos_power_armor', gender: 'm', faction: 'brotherhood', ai: 'follow', level: 11, hp: 320,
+      at: around(3, -2), weapon: ['minigun', 'laser_rifle'], barks: ['Suppressing fire!', 'Eat lead, black-hats!', 'Reloading!'] });
+    for (const id of ['bos_stroud', 'lib_bos_castillo', 'lib_bos_albright']) { const a = L.npc(id); if (a && a.follow) { try { a.follow(G.player); } catch (e) { /* */ } } }
+  }
+
+  // ------------------------------------------------------------------
+  // NPCs on the island
+  // ------------------------------------------------------------------
+  L.hook('spawn', function () {
+    const ending = L.flag('ending_choice');
+    if (!L.flag('crane_gone')) {
+      const hostile = !!L.flag('crane_fight');
+      L.spawnNPC({ id: 'lib_crane', type: 'human', name: 'Colonel Augustus Crane', outfit: 'enclave_power_armor', gender: 'm', faction: 'enclave', ai: 'guard', home: 'here', homeR: 3,
+        hostile, essential: !hostile && !ending, level: 18, hp: 650, damage: 30, weapon: ['plasma_rifle', 'laser_rifle'],
+        inventory: [['q_note_crane_log', 1], ['lady_libertys_torch', 1], ['ammo_flamer_fuel', 60], ['ammo_mf_cell', 40]],
+        at: statueSpot(['commander', 'crane', 'boss'], 0, 16), dialogue: 'dlg_lib_crane',
+        barks: ['God bless the Enclave.', 'Steady, soldiers.', 'History is watching.'], voice: 'm_officer' });
+      L.spawnNPC({ id: 'lib_rourke', type: 'enclave_soldier', name: 'Sergeant Rourke', outfit: 'enclave_power_armor', faction: 'enclave', ai: 'guard', home: 'here', homeR: 4,
+        hostile: faction() !== 'enclave' && !L.flag('crane_surrendered'), level: 14, weapon: ['plasma_rifle', 'laser_rifle'], at: statueSpot(['spawn_in1', 'spawn5', 'spawn1'], 0.25, 18),
+        barks: ['Perimeter secure.', 'Eyes on the water!'] });
+      L.spawnNPC({ id: 'lib_dunn', type: 'enclave_soldier', name: 'Private Dunn', outfit: 'enclave_power_armor', faction: 'enclave', ai: 'guard', home: 'here', homeR: 4,
+        hostile: faction() !== 'enclave' && !L.flag('crane_surrendered'), level: 12, weapon: ['laser_rifle', 'plasma_rifle'], at: statueSpot(['spawn_in2', 'spawn6', 'spawn2'], -0.25, 18),
+        barks: ['Yes, sir!', 'Is that the vault dweller?'] });
+    }
+    if (!L.flag('zeke_home')) {
+      // faction 'vault' (not 'player'): a zip-tied captive must not 'fight' the garrison — as a player-faction actor he
+      // stayed in combat with every Enclave soldier (even after Crane's surrender), so he could never be talked to
+      L.spawnNPC({ id: 'lib_zeke', type: 'human', name: 'Zeke Marlow', outfit: 'vault_suit', gender: 'm', faction: 'vault', ai: 'static', essential: true, hostile: false,
+        at: statueSpot(['prisoner', 'torch_display', 'footlocker'], -0.5, 19), dialogue: 'dlg_lib_zeke', hair: 'grey', skinTone: 0.35,
+        barks: ['Water pressure on this island is a crime.', 'Kid? That you?'], voice: 'm_old' });
+    } else {
+      // After the finale Zeke goes home to Vault 120 (next to the Overseer).
+      const V = L.vault && L.vault.spots;
+      if (V && V.overseer) L.spawnNPC({ id: 'lib_zeke', type: 'human', name: 'Zeke Marlow', outfit: 'vault_suit', gender: 'm', faction: 'vault', ai: 'static', essential: true,
+        pos: L.freeSpot(V.overseer.x + 1.5, V.overseer.z + 1.0, V.overseer.y, { maxR: 5 }), dialogue: 'dlg_lib_zeke', hair: 'grey', skinTone: 0.35 });
+    }
+    if (faction() === 'bos' && Q.isActive('mq06') && (Q.stage('mq06') === 'storm' || Q.stage('mq06') === 'crane' || Q.stage('mq06') === 'zeke' || Q.stage('mq06') === 'torch')) spawnBoSSquad();
+  });
+
+  L.hook('world', function () {
+    // landmarks_b already places a terminal ('liberty_enclave_command') in the pedestal
+    // command room; it IS the torch control. Otherwise we place our own.
+    const lb = !G.isStub('landmarks') && G.landmarks.getAnchor ? G.landmarks.getAnchor('statue_of_liberty', 'terminal') : null;
+    if (lb && isFinite(lb.x)) L.world.term_liberty_torch = { pos: L.V3(lb.x, (lb.y || 0) + 1.1, lb.z), handle: null, external: true };
+    else { const t = torchTerminalSpot(); if (t) L.spawnTerminal('liberty_torch', t, 0); }
+  });
+
+  G.events.on('actorKilled', (a) => {
+    if (!a) return;
+    if (a.id === 'lib_crane') {
+      L.setFlag('crane_dead');
+      if (Q.stage('mq06') === 'crane' || Q.stage('mq06') === 'storm') Q.setStage('mq06', 'zeke');
+      L.news('Reports from the harbour: gunfire on Liberty Island, and then — silence. The Enclave\'s Colonel Crane is dead. I never met the man. I\'m told he was very polite.');
+    }
+  });
+
+  // Completability net: Crane spawns essential and friendly. Once the player (or the Brotherhood squad at
+  // their side) hits him he turns hostile / enters combat, so he can no longer be talked to — and being
+  // essential he could never die either. Any such hit before he is resolved opens the fight path instead.
+  G.events.on('actorDamaged', (a, dmg, info) => {
+    if (!a || a.id !== 'lib_crane' || a.dead || L.flag('crane_fight') || L.flag('crane_surrendered') || L.flag('crane_ally')) return;
+    const s = Q.stage('mq06'); if (!Q.isActive('mq06') || (s !== 'storm' && s !== 'crane')) return;
+    const src = info && info.source;
+    if (src === 'player' || (src && src.faction === 'brotherhood') || (a.hostile && a.hostile())) craneFight();
+  });
+
+  // ------------------------------------------------------------------
+  // Crane resolution helpers
+  // ------------------------------------------------------------------
+  function craneFight() {
+    L.setFlag('crane_fight');
+    const c = L.npc('lib_crane'); if (c) { c.essential = false; }
+    L.hostile('lib_crane', true); L.hostile('lib_rourke', true); L.hostile('lib_dunn', true);
+    const turncoat = faction() === 'enclave' && !L.flag('enclave_hostile');
+    L.setFlag('enclave_hostile');
+    // An Enclave recruit turning on the Colonel loses their welcome everywhere;
+    // anyone else only has the island garrison to deal with.
+    if (turncoat) L.factionTruce('enclave', undefined, undefined, 0, true);
+    else L.factionTruce('enclave', LIB().x, LIB().z, 200, true);
+    if (Q.isActive('mq06')) {
+      if (Q.stage('mq06') !== 'crane') Q.setStage('mq06', 'crane');
+      L.refresh('mq06');
+    }
+  }
+  function craneSurrender() {
+    L.setFlag('crane_surrendered');
+    L.factionTruce('enclave', LIB().x, LIB().z, 220, false, { id: 'liberty_surrender' });
+    L.xp(150, 'Colonel Crane surrendered');
+    Q.setStage('mq06', 'zeke');
+  }
+
+  // ------------------------------------------------------------------
+  // The choice
+  // ------------------------------------------------------------------
+  const hasKey = () => L.has('q_liberty_key');
+  const hasCore = () => L.has('q_knickerbocker_core');
+  const craneResolved = () => L.flag('crane_dead') || L.flag('crane_surrendered') || L.flag('crane_ally');
+  const canChoose = () => hasKey() && hasCore() && craneResolved() && !L.flag('ending_choice') && (Q.stage('mq06') === 'torch' || Q.stage('mq06') === 'zeke');
+
+  function choose(choice) {
+    if (L.flag('ending_choice')) return;
+    L.setFlag('ending_choice', choice);
+    L.take('q_knickerbocker_core', 1);
+    if (G.terminals && typeof G.terminals.close === 'function') { try { G.terminals.close(); } catch (e) { /* */ } }
+    // The whole torch sequence runs in the 'cutscene' state (the world keeps running,
+    // but no LEVEL UP screen, Pip-Boy or pause-worthy menu can pop over it); the ending
+    // slideshow takes the same state over and hands 'play' back when it closes.
+    if (G.state === 'terminal' || G.state === 'play') G.setState('cutscene');
+    L.later(0.3, () => finaleCinematic(choice));
+  }
+  L.finale = { choose };
+
+  /**
+   * The torch sequence. Everything is scheduled in game time through the quest
+   * scheduler (pauses with menus, cancelled by a reset/load) and the camera pan is a
+   * lib.cinematic (update-driven; the player is always unfrozen at the end).
+   */
+  function finaleCinematic(choice) {
+    const P = G.player, c = LIB();
+    const torch = L.V3(c.x - 2, 88, c.z);
+    // look up at the torch, hold, then let go
+    const y0 = P.yaw, p0 = P.pitch;
+    const y1 = Math.atan2(-(c.x - P.pos.x), -(c.z - P.pos.z));
+    L.cinematic(7.5, (e, t) => {
+      const k = Math.min(1, t * 2.5), ke = k * k * (3 - 2 * k);   // pan in the first 3 s, then hold
+      P.yaw = y0 + G.util.wrapAngle(y1 - y0) * ke; P.pitch = p0 + (0.75 - p0) * ke;
+    }, () => {
+      // The quest is NOT completed here: completing pays 1000 XP, which would level the
+      // player up and throw the LEVEL UP screen over the climax. The slideshow plays
+      // first; the quest completes (and pays out) when the player is back in the world.
+      Q.setStage('mq06', 'done');
+      endingNews(choice);
+      L.later(2.5, () => startEnding());
+    });
+    L.sfx('hum_electric', { volume: 1 });
+    const col = { purify: '#bfe8ff', selective: '#6dff6a', brotherhood: '#e0c07a', destroy: '#ffb050' }[choice];
+    const line = {
+      purify: 'The torch ignites — not with fire, but with a cold blue light that rolls out across the harbour like a tide.',
+      selective: 'The torch ignites with a sick green light. Across the water, in Times Square, the neon flickers — and somebody screams.',
+      brotherhood: 'The array accepts the Codex Override. The torch dims, locks, and goes dark. Behind you, a Paladin says "Ad Victoriam" very quietly.',
+      destroy: 'The core begins to whine. Then to scream. You run.',
+    }[choice];
+    L.later(1.2, () => L.notify(line));
+    L.later(2.6, () => {
+      if (!G.isStub('fx')) {
+        try {
+          if (choice === 'destroy') G.fx.explosion(torch, 14, 'normal');
+          else G.fx.flash(torch, choice === 'selective' ? 0x55ff66 : choice === 'purify' ? 0x99ddff : 0xffe0a0, 40, 3);
+        } catch (e) { /* */ }
+      }
+      if (choice === 'destroy') L.sfx('explosion_nuke'); else L.sfx(choice === 'selective' ? 'alarm' : 'levelup');
+      P.shake(choice === 'destroy' ? 1 : 0.4, 2.5);
+      L.overlay(col, 1.6, 0.9, 1.6, 0.92);
+      applyWorldConsequences(choice);
+    });
+    // Crossing the Colonel at the last second: he doesn't get a firefight over the
+    // slideshow — he gets a line, a slide, and a one-way Vertibird ride.
+    if (L.flag('crane_ally') && choice !== 'selective' && L.alive('lib_crane')) {
+      L.later(4.4, () => L.say('lib_crane', 'You — you absolute — I vouched for you. I VOUCHED for you!'));
+      L.later(6.2, () => L.say('lib_rourke', 'Colonel, the Vertibird. Now, sir.'));
+    }
+  }
+
+  function startEnding() {
+    // The Colonel's garrison withdraws while the slides play (see the Enclave slide).
+    if (L.flag('crane_betrayed') || L.flag('crane_surrendered')) {
+      L.setFlag('crane_gone');
+      for (const id of ['lib_crane', 'lib_rourke', 'lib_dunn']) L.removeNPC(id);
+    }
+    if (Q.isActive('mq06')) L.setFlag('mq06_pending_complete');
+    settleT = 0;
+    Q.playEnding('main');
+    // No HUD slideshow to hand 'play' back (quests' own fallback overlay is used).
+    if (G.isStub('hud') && G.state === 'cutscene') G.setState('play');
+  }
+  /**
+   * After the slideshow ("Continue Exploring"): the game is back in 'play'. Only then is
+   * "Give Me Liberty" completed — quest banner, the 1000 XP and any LEVEL UP screen all
+   * arrive in the aftermath instead of interrupting the torch and the epilogue.
+   */
+  let settleT = 0;
+  L.hook('update', function (dt, realDt) {
+    if (!L.flag('mq06_pending_complete')) return;
+    if (G.state !== 'play' || L.cineActive() || !(dt > 0)) { settleT = 0; return; }
+    settleT += realDt;
+    if (settleT < 1.2) return;
+    L.setFlag('mq06_pending_complete', false);
+    if (Q.isActive('mq06')) Q.complete('mq06');
+    L.later(3.5, () => L.notify(L.flag('ending_choice') === 'purify' ? 'The sky over Manhattan is clear. The wasteland is still out there — and so are you.'
+      : 'The torch is quiet. The wasteland is still out there — and so are you.'));
+  });
+
+  // ------------------------------------------------------------------
+  // Lasting world consequences (weather). Atmosphere's automatic weather cycle
+  // would bring radstorms straight back, so after the ending the quest module
+  // drives the weather itself from a consequence-specific pool, and reapplies
+  // it after every load.
+  // ------------------------------------------------------------------
+  const SKY_POOLS = {
+    purify: { clear: 0.62, overcast: 0.2, rain: 0.12, fog: 0.06 },           // no radstorms, no green dust — ever
+    selective: { radstorm: 0.4, dust: 0.25, overcast: 0.25, fog: 0.1 },     // the Cleaning poisoned the sky for good
+  };
+  function skyMode() { return L.flag('sky_clean') ? 'purify' : L.flag('the_cleaning') ? 'selective' : null; }
+  let wxT = 0;
+  function applySky(opts) {
+    const mode = skyMode(); if (!mode || G.isStub('atmos') || !G.atmos.setWeather) return;
+    opts = opts || {};
+    const pool = SKY_POOLS[mode];
+    let names = Object.keys(pool);
+    try { const have = G.atmos.weatherNames ? G.atmos.weatherNames() : null; if (have && have.length) names = names.filter((n) => have.indexOf(n) >= 0); } catch (e) { /* */ }
+    if (!names.length) return;
+    let name = opts.name;
+    if (!name) {
+      let tot = 0; for (const n of names) tot += pool[n];
+      let r = Math.random() * tot; name = names[names.length - 1];
+      for (const n of names) { r -= pool[n]; if (r <= 0) { name = n; break; } }
+    }
+    try { G.atmos.setWeather(name, { auto: false, hold: 1e9, duration: opts.duration || 30, instant: !!opts.instant, silent: !!opts.silent }); } catch (e) { /* */ }
+    wxT = 240 + Math.random() * 300;   // game seconds until the next change
+  }
+  L.hook('update', function (dt) {
+    if (!(dt > 0) || !skyMode()) return;
+    wxT -= dt;
+    let cur = null; try { cur = G.atmos.getWeather ? G.atmos.getWeather() : null; } catch (e) { cur = null; }
+    const pool = SKY_POOLS[skyMode()];
+    if (wxT <= 0 || (cur && pool[cur] === undefined)) applySky({});   // someone set a forbidden weather: correct it
+  });
+  // Saved in the middle of the torch sequence: finish it (consequences, quest, slides).
+  L.hook('loaded', function () {
+    const choice = L.flag('ending_choice');
+    if (!choice || L.flag('ending_played')) return;
+    L.later(1.0, () => {
+      applyWorldConsequences(choice);
+      if (Q.isActive('mq06')) { Q.setStage('mq06', 'done'); endingNews(choice); }
+      L.later(1.5, () => startEnding());
+    });
+  });
+  // (Saved after the slides but before the quest wrapped up: the update hook above settles it.)
+  L.hook('loaded', function () { if (skyMode()) applySky({ name: skyMode() === 'purify' ? 'clear' : 'radstorm', instant: true, silent: true }); });
+
+  function applyWorldConsequences(choice) {
+    if (L.flag('consequences_applied')) return;
+    L.setFlag('consequences_applied');
+    if (choice === 'purify') {
+      L.setFlag('sky_clean');
+      applySky({ name: 'clear', duration: 6 });
+      L.karma(250, 'Lit Liberty\'s Torch for everyone');
+    } else if (choice === 'selective') {
+      L.setFlag('the_cleaning');
+      applySky({ name: 'radstorm', duration: 8 });
+      L.karma(-1000, 'Directive 7-A');
+      // The Cleaning: every ghoul and super mutant in the city dies.
+      if (!G.isStub('actors') && G.actors.list) {
+        for (const a of G.actors.list().slice()) {
+          if (a.dead) continue;
+          const doomed = a.ghoul || a.char && a.char.ghoul || ['ghouls', 'feral_ghouls', 'super_mutants'].indexOf(a.faction) >= 0 || a.type === 'feral_ghoul' || a.type === 'glowing_one' || a.type === 'super_mutant' || a.type === 'super_mutant_behemoth';
+          if (!doomed) continue;
+          if (a.essential) { a.essential = false; }
+          try { a.kill(); } catch (e) { /* */ }
+        }
+      }
+    } else if (choice === 'brotherhood') {
+      L.karma(25, 'Handed the array to the Brotherhood');
+      L.setFlag('enclave_hostile');
+    } else if (choice === 'destroy') {
+      L.karma(0, 'Destroyed the array');
+      G.player.damage(15, { type: 'explosive' });
+    }
+    // Zeke goes home to the vault after everything (unless the Cleaning broke him).
+    if (choice !== 'selective') L.setFlag('zeke_home');
+    if (L.flag('crane_ally') && choice !== 'selective' && L.alive('lib_crane')) L.setFlag('crane_betrayed');
+  }
+
+  function endingNews(choice) {
+    const t = {
+      purify: 'Folks... folks, go outside. I mean it. Put down whatever you\'re doing and go outside and look up. That\'s blue. That\'s BLUE. I\'m seventy-one years old and I have never seen it. Somebody lit the torch on Lady Liberty and the sky came back. This one\'s for you, kid. This one\'s for everybody.',
+      selective: 'This is Vinnie Valentine. I... the Neon is dark. Times Square is quiet. Marigold used to call in every Thursday to request the slow one. She didn\'t call tonight. I\'m going to play it anyway. I\'m going to play it all night.',
+      brotherhood: 'News from the harbour: the Brotherhood of Steel now holds Liberty Island, the Enclave\'s been sent packing, and the torch is locked up tighter than Vinnie\'s wallet. Sky\'s the same colour as yesterday. Safer, though. They tell me it\'s safer.',
+      destroy: 'Did you see it? Did you HEAR it? Lady Liberty\'s torch went up like the Fourth of July, 2077 edition. Enclave\'s scattered, Brotherhood\'s furious, and whatever was up there is at the bottom of the harbour now. Nobody gets it. Maybe that\'s the only fair ending there is.',
+    }[choice];
+    L.news(t);
+  }
+
+  // ------------------------------------------------------------------
+  // Terminal: TORCH CONTROL
+  // ------------------------------------------------------------------
+  L.hook('register', function () {
+    L.terminal('liberty_torch', TORCH_TERMINAL);
+    L.terminal('liberty_enclave_command', TORCH_TERMINAL);
+  });
+  const TORCH_TERMINAL = ({
+      title: 'KNICKERBOCKER ATMOSPHERIC RECLAMATION ARRAY', header: 'POSEIDON ENERGY / VAULT-TEC — "THE TORCH"\nCIVILIAN HANDSHAKE: CARTRIDGE 120-A REQUIRED\n"GIVE ME YOUR TIRED, YOUR POOR, YOUR HUDDLED MASSES YEARNING TO BREATHE"',
+      lock: 0,
+      entries: [
+        { title: 'System Status', text: () => 'CARTRIDGE 120-A ........ ' + (hasKey() ? 'PRESENT (tenant Pip-Boy verified)' : 'NOT PRESENT') + '\nIGNITION CORE ........... ' + (hasCore() ? 'PRESENT (charge 98%)' : L.flag('ending_choice') ? 'SPENT' : 'NOT PRESENT') +
+          '\nARRAY .................... ' + (L.flag('ending_choice') ? ('LOCKED — ' + String(L.flag('ending_choice')).toUpperCase()) : 'STANDBY') + (craneResolved() ? '' : '\n\n>> MILITARY LOCKOUT ACTIVE (Col. A. Crane). Resolve command authority to proceed.') },
+        { title: 'Operating Modes', text: 'RECLAMATION: scrubs airborne radionuclides from a 40 km radius. Permanent. Indiscriminate. Beneficiaries: all living things.\n\nSELECTIVE: reclamation field keyed to a reference genome. Organisms outside tolerance undergo "accelerated reclamation." Requires executive payload.\n\nOVERRIDE: transfer array to a recognised military authority.\n\nOVERLOAD: emergency core purge. Destroys the array.' },
+        { title: 'Dedication Plaque (2077)', text: 'THE KNICKERBOCKER ARRAY\nDedicated by Poseidon Energy and Vault-Tec Industries, October 22, 2077, "so that whatever comes, New York shall always breathe free."\n\n[Scratched beneath, much later: "we tried — Z."]' },
+        { title: '>> ENGAGE RECLAMATION MODE (IRREVERSIBLE)', cond: () => canChoose(), action: () => choose('purify') },
+        { title: '>> LOAD DIRECTIVE 7-A: SELECTIVE MODE (IRREVERSIBLE)', cond: () => canChoose() && L.has('q_holo_directive_7a'), action: () => choose('selective') },
+        { title: '>> APPLY CODEX OVERRIDE: BROTHERHOOD OF STEEL', cond: () => canChoose() && L.has('q_holo_codex_override'), action: () => choose('brotherhood') },
+        { title: '>> INITIATE CORE OVERLOAD (DESTROY ARRAY)', cond: () => canChoose(), action: () => choose('destroy') },
+        { title: 'Liberty Station — Command Log', cond: () => true, text: 'LIBERTY STATION (ENCLAVE) — COL. A. CRANE COMMANDING\n\nDay 301: Asset MARLOW continues to refuse. Asset MARLOW has fixed the station\'s water heater "out of spite."\nDay 309: Raven Rock relay confirms Directive 7-A. We proceed when the tenant arrives.\nDay 311: They always come to us.' },
+      ],
+    });
+
+  // ------------------------------------------------------------------
+  // Dialogue: Colonel Crane, Zeke, Enclave vertibird (Hale)
+  // ------------------------------------------------------------------
+  L.hook('register', function () {
+    L.dialogue('dlg_lib_crane', {
+      start: () => {
+        if (L.flag('crane_surrendered')) return 'surrendered';
+        if (L.flag('crane_ally')) return 'ally';
+        if (L.flag('crane_fight')) return 'fighting';
+        return faction() === 'enclave' ? 'enc' : 'hello';
+      },
+      nodes: {
+        hello: { speaker: 'Colonel Crane', text: () => 'That\'s far enough. [The black helmet tilts, lamps glowing.] Colonel Augustus Crane, United States Enclave. And you are the tenant. You\'ve brought the key, and — yes, I can hear it humming in your pack — the core as well. How very thoughtful.' + (faction() === 'bos' ? ' I see you\'ve also brought the tin cans. Less thoughtful.' : ''),
+          responses: [
+            { text: 'Where\'s Zeke?', next: 'zeke' },
+            { text: 'I know about Directive 7-A.', cond: () => L.has('q_holo_directive_7a') || L.flag('knows_directive'), next: 'd7a' },
+            { text: 'What do you want, Colonel?', next: 'want' },
+            { text: 'Enough talk.', next: 'fight' },
+          ] },
+        zeke: { text: 'Behind me, in what the Park Service once called a gift shop. Unharmed. He has spent three weeks lecturing my men on water pressure; several have requested transfers.', responses: [{ text: 'What do you want, Colonel?', next: 'want' }, { text: 'Let him go.', next: 'want' }] },
+        want: { text: 'The same thing you want, I suspect: a clean sky. The difference between us is that I have read the fine print. Reclamation would scrub the air for everyone — the raiders, the mutants, the ghouls, the things in the harbour. It would make them all healthier. It would make them all MORE. Selective mode is surgery. It removes the tumour and leaves the patient.',
+          responses: [
+            { text: '"Tumour." You mean people.', next: 'people' },
+            { text: 'Your men have been breathing this air for generations. The array\'s reference genome is from 2077 — it\'ll classify YOU as mutated.', check: { special: 'I', value: 8 }, next: 'genome', failNext: 'genome_fail' },
+            { text: 'Stand down, Colonel. Nobody else has to die today.', check: { skill: 'speech', value: 75 }, next: 'surrender', failNext: 'nosurrender' },
+            { text: 'Enough talk.', next: 'fight' },
+          ] },
+        d7a: { text: 'Then you know it isn\'t a secret — only a kindness we keep from those who aren\'t ready for it. Lieutenant Hale isn\'t ready for it. You, I think, might be.', responses: [{ text: 'What do you want?', next: 'want' }, { text: 'Enough talk.', next: 'fight' }] },
+        people: { text: 'I mean the future, tenant. Someone has to decide what it looks like. It might as well be someone with a plan and a uniform.', responses: [
+          { text: 'Stand down, Colonel.', check: { skill: 'speech', value: 75 }, next: 'surrender', failNext: 'nosurrender' },
+          { text: 'Enough talk.', next: 'fight' },
+        ] },
+        genome: { text: '[A long silence. The helmet lamps flicker.] ...The reference genome. Pre-war. [Another silence.] Two hundred years of background radiation. Every one of us. My grandfather. My men. Me. [He takes off his helmet. His face is grey, lined, and very tired.] We would have cleaned ourselves out of history. ...Sergeant. Stand the men down.',
+          onEnter() { L.xp(100, 'Intelligence: Reference genome'); L.setFlag('crane_genome'); }, responses: [{ text: 'It\'s over, Colonel.', action: () => craneSurrender() }] },
+        genome_fail: { text: 'Clever. Wrong, but clever. The array accounts for background exposure. I checked. I always check.', responses: [{ text: 'Stand down, Colonel.', check: { skill: 'speech', value: 75 }, next: 'surrender', failNext: 'nosurrender' }, { text: 'Enough talk.', next: 'fight' }] },
+        surrender: { text: '[He is quiet for a long time.] You sound like him. Marlow. "Nobody else has to die." [He lowers his rifle.] My grandfather was a child on the day the world ended, and they told him men like me would fix it. Perhaps we\'re not the men for it. ...All units, stand down. That is an order.',
+          onEnter() { L.xp(100, 'Speech: Stand down'); }, responses: [{ text: 'Thank you, Colonel.', action: () => craneSurrender() }] },
+        nosurrender: { text: 'Nobody else? Tenant, EVERYONE else has been dying for two hundred years. I am the only one here trying to make it stop.', responses: [{ text: 'Then I\'ll stop you.', next: 'fight' }] },
+        fight: { text: 'Pity. Sergeant — the tenant is to be taken alive. Everyone else is expendable.', onEnter() { craneFight(); }, responses: [{ text: '[Fight!]' }] },
+        enc: { speaker: 'Colonel Crane', text: 'The tenant, at last. Lieutenant Hale speaks highly of you, and she speaks highly of almost no one. You have the key, the core, and the Directive. Walk with me to the torch. Load Directive 7-A, and history will write your name above mine.',
+          responses: [
+            { text: 'Yes, Colonel.', karma: -100, next: 'ally_yes' },
+            { text: 'I\'ll turn it on — for everyone.', next: 'betray' },
+            { text: 'Your own men will be classified as mutated. The reference genome is from 2077.', check: { special: 'I', value: 8 }, next: 'genome', failNext: 'genome_fail' },
+          ] },
+        ally_yes: { text: 'Good. Marlow is in the gift shop; free him if you like — he should see this. Then the torch. I\'ll be right beside you.', onEnter() { L.setFlag('crane_ally'); Q.setStage('mq06', 'zeke'); }, responses: [{ text: '[Leave.]' }] },
+        betray: { text: '[The helmet lamps narrow.] I was warned you might say that. Hale, of all people, warned me. ...Soldiers.', onEnter() { craneFight(); }, responses: [{ text: '[Fight!]' }] },
+        surrendered: { text: 'I\'ve given my men leave to go home. Wherever that is. [He looks up at the torch.] Do the right thing, tenant. I clearly wasn\'t going to.', responses: [{ text: '[Leave.]' }] },
+        ally: { text: 'The torch awaits. History awaits. I await, which I am not good at.', responses: [{ text: '[Leave.]' }] },
+        fighting: { text: '[Crane is in no mood to talk.]', responses: [{ text: '[Leave.]' }] },
+      },
+    });
+
+    L.dialogue('dlg_lib_zeke', {
+      start: () => (L.flag('ending_choice') ? 'after' : L.flag('zeke_freed') ? 'again' : 'free'),
+      nodes: {
+        free: { speaker: 'Zeke Marlow', text: () => 'Kid? KID. [An old man in a patched vault suit struggles up off a crate, zip-tied at the wrists.] Look at you. LOOK at you. You came. You absolute idiot, you came.' + (L.flag('crane_ally') ? ' ...With HIM. Tell me you\'re not with him.' : ''),
+          responses: [
+            { text: '[Cut the ties.] Happy to see you too, Zeke.', next: 'freed' },
+            { text: 'Of course I came. You raised me.', next: 'freed' },
+            { text: 'I\'m with Crane. It\'s the only way.', cond: () => !!L.flag('crane_ally'), next: 'with_crane' },
+          ] },
+        with_crane: { text: '[The joy drains out of his face.] Then you haven\'t heard the tape. Or you have, and — no. No. I didn\'t raise you for that. Cut me loose, kid. At least let me watch you choose.', responses: [{ text: '[Cut the ties.]', next: 'freed' }] },
+        freed: { text: 'Forty years I fixed pipes under that park. Forty years that robot told me the sub-basement didn\'t exist. And the whole time it was the other end of THIS. [He waves at the torch.] A lung for the whole city, kid. Built the day before the bombs and never switched on.',
+          onEnter() { if (!L.flag('zeke_freed')) { L.setFlag('zeke_freed'); L.xp(100, 'Found Zeke'); L.karma(50, 'Freed Zeke'); } },
+          responses: [
+            { text: 'What does it do, exactly?', next: 'modes' },
+            { text: 'What should I do?', next: 'decide' },
+            { text: 'Let\'s go home, Zeke.', next: 'home' },
+          ] },
+        modes: { text: 'Reclamation: scrubs the rads out of the sky. For everyone. The ghouls stay ghouls, the mutants stay mutants — but the rain stops burning and the kids stop coughing. Crane\'s Selective code kills anything that isn\'t pure pre-war stock. That\'s every ghoul in the Neon. That\'s half of Grand Central. Hell, kid, that might be ME.',
+          responses: [{ text: 'What should I do?', next: 'decide' }] },
+        decide: { text: 'That\'s the thing about keys, kid. Whoever holds one decides. I could tell you — I\'ve got opinions, God knows, I\'ve got opinions about water pressure — but I didn\'t raise you to do what I say. I raised you to decide. [He puts a hand on your shoulder.] The controls are at the torch terminal. I\'ll be right here.',
+          onEnter() { if (Q.stage('mq06') === 'zeke') Q.setStage('mq06', 'torch'); },
+          responses: [{ text: 'Thanks, Zeke.' }] },
+        home: { text: 'Home. [He laughs, then coughs.] The Superintendent will have re-let my bunk. To itself. ...Soon, kid. First the torch. Then home.',
+          onEnter() { if (Q.stage('mq06') === 'zeke') Q.setStage('mq06', 'torch'); }, responses: [{ text: 'First the torch.' }] },
+        again: { text: 'Torch terminal, kid. Whatever you choose — I\'m proud of you. Even if you choose wrong. ESPECIALLY if you choose wrong; that\'s how I know you chose.', responses: [{ text: 'Thanks, Zeke.' }] },
+        after: { text: () => L.flag('ending_choice') === 'selective' ? '[Zeke will not look at you. He is staring across the water at Times Square, where the lights have gone out.]'
+          : L.flag('ending_choice') === 'purify' ? 'Blue. It\'s BLUE, kid. [He is crying and not hiding it.] I\'m going home. I\'m going to open that door, and I\'m going to make that robot LOOK at it.'
+            : 'Well. It\'s done. It\'s done, and we\'re alive, and that\'s more than most endings get. Come see me in the vault, kid. I\'ll fix you something. Probably a pipe.',
+          responses: [{ text: 'See you at home, Zeke.' }] },
+      },
+    });
+
+    // Enclave path: Hale's vertibird (injected into her tree)
+    const t = L.DIALOGUES.get('dlg_enc_hale');
+    if (t && !t.nodes.vertibird) {
+      t.nodes.vertibird = { text: 'The Vertibird is fuelled and the pilot is only mildly terrified. Liberty Island is ten minutes away. Last chance to change your mind, vault dweller.',
+        responses: [{ text: 'Let\'s go.', action: () => vertibird() }, { text: 'Not yet.' }] };
+      const s0 = t.start;
+      t.start = () => (Q.stage('mq06') === 'vertibird' ? 'vertibird' : (typeof s0 === 'function' ? s0() : s0));
+    }
+  });
+
+  function vertibird() {
+    const d = L.anchor('statue_of_liberty', ['vertibird', 'dock'], L.spots.libertyDock());
+    L.sfx('vats_enter', { volume: 0.5 });
+    L.travel(d.x, d.y || 0, d.z, 0, () => {
+      L.notify('The Vertibird banks low over the harbour and sets you down on Liberty Island in a storm of rotor-wash.');
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // THE ENDING SLIDESHOW
+  // ------------------------------------------------------------------
+  L.ending('main', function () {
+    const choice = L.flag('ending_choice') || 'purify';
+    const f = (k) => L.flag(k);
+    const karma = L.karmaValue();
+    const N = pname();
+    const S = [];
+    const push = (title, text, pose) => S.push({ title, text, vaultBoy: pose || null });
+
+    // 1. The torch
+    if (choice === 'purify') push('LIBERTY\'S TORCH',
+      'In the autumn of 2291, the torch of the Statue of Liberty burned for the first time in two hundred and fourteen years. It did not burn with fire. It burned with a pale blue light that rolled across the harbour, over Manhattan and Brooklyn and far beyond — and where it passed, the sickly green haze thinned, and thinned, and was gone. ' +
+      N + ' of Vault 120 had turned the Knickerbocker Array loose on the sky, for everyone.', 'thumbs_up');
+    else if (choice === 'selective') push('THE CLEANING',
+      'In the autumn of 2291, the torch of the Statue of Liberty burned green. ' + N + ' of Vault 120 loaded Executive Directive 7-A, and within the hour every ghoul, every super mutant and every "irregular" soul within forty kilometres was reclaimed. The Enclave called it the Cleaning. The survivors, when they spoke of it at all, called it something else.', 'injured');
+    else if (choice === 'brotherhood') push('THE LOCKED TORCH',
+      'In the autumn of 2291, the Knickerbocker Array was placed under the protection of the Brotherhood of Steel. The torch was sealed, the Enclave was driven from Liberty Island, and the radstorms went on rolling over Manhattan much as they always had. ' + N + ' had chosen caution over hope. The Brotherhood called it wisdom.', 'thinking');
+    else push('THE FALLEN TORCH',
+      'In the autumn of 2291, the torch of the Statue of Liberty exploded at a quarter past four in the afternoon, raining brass and glass into the harbour. The Knickerbocker Array — the Enclave\'s weapon, the Brotherhood\'s prize, Manhattan\'s last pre-war miracle — was gone. ' + N + ' of Vault 120 had decided that nobody should hold that much power. Nobody would.', 'thinking');
+
+    // 2. Zeke
+    if (choice === 'selective') push('ZEKE MARLOW', 'Zeke Marlow walked off Liberty Island on his own, and never spoke to the child he raised again. He lived out his days in a shack in the ruins of Times Square, fixing the pipes of a neighbourhood with no one left in it.', 'injured');
+    else if (choice === 'purify') push('ZEKE MARLOW', 'Zeke Marlow went home. He opened the great cog door of Vault 120 from the outside, walked into the Superintendent\'s office, and made the machine look at a live feed of the blue sky for eleven straight hours. He spent his remaining years fixing pipes, telling stories, and complaining about the water pressure on Liberty Island to anyone who would listen.', 'thumbs_up');
+    else push('ZEKE MARLOW', 'Zeke Marlow went home to Vault 120, where he took up his old job, his old bunk and his old habit of letting himself into rooms that didn\'t exist. He never said whether you\'d chosen right. He said you\'d chosen, and that was the part he was proud of.', 'thumbs_up');
+
+    // 3. Vault 120
+    if (choice === 'purify' && !f('lucy_promise')) push('VAULT 120', 'The Superintendent logged Zeke\'s return as "unauthorized ventilation" and filed a complaint with a Vault-Tec office that had not existed for two centuries. It did not matter. Within a year half of Vault 120 had moved up into the Sheep Meadow, where the rent was nothing and the ceiling was blue.' + (f('pipe_rat') ? ' Tommy Ruggiero founded the Pipe Rats\' first surface chapter. It had one member. It leaned on a tree.' : ''), 'thumbs_up');
+    else if (f('lucy_promise') && choice !== 'selective') push('VAULT 120', 'Lucy Vance kept her side of the promise. When Overseer Vance retired, Lucy was elected in her place, and her first act was to open the door and leave it open. The Superintendent filed four thousand complaints, and was eventually re-let — to the sub-basement, as a very expensive coat rack.' + (f('pipe_rat') ? ' Tommy Ruggiero became head of security. He still leans on things.' : ''), 'thumbs_up');
+    else push('VAULT 120', 'Vault 120 remained sealed beneath Central Park, its tenants paying rent in labour-hours to a robot landlord. On the anniversary of every eviction, the Superintendent played a little song. Some of the tenants swore they could hear someone knocking on the door from outside. The Superintendent assured them it was the pipes.', 'thinking');
+
+    // 4. The Neon
+    if (choice === 'selective') push('THE NEON', 'Times Square went dark and stayed dark. Mayor Crowe, Big Sal, Marigold and every soul in the Neon were among the first to fall to the Cleaning. The signs still hang there — NUKA-COLA, VAULT-TEC, SUNSET SARSAPARILLA — advertising to no one.', 'injured');
+    else if (f('neon_outcome') === 'crowe' || f('neon_outcome') === 'repair') push('THE NEON', 'Thanks to a fusion core and a stubborn vault dweller, the lights of the Neon never went out. Mayor Crowe declared ' + N + ' an Honorary Citizen in perpetuity, and every year on the anniversary the ghouls of Times Square switch every sign on at once, just to hear the smoothskins gasp.', 'thumbs_up');
+    else if (f('neon_outcome')) push('THE NEON', 'The Big Buzz died that winter. Without its lights the Neon could not keep the ferals of the 42nd Street tunnels at bay, and by spring Times Square was a ghost town — a very bright ghost town, on nights when the lightning struck the signs.', 'injured');
+    else push('THE NEON', 'The Big Buzz sputtered on for another year before the Neon\'s ghouls pooled their caps and bought a new core from a Brooklyn caravan. Mayor Crowe gave a four-hour speech about it. Nobody stayed for the end.', 'thinking');
+
+    // 5. Wendell & Marjorie
+    if (f('wendell_wed') && choice !== 'selective') push('WENDELL & MARJORIE', 'Wendell Pruitt and Marjorie "Marigold" Dunn were married in Housewares on the third floor of Macy\'s — cleared of ferals for the occasion by a very reluctant Brotherhood patrol. It was, by general agreement, the longest engagement in the history of New York.', 'thumbs_up');
+    else if (f('ring_kept')) push('WENDELL', 'Wendell Pruitt never did get his ring back. He kept working Housewares in his head until the day he died, and Marigold kept waiting for him to ask.', 'thinking');
+
+    // 6. Grand Central
+    let gc = choice === 'selective' ? 'Grand Central Market survived the Cleaning — most of it. Doc Hollis counted the empty stalls every morning for a year, and Stationmaster Okafor never again let the Enclave\'s radio play under the zodiac ceiling. ' : '';
+    gc += (choice === 'selective' ? (f('atom_isotope_planted') ? 'Between the Cleaning and the poisoned water tower, the market ' : 'In time the market came back, slowly. It ') : 'Grand Central Market ') + (f('atom_isotope_planted') ? 'never recovered from the poisoning of its water tower. Doc Hollis worked himself to death that winter, and the Stationmaster\'s office was boarded up by spring.' : 'grew into the beating heart of Manhattan. Stationmaster Okafor ran it for thirty more years and never once fixed the clock.');
+    if (!f('atom_isotope_planted') && f('pete_rescued')) gc += ' Pete Ruiz drove the Broadway run until he was eighty, and never again ate anything he could not identify.';
+    if (!f('atom_isotope_planted')) {
+      if (f('dolores_recruited')) gc += ' Deadeye Dolores watched over its caravans from a window on 42nd Street for the rest of her life, and not a single pack-bot was lost on her watch.';
+      if (f('bridge_legit')) gc += ' The Brooklyn Bridge Toll Authority — under Commissioner Tony — became the most reliable institution in the five boroughs, issuing over a million receipts.';
+      else if (f('bridge_resolved')) gc += ' With the Brooklyn Bridge open again, Brooklyn\'s traders poured across the river.';
+      if (f('caravan_honest')) gc += ' Caldwell & Daughter grew into the largest caravan company on the Eastern Seaboard.';
+    }
+    push('GRAND CENTRAL MARKET', gc, f('atom_isotope_planted') ? 'injured' : 'thumbs_up');
+
+    // 7. Children of Atom
+    if (f('atom_isotope_planted')) push('THE CHILDREN OF ATOM', 'Father Hollowell hailed the glowing taps of Grand Central as a miracle, and the Children of Atom doubled in number within the year. Most of the new converts had simply run out of other things to believe in.', 'injured');
+    else if (f('atom_placebo_planted')) push('THE CHILDREN OF ATOM', 'Father Hollowell went to his grave convinced that Atom had blessed Grand Central\'s water. The faithful still make pilgrimages to the glowing reliquary in the water tower. It is a Nuka-Cola Quantum. It is, by far, the safest holy relic in New York.', 'thumbs_up');
+    else if (f('atom_convinced')) push('THE CHILDREN OF ATOM', 'Father Hollowell spent a year in prayer and emerged preaching a gentler Atom — one who asked, rather than insisted. The Children of Atom became, of all things, the best radiation doctors in Manhattan.', 'thumbs_up');
+
+    // 8. Kong
+    if (f('kong_friend')) push('KONG', 'Kong, King of the Empire, and Fay, his silent queen, reigned over the Empire State Building for decades. Kong only ever smashed "bad humans," a category he defined loosely but fairly. Tourists — yes, tourists — came to see the couple on the observation deck. Nobody screamed. Kong was very happy.', 'thumbs_up');
+    else if (f('kong_dead')) push('KONG', 'Kong, King of the Empire, died as he had lived: enormous, confused, and very loud. The super mutants of the Empire State scattered without their king, and within a year the tower belonged to the pigeons.', 'thinking');
+    else if (f('kong_resolution')) push('KONG', 'Kong remained King of the Empire, and remained slightly confused about how he had lost his shiny rock. He took it up with the talking box on the observation deck. It did not talk back. Rude.', 'thinking');
+
+    // 9. Brotherhood & Enclave
+    if (choice === 'brotherhood' || (faction() === 'bos' && choice !== 'selective')) push('THE BROTHERHOOD OF STEEL', 'Chapter Rockefeller held Manhattan for a generation. ' + (f('stroud_will_listen') && choice !== 'brotherhood' ? 'Paladin Commander Stroud never fully forgave the vault dweller for what happened at the torch — but he kept his word, and listened, and in time Scribe Wexler\'s footnotes became the Chapter\'s new Codex.' : 'Paladin Commander Stroud ruled with a steel hand and a closed fist; Manhattan was safer, and quieter, and not entirely free.'), 'thinking');
+    if (f('crane_betrayed')) push('COLONEL CRANE', 'Colonel Augustus Crane was last seen climbing into a Vertibird on Liberty Island, still shouting. He never forgave the tenant who shook his hand at the foot of the torch and then chose differently. Enclave radio spent a year calling ' + N + ' a traitor to the Republic. Nobody in Manhattan could remember voting for it.', 'thinking');
+    if (choice === 'selective') push('THE ENCLAVE', 'With the city "cleaned," the Enclave declared Manhattan the new capital of a reborn America. Colonel Crane was promoted. Lieutenant Hale resigned her commission and disappeared into the wasteland. They say she still wears her helmet, but only to hide her face.', 'injured');
+    else if (f('hale_defects') || f('hale_knows')) push('LIEUTENANT HALE', 'Vesper Hale never went back to the Enclave. She took her helmet off for good and settled in Grand Central, where she taught the market\'s children to read — starting with the fine print.', 'thumbs_up');
+    else push('THE ENCLAVE', 'The Enclave\'s eastern command never recovered from the loss of Liberty Island. Their eyebots still drift over the ruins at night, playing marching songs to a country that stopped listening a long time ago.', 'thinking');
+
+    // 10. Radio
+    push('RADIO FREE MANHATTAN', 'Vinnie Valentine broadcast for another twenty years, and told the story of the vault dweller from 120 so many times — and so differently — that by the end not even he knew which version was true. ' + (f('mq03_science') ? 'The Rockette Array lit up Radio City every night he was on the air.' : 'ROCKETTE-7 kept dancing. Somebody had to.'), 'thumbs_up');
+
+    // 11. Borough
+    if (f('borough_dead')) push('BOROUGH', 'Borough, the dog from Bethesda Terrace, fell defending the one he\'d chosen. There is a small cairn beside his first master\'s grave now. Somebody keeps a bowl of water by it. Somebody keeps it clean.', 'injured');
+    else if (f('borough_recruited')) push('BOROUGH', 'Borough never left ' + N + '\'s side. He never learned "heel," either. He grew grey around the muzzle and lazy in the sun, and every mole rat in Central Park lived in terror of him until the end of his days.', 'thumbs_up');
+
+    // 11b. Human companions (36_companions.js): Malone, Tull, Rook
+    if (typeof L.companionSlides === 'function') {
+      let cs = [];
+      try { cs = L.companionSlides(choice, N) || []; } catch (e) { G.reportError('quests:companionSlides', e); }
+      for (const c of cs) push(c.title, c.text, c.pose);
+    }
+
+    // 12. The Vault Dweller — the epilogue is written for the choice at the torch
+    // first, then shaded by karma (never "gave back the sky" after a Cleaning).
+    // Same scale as the Pip-Boy's karma title (rpg.karmaTier): Very Good/Good → good,
+    // Evil/Very Evil → evil. Quest karma is sized FO3-style (big deeds ±100–400) so
+    // a consistently kind or cruel run reliably lands outside "neutral".
+    const tier = L.karmaTier();
+    const kb = tier <= 1 ? 'good' : tier >= 3 ? 'evil' : 'neutral';
+    void karma;
+    const EPI = {
+      purify: {
+        good: 'And ' + N + '? The people of Manhattan tell a hundred stories about the kid in the blue jumpsuit who walked out of Central Park and gave the city back its sky — and in every one of them, the hero is kind. Some of the stories are even true.',
+        neutral: 'And ' + N + '? The kid from Vault 120 gave Manhattan back its sky, then went on living the way wastelanders live — some days kind, some days not. The sky did not keep score. The sky was simply, stubbornly blue.',
+        evil: 'And ' + N + '? They lit the torch for everyone — even for the people they had robbed and buried on the way there. Manhattan never did decide whether that made them a saint or a hypocrite. In the end, it settled on "complicated," and enjoyed the weather.',
+      },
+      selective: {
+        good: 'And ' + N + '? Whatever good the kid from Vault 120 did before that day, it was weighed against one green hour on Liberty Island, and it was not enough. It was never going to be enough.',
+        neutral: 'And ' + N + '? The Enclave put the name on a plaque. Nobody else in Manhattan would say it aloud. The kid from Vault 120 had turned the torch green, and the city remembered nothing else about them.',
+        evil: 'And ' + N + '? Mothers in the ruins of Manhattan still frighten their children with the name. The kid from Vault 120, they say, who turned Lady Liberty\'s torch green and watched the Neon go dark.',
+      },
+      brotherhood: {
+        good: 'And ' + N + '? The kid from Vault 120 put the city\'s last miracle into armoured hands and trusted them to use it well. Whether that trust was wisdom or naivety, history has not yet decided. The people they helped along the way remembered only the kindness.',
+        neutral: 'And ' + N + '? The kid from Vault 120 chose steel over hope, and Manhattan learned to live with that choice — safer, quieter, and still coughing under a green sky.',
+        evil: 'And ' + N + '? The kid from Vault 120 handed the torch to the men in the metal suits and walked away without looking back. Most of Manhattan was glad to see the back of them.',
+      },
+      destroy: {
+        good: 'And ' + N + '? The kid from Vault 120 decided that nobody should hold that much power — not the Enclave, not the Brotherhood, not even themselves. Some called it cowardice. More called it the first honest thing anyone had done with pre-war technology in two hundred years.',
+        neutral: 'And ' + N + '? The kid from Vault 120 blew up the future to keep it out of the wrong hands. Maybe, in New York, all hands were the wrong hands. The debate still starts fights in the Oyster Bar.',
+        evil: 'And ' + N + '? The kid from Vault 120 blew Lady Liberty\'s torch into the harbour, and Manhattan remembered them the way it remembers every explosion: loudly, and not fondly.',
+      },
+    };
+    let epi = (EPI[choice] || EPI.destroy)[kb];
+    const title = L.karmaTitle();
+    if (title) epi += (tier === 0 || tier === 4 ? ' Long after the dust settled, the wasteland still had a name for them: ' : ' On the radio, Vinnie Valentine had a name for them: ') + '"' + title + '."';
+    push('THE VAULT DWELLER', epi, kb === 'good' && choice !== 'selective' ? 'thumbs_up' : kb === 'evil' || choice === 'selective' ? 'injured' : 'thinking');
+
+    // Closing card: Vinnie's sign-off (an original nod to the franchise's refrain).
+    push('', choice === 'selective' ? 'This is Radio Free Manhattan, signing off. The war changed its uniform again tonight. It always finds a new one.'
+      : 'This is Radio Free Manhattan, signing off. The bombs changed everything, folks — except us. We\'re still here. Goodnight, New York.', null);
+    return S;
+  });
+  L.ending('default', function () { return [{ title: 'FALLOUT: NEW YORK', text: 'The sirens stopped two hundred years ago. The city never did.' }]; });
+
+  G.quests.debug.finale = (choice) => {
+    L.setFlag('mq_faction', L.flag('mq_faction') || 'none');
+    ['mq01', 'mq02', 'mq03', 'mq04', 'mq05'].forEach((id) => { if (!Q.isComplete(id)) Q.complete(id); });
+    if (!Q.isStarted('mq06')) Q.start('mq06');
+    L.give('q_liberty_key', 1, true); L.give('q_knickerbocker_core', 1, true);
+    L.setFlag('crane_surrendered'); Q.setStage('mq06', 'torch');
+    if (choice) choose(choice);
+    return 'ok';
+  };
+})();
+

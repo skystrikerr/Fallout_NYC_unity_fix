@@ -1,0 +1,161 @@
+/* src/quests/35_park.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — QUESTS — 35: CENTRAL PARK — BOROUGH THE DOG
+ *   SQ "Who's a Good Boy?" — a loyal dog guards his dead owner at
+ *   Bethesda Terrace. Earn his trust (food, the owner's own words, or
+ *   burying his master) and he becomes your companion.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const L = G.quests.lib;
+  const Q = G.quests;
+
+  const SPOT = { x: 14, z: -548 };   // Bethesda Terrace, east side of the fountain plaza
+
+  function borough() { return L.npc('borough'); }
+  function foodInInventory() {
+    if (G.isStub('inventory') || !G.inventory.list) return null;
+    let list = [];
+    try { list = G.inventory.list('aid') || []; } catch (e) { list = []; }
+    const pref = ['cram', 'iguana_on_a_stick', 'mirelurk_meat', 'pork_n_beans', 'q_birthday_cake', 'fancy_lads', 'blamco_mac', 'molerat_meat', 'dog_food', 'salisbury_steak'];
+    for (const p of pref) { const e = list.find((x) => x.id === p && x.count > 0); if (e) return e.id; }
+    const any = list.find((x) => x.def && x.def.tags && x.def.tags.indexOf('food') >= 0 && x.count > 0);
+    return any ? any.id : null;
+  }
+  function recruit(how) {
+    if (L.flag('borough_recruited')) return;
+    L.setFlag('borough_recruited'); L.setFlag('borough_how', how);
+    L.setFlag('borough_waiting', false);
+    const b = borough();
+    if (b) {
+      b.faction = 'player';
+      try { if (b.setHostile) b.setHostile(false); } catch (e) { /* */ }
+      try { if (b.follow) b.follow(G.player); } catch (e) { G.reportError('quests:follow', e); }
+    }
+    L.sfx('dog_bark');
+    L.notify('Borough has joined you.');
+    Q.complete('sq_borough');
+    L.news('A bit of good news for the dog lovers out there: the pup who\'s been keeping vigil at Bethesda Terrace finally found a new friend. A vault dweller, no less. Borough, buddy, if you\'re listening — you\'re a good boy. Everybody says so.');
+  }
+  L.borough = { recruit };
+
+  L.hook('init', function () {
+    L.quest({
+      id: 'sq_borough', name: 'Who\'s a Good Boy?', giver: 'Borough', location: 'Bethesda Terrace, Central Park',
+      desc: 'A scruffy dog is guarding a skeleton at Bethesda Terrace, and snarling at anyone who comes too close.',
+      stages: [
+        { id: 'meet', text: 'Earn the trust of the dog at Bethesda Terrace.', markers: () => [{ npc: 'borough', label: 'Dog' }] },
+        { id: 'letter', text: '(Optional) Read the letter on the skeleton.', sideObjective: true, optional: true,
+          showIf: () => !L.has('q_note_borough_owner'), markers: () => (L.pickups.borough_letter ? [{ x: L.pickups.borough_letter.pos.x, z: L.pickups.borough_letter.pos.z, label: 'Letter' }] : []) },
+      ],
+      rewards: { xp: 100 },
+    });
+  });
+
+  L.trigger({ id: 'borough_meet', x: SPOT.x, z: SPOT.z, r: 26, cond: () => !Q.isStarted('sq_borough') && !L.flag('borough_recruited') && !L.isDead('borough'),
+    fire() {
+      Q.start('sq_borough');
+      L.later(0.5, () => { L.sfx('dog_bark', { pos: borough() ? borough().pos : undefined }); L.say('borough', '*low growl*'); });
+    } });
+
+  // Borough killed (raiders, ferals, a stray grenade) before he trusted you: the quest can't be finished any more — close it.
+  G.events.on('actorKilled', (a) => { if (a && a.id === 'borough' && Q.isActive('sq_borough')) Q.fail('sq_borough'); });
+
+  L.hook('spawn', function () {
+    const recruited = !!L.flag('borough_recruited');
+    const waiting = L.flag('borough_waiting');
+    let at;
+    if (recruited && !waiting) at = { fallback: { x: G.player.pos.x + 1.5, z: G.player.pos.z + 1.5, y: G.player.pos.y }, maxR: 6 };
+    else if (recruited && waiting && waiting.x !== undefined) at = { fallback: { x: waiting.x, z: waiting.z, y: waiting.y }, maxR: 6 };
+    else at = { site: 'bethesda', anchors: ['dog', 'spawn1'], fallback: { x: SPOT.x, z: SPOT.z } };
+    const b = L.spawnNPC({ id: 'borough', type: 'dog', name: 'Borough', faction: 'player', ai: recruited && !waiting ? 'follow' : 'guard', level: 4, hp: 140,
+      home: recruited ? undefined : 'here', homeR: 3, at, dialogue: 'dlg_borough', hostile: false,
+      barks: recruited ? ['*wags*', '*sniffs the air*', '*happy bark*'] : ['*growl*', '*whine*'] });
+    if (b && recruited && !waiting) { try { b.follow && b.follow(G.player); } catch (e) { /* */ } }
+    // Mack's remains and his letter
+    if (!recruited || !L.flag('mack_buried')) {
+      // Beside where Borough keeps watch, on the SAME floor as him: the terrace is a raised plinth, and a street-level
+      // search used to bury the letter (which the recruitment needs) inside it.
+      const dogAt = !recruited && b && b.pos ? b.pos : L.anchor('bethesda', ['dog', 'spawn1'], { x: SPOT.x, z: SPOT.z });
+      const ref = { x: dogAt.x, z: dogAt.z, y: G.world.groundHeight(dogAt.x, dogAt.z, (dogAt.y || 0) + 0.6, 0.3) };
+      let p = L.freeSpot(ref.x + 1.4, ref.z + 1.0, ref.y, { maxR: 5 });
+      if (!p || p.forced) p = L.freeSpot(ref.x + 1.4, ref.z + 1.0, undefined, { maxR: 8 });
+      if (!L.flag('mack_buried')) L.world.mackSkel = L.dyn(L.prop('skeleton', { x: p.x, y: p.y, z: p.z, yaw: 0.8, pose: 'lying' }));
+      L.pickup('borough_letter', 'q_note_borough_owner', 1, { x: p.x + 0.5, y: p.y, z: p.z + 0.3 });
+      L.pickup('borough_tag', 'q_borough_tag', 1, { x: p.x - 0.4, y: p.y, z: p.z - 0.2 });
+    }
+  });
+
+  L.hook('register', function () {
+    L.dialogue('dlg_borough', {
+      start: () => (L.flag('borough_recruited') ? 'companion' : 'wild'),
+      nodes: {
+        wild: { speaker: 'Borough', text: () => '[A wiry, mud-coloured mutt with one ear up and one ear permanently down stands over a skeleton in a rotted overcoat. He bares his teeth — then looks at your face, and the growl wavers.]' + (L.flag('borough_fed_try') ? ' [He is eyeing your pack.]' : ''),
+          responses: [
+            { text: '[Offer him some food.]', cond: () => !!foodInInventory(), next: 'food' },
+            { text: '"Borough, heel."', cond: () => L.has('q_note_borough_owner'), next: 'heel' },
+            { text: '[Kneel and hold out your hand.]', check: { special: 'C', value: 6 }, next: 'hand', failNext: 'hand_fail' },
+            { text: '[Bury his master.]', cond: () => !L.flag('mack_buried'), next: 'bury' },
+            { text: '[Back away slowly.]' },
+          ] },
+        food: { text: () => '[You hold out some ' + ((G.items.get && G.items.get(foodInInventory()) || {}).name || 'food') + '. The dog considers the food, considers the skeleton, considers you... and eats it in one bite. His tail thumps the ground, once, twice.]',
+          onEnter() { const f = foodInInventory(); if (f) L.take(f, 1); L.setFlag('borough_fed'); },
+          responses: [{ text: '"Come on, boy. Come with me."', next: 'join' }, { text: '[Leave him be.]' }] },
+        heel: { text: '[At the sound of the word his ears shoot up — both of them, briefly. He looks at the skeleton. He looks at you. He ignores the command completely, exactly as the letter promised... and then trots over and sits on your foot.]',
+          onEnter() { L.xp(15, 'Borough, heel'); }, responses: [{ text: '"Good boy. Let\'s go."', next: 'join' }] },
+        hand: { text: '[You kneel in the dust, palm open, and wait. It takes a long time. Eventually a cold nose presses into your hand, and the dog sighs — a long, tired, very human sigh.]',
+          onEnter() { L.xp(15, 'Charisma'); }, responses: [{ text: '"You\'ve been alone a long time, huh? Come on."', next: 'join' }] },
+        hand_fail: { text: '[The dog snaps at the air a finger\'s width from your hand. Message received.]', onEnter() { L.setFlag('borough_fed_try'); }, responses: [{ text: '[Back away.]' }] },
+        bury: { text: '[You scrape a shallow grave in the terrace garden with a broken tile and lay the old man in it. The dog watches every movement. When you are done, he lies down on the fresh earth for a minute... then gets up, shakes himself off, and looks at you as if to say: well?]',
+          onEnter() { L.setFlag('mack_buried'); L.karma(50, 'Buried Mack'); L.xp(25, 'A proper burial'); const s = L.world.mackSkel; if (s && s.remove) { try { s.remove(); } catch (e) { /* */ } } },
+          responses: [{ text: '"Come on, boy. He\'d want you to go."', next: 'join' }] },
+        join: { text: '[The dog barks once — a real bark, not a warning — and falls in at your side. The tag on his collar reads BOROUGH.]',
+          onEnter() { recruit(L.flag('mack_buried') ? 'burial' : L.flag('borough_fed') ? 'food' : 'trust'); },
+          responses: [{ text: '"Welcome aboard, Borough."' }] },
+        companion: { speaker: 'Borough', text: () => L.flag('borough_waiting') ? '[Borough is waiting exactly where you left him, vibrating with the effort of staying.]' : '[Borough looks up at you, tongue out, ready for anything that involves you and possibly a mole rat.]',
+          responses: [
+            { text: '"Stay here, boy."', cond: () => !L.flag('borough_waiting'), action: () => {
+              const b = borough(); L.setFlag('borough_waiting', b ? { x: b.pos.x, y: b.pos.y, z: b.pos.z } : true);
+              if (b) { try { b.follow && b.follow(null); } catch (e) { /* */ } }
+            } },
+            { text: '"Borough, heel!"', cond: () => !!L.flag('borough_waiting'), action: () => {
+              L.setFlag('borough_waiting', false); const b = borough(); if (b) { try { b.follow && b.follow(G.player); } catch (e) { /* */ } } L.sfx('dog_bark');
+            } },
+            { text: '[Scratch behind his ears.]', next: 'pet' },
+            { text: '"Go home to Grand Central. Wait for me there."', action: () => {
+              L.setFlag('borough_waiting', { x: 238, y: 0, z: -224 }); const b = borough();
+              if (b) { try { b.follow && b.follow(null); b.moveTo && b.moveTo(238, -224); } catch (e) { /* */ } }
+            } },
+            { text: '[Leave.]' },
+          ] },
+        pet: { text: () => ['[Borough leans his whole weight into your leg and groans with happiness.]', '[One ear goes up. The other one tries. It does not make it.]', '[He rolls over, exposing a belly with a mole-rat scar on it. You are obligated. You scratch the belly.]'][Math.floor(Math.random() * 3)],
+          responses: [{ text: '"Good boy."' }] },
+      },
+    });
+  });
+
+  // Keep the follower re-attached after doors, ferries and fast travel.
+  function regroup() {
+    if (!L.flag('borough_recruited') || L.flag('borough_waiting')) return;
+    const b = borough(); if (!b || b.dead) return;
+    L.later(0.15, () => {
+      if (b.dead || Math.hypot(b.pos.x - G.player.pos.x, b.pos.z - G.player.pos.z) < 20) return;
+      try {
+        const p = G.player.pos, s = L.freeSpot(p.x + 1.2, p.z + 1.2, p.y, { maxR: 4 });
+        b.pos.set(s.x, s.y, s.z);
+        if (b.follow) b.follow(G.player);
+      } catch (e) { /* */ }
+    });
+  }
+  G.events.on('doorTransition', regroup);
+  G.events.on('teleport', regroup);
+  G.events.on('actorKilled', (a) => {
+    if (a && a.id === 'borough' && L.flag('borough_recruited')) {
+      L.setFlag('borough_dead');
+      L.notify('Borough has died.');
+      L.news('Sad news tonight, folks. That good dog from Bethesda Terrace — Borough — didn\'t make it. Went down fighting next to his friend. Give your own mutt an extra scratch tonight. Vinnie will be right back after this song.');
+    }
+  });
+})();
+

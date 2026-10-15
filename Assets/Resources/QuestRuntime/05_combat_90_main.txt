@@ -1,0 +1,197 @@
+/* src/combat/90_main.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — COMBAT: module registration & frame loop
+ * Owned by: combat.  Order 50 (after weapons 45, before quests 60).
+ *
+ * Per frame: V.A.T.S. input/camera, actor streaming (attach/detach from
+ * the scene by distance, interior/exterior aware), AI for active actors,
+ * animation LOD, corpse physics, burning, actor/player separation,
+ * projectiles/gibs/disintegration, population & roaming encounters,
+ * sneak detection, combatStart/combatEnd events, floating barks.
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const THREE = window.THREE;
+  const C = G.__cmb;
+
+  let combatNow = false, combatEndT = 0, frameN = 0;
+  const HIDE_R = 130;   // beyond this, non-combat actors are not drawn (fog covers them anyway)
+  const MAX_CORPSES = 45;
+
+  function onReset() {
+    try { C.vatsReset(); } catch (e) { /* ignore */ }
+    G.actors.clear();
+    C.clearCombatFx();
+    C.clearPopulation();
+    C.relOverride = {};
+    C.pendingState = new Map();
+    C.groupSave = {};
+    C.roamSave = []; C.roamSaveN = 0;
+    combatNow = false; C.anyCombat = false;
+    G.timeScale = 1;
+  }
+
+  // ------------------------------------------------------------------
+  // Streaming + update of actors
+  // ------------------------------------------------------------------
+  function updateActors(dt) {
+    const P = G.player;
+    const pInt = G.LAYOUT.isInterior(P.pos.x);
+    frameN++;
+    let corpses = 0;
+    for (let i = 0; i < C.list.length; i++) {
+      const a = C.list[i];
+      // Safety net (integration): never let a non-finite position/yaw survive a frame — it spreads
+      // through targeting (faceTowards), sound panners and loot focus. Restore the last good values.
+      if (!(isFinite(a.pos.x) && isFinite(a.pos.y) && isFinite(a.pos.z))) {
+        if (a._goodPos) a.pos.copy(a._goodPos); else a.pos.set(0, 0, 0);
+        if (a.char && a.char.death) { a.char.death.moved = true; a.char.death.dist = 0; }
+      } else (a._goodPos || (a._goodPos = new THREE.Vector3())).copy(a.pos);
+      if (!isFinite(a.yaw)) { a.yaw = isFinite(a._goodYaw) ? a._goodYaw : 0; try { a.applyYaw(); } catch (e) { /* ignore */ } } else a._goodYaw = a.yaw;
+      const sameSpace = G.LAYOUT.isInterior(a.pos.x) === pInt;
+      const d = sameSpace ? a.distToPlayer() : 1e9;
+      a._dist = d;
+      // Attach / detach (companions and fights near the player stay attached)
+      if (!a.inScene) {
+        if (d < C.ACTIVE_R) a.attach();
+        else { if (a.dead) corpses++; continue; }
+      } else if (d > C.DETACH_R && !(a.inCombat && d < C.DETACH_R + 60) && a.following !== 'player') { a.detach(); continue; }
+      // Render LOD: far, peaceful actors stay simulated (slowly) but aren't drawn or animated
+      const farHide = d > HIDE_R && !a.inCombat && a.following !== 'player' && !a.disintegrated;
+      if (farHide !== !!a._farHidden) { a._farHidden = farHide; if (!a.disintegrated) a.char.root.visible = !farHide && !a.burrowed; }
+      if (a.dead) {
+        corpses++;
+        if (a.corpse) C.updateCorpse(a, dt);
+        if (a.burnT) C.updateBurn(a, dt);
+        // keep the death animation running for a few seconds
+        if (G.time.elapsed - a.deathT < 5 || a.corpse || a.disintegrated) animate(a, dt, d);
+        continue;
+      }
+      if (a.talking) {
+        a.speed = 0;
+        a.faceTowards(P.pos.x, P.pos.z, 4, dt);
+        a.anim('talk');
+      } else if (dt > 0) {
+        // far hidden actors think at 1/3 rate with the accumulated time
+        let adt = dt;
+        if (a._farHidden) { a._aiAcc = (a._aiAcc || 0) + dt; if ((frameN + a.uid) % 3 !== 0) adt = 0; else { adt = Math.min(0.2, a._aiAcc); a._aiAcc = 0; } }
+        if (adt > 0) { try { C.updateActor(a, adt); } catch (e) { G.reportError('update:combat:ai(' + a.type + ')', e); a.state = 'idle'; } }
+      }
+      if (a.burnT) C.updateBurn(a, dt);
+      if (!a._farHidden) animate(a, dt, d);
+    }
+    // Keep corpse count bounded (oldest, far, unnamed first)
+    if (corpses > MAX_CORPSES && frameN % 30 === 0) {
+      const dead = C.list.filter((a) => a.dead && !a.stableId && a._dist > 60).sort((p, q) => p.deathT - q.deathT);
+      for (let k = 0; k < Math.min(dead.length, corpses - MAX_CORPSES); k++) G.actors.remove(dead[k]);
+    }
+    separate(dt);
+  }
+  /** Animation LOD: near actors animate every frame, far ones every 2nd/3rd frame (G.chars LODs internally). */
+  function animate(a, dt, d) {
+    if (!a.char.update || dt <= 0) return;
+    // (fighting actors near the player always animate every frame)
+    const step = d < 40 || (a.inCombat && d < 70) ? 1 : d < 90 ? 2 : 3;
+    a._animAcc = (a._animAcc || 0) + dt;
+    if ((frameN + a.uid) % step !== 0) return;
+    try { a.char.update(a._animAcc); } catch (e) { G.reportError('update:combat:anim(' + a.type + ')', e); a.char.update = null; }
+    a._animAcc = 0;
+  }
+  /** Push living actors apart and out of the player. */
+  function separate(dt) {
+    const P = G.player;
+    const near = [];
+    for (const a of C.list) if (!a.dead && a.inScene && a._dist < 45 && !a.burrowed && a.state !== 'dormant') near.push(a);
+    for (let i = 0; i < near.length; i++) {
+      const a = near[i];
+      // actor vs player
+      const dx = P.pos.x - a.pos.x, dz = P.pos.z - a.pos.z, d = Math.hypot(dx, dz);
+      const min = P.radius + a.radius * 0.85;
+      if (d < min && d > 1e-4 && Math.abs(P.pos.y - a.pos.y) < Math.max(1.6, a.height * 0.8) && !a.hover) {
+        const push = (min - d);
+        const r = G.world.moveCircle(P.pos, P.radius, P.height, dx / d * push, dz / d * push);
+        P.pos.x = r.x; P.pos.z = r.z;
+      }
+      for (let j = i + 1; j < near.length; j++) {
+        const b = near[j];
+        const ex = b.pos.x - a.pos.x, ez = b.pos.z - a.pos.z;
+        const m = (a.radius + b.radius) * 0.8;
+        if (ex > m || ex < -m || ez > m || ez < -m) continue; // cheap reject
+        const e = Math.hypot(ex, ez);
+        if (e < m && e > 1e-4 && Math.abs(a.pos.y - b.pos.y) < 1.5) {
+          const pu = (m - e) * 0.5;
+          const ra = G.world.moveCircle(a.pos, Math.min(a.radius, 0.9), a.height, -ex / e * pu, -ez / e * pu);
+          a.pos.x = ra.x; a.pos.z = ra.z;
+          const rb = G.world.moveCircle(b.pos, Math.min(b.radius, 0.9), b.height, ex / e * pu, ez / e * pu);
+          b.pos.x = rb.x; b.pos.z = rb.z;
+        }
+      }
+    }
+  }
+
+  function updateCombatEvents(rdt) {
+    let any = false;
+    for (const a of C.list) if (!a.dead && a.inCombat && a.target === 'player' && a.inScene) { any = true; break; }
+    C.anyCombat = any;
+    if (any) { combatEndT = 0; if (!combatNow) { combatNow = true; G.events.emit('combatStart'); } }
+    else if (combatNow) { combatEndT += rdt; if (combatEndT > 3) { combatNow = false; G.events.emit('combatEnd'); } }
+  }
+  G.combat.inCombat = () => combatNow;
+
+  // ------------------------------------------------------------------
+  // Module
+  // ------------------------------------------------------------------
+  G.registerModule({
+    name: 'combat',
+    order: 50,
+    init() {
+      G.events.on('reset', onReset);
+      try { C.defineNotes(); } catch (e) { G.reportError('combat:defineNotes', e); }
+      G.events.on('newGame', () => { C.populate(); });
+      G.events.on('loaded', () => { C.populate(); });
+      // Hearing: the player's weapons and footsteps
+      G.events.on('weaponFired', (def) => {
+        const id = def && (def.id || (def.weapon && def.id));
+        const info = (id && C.weaponInfo(id)) || def || null;
+        // weapons' silencer mod (moddedDef sets weapon.silenced): shots carry ~30 % as far
+        const quiet = !!(def && def.weapon && def.weapon.silenced) || C.playerSilenced();
+        C.noise(G.player.pos, C.loudness(info && info.damage !== undefined ? info : null) * (quiet ? 0.3 : 1), 'player', info && info.melee ? 'step' : 'gun');
+      });
+      G.events.on('footstep', (f) => {
+        if (!f || f.sneaking) return;
+        C.noise(G.player.pos, f.sprinting ? 14 : 6, 'player', 'step');
+      });
+      G.events.on('state', (s) => { if (s !== 'vats' && C.vats.active) G.vats.exit(true); });
+      G.events.on('playerDied', () => { if (C.vats.active) G.vats.exit(true); });
+      // Dialogue: the NPC stops and faces you
+      G.events.on('dialogueStart', (a) => { if (a && a.uid) { a.talking = true; C.hideBark(a); } });
+      G.events.on('dialogueEnd', (a) => { if (a && a.uid) a.talking = false; else for (const x of C.list) x.talking = false; });
+      G.events.on('barterDone', () => { for (const x of C.list) x.talking = false; });
+    },
+    update(dt, rdt) {
+      // V.A.T.S. runs its own input in 'vats' state
+      if (C.vats.active) { try { C.vatsUpdate(dt, rdt); } catch (e) { G.reportError('update:combat:vats', e); try { G.vats.exit(true); } catch (e2) { /* ignore */ } } }
+      if (G.state === 'play' && G.input.actionPressed('vats')) {
+        G.input.consumeAction('vats');
+        try { G.vats.enter(); } catch (e) { G.reportError('update:combat:vats.enter', e); try { G.vats.exit(true); } catch (e2) { /* ignore */ } }
+      }
+      if (G.worldRunning()) {
+        updateActors(dt);
+        C.updateCombatFx(dt);
+        if (C.updateReactions) C.updateReactions(dt);
+        C.updatePoison(dt);
+        C.updatePopulation(dt);
+        if (C.updateSafeZones) C.updateSafeZones(dt);
+        if (C.updateNeonSpots) C.updateNeonSpots(dt);
+        C.computeDetection(rdt);
+        updateCombatEvents(rdt);
+      }
+      C.updateBarks(rdt);
+    },
+    lateUpdate(dt, rdt) {
+      if (C.vats.active) C.vatsLate(rdt);
+    },
+  });
+})();
+

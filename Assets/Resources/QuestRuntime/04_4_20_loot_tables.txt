@@ -1,0 +1,353 @@
+/* src/rpg/20_loot_tables.js */
+/* =====================================================================
+ * FALLOUT: NEW YORK — RPG MODULE — LOOT TABLES
+ *
+ * Table ids usable by props (`opts.loot`), containers, combat (`def.loot`)
+ * and quests:
+ *  containers: ammo_box, first_aid, medical_cabinet, fridge, cooler, desk, file_cabinet,
+ *    safe, wall_safe, locker, vault_locker, footlocker, toolbox, dumpster, trash_can, mailbox,
+ *    nuka_machine, cash_register, bottlecap_stash, weapon_crate, dresser, bookshelf,
+ *    luggage, briefcase, crate, cabinet, grocery_shelf, raider_stash, bos_crate,
+ *    enclave_crate, workbench, newspaper_box, doctors_bag, mail_sack, skeleton, corpse
+ *  actors: raider, raider_boss, super_mutant, super_mutant_behemoth, feral_ghoul,
+ *    glowing_one, ghoul, robot, protectron, mister_handy, eyebot, sentry_bot, enclave,
+ *    enclave_soldier, brotherhood, brotherhood_paladin, settler, merchant, caravan, radroach,
+ *    molerat, bloatfly, mirelurk, mirelurk_queen, deathclaw, dog, creature
+ *  merchant stock: merchant_general, merchant_doctor, merchant_arms, merchant_food
+ *  helpers: junk_common, junk_office, junk_household, junk_valuable, electronics,
+ *    food_prewar, drinks, chems, medical, apparel_common, hats, books
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const G = window.G;
+  const T = (id, t) => G.items.defineLootTable(id, t);
+  const R = (chance, picks, entries) => ({ chance, picks, entries });
+
+  // ---------------------------------------------------------------
+  // Building blocks
+  // ---------------------------------------------------------------
+  T('junk_common', { rolls: [R(1, 1, [
+    { id: 'tin_can', w: 4 }, { id: 'bent_tin_can', w: 3 }, { id: 'empty_nuka_bottle', w: 3 }, { id: 'scrap_metal', w: 4 },
+    { id: 'coffee_mug', w: 2 }, { id: 'plate', w: 2 }, { id: 'fork', w: 2 }, { id: 'pencil', w: 2 }, { id: 'clipboard', w: 1 },
+    { id: 'duct_tape', w: 1 }, { id: 'wonderglue', w: 1 }, { id: 'abraxo_cleaner', w: 1 }, { id: 'turpentine', w: 1 },
+    { id: 'milk_bottle', w: 1 }, { id: 'empty_whiskey_bottle', w: 2 }, { id: 'lighter', w: 1 }, { id: 'toy_car', w: 1 },
+    { id: 'teddy_bear', w: 0.6 }, { id: 'baseball', w: 0.6 }, { id: 'pool_ball', w: 0.4 }, { id: 'subway_token', w: 1 },
+    { id: 'souvenir_statue', w: 0.5 }, { id: 'ashtray', w: 1 }, { id: 'prewar_book', w: 1 }, { id: 'ruined_book', w: 1 },
+  ])] });
+  T('junk_office', { rolls: [R(1, 1, [
+    { id: 'clipboard', w: 3 }, { id: 'pencil', w: 4 }, { id: 'coffee_mug', w: 2 }, { id: 'typewriter', w: 0.4 },
+    { id: 'prewar_money', w: 2 }, { id: 'stock_certificate', w: 2 }, { id: 'cigarettes', w: 1 }, { id: 'prewar_book', w: 1 },
+    { id: 'scrap_electronics', w: 0.6 }, { id: 'vacuum_tube', w: 0.6 }, { id: 'ashtray', w: 1 },
+  ])] });
+  T('junk_household', { rolls: [R(1, 1, [
+    { id: 'plate', w: 3 }, { id: 'cooking_pan', w: 1 }, { id: 'fork', w: 3 }, { id: 'coffee_mug', w: 3 }, { id: 'tin_can', w: 2 },
+    { id: 'abraxo_cleaner', w: 1 }, { id: 'milk_bottle', w: 2 }, { id: 'teddy_bear', w: 0.6 }, { id: 'toy_car', w: 0.8 },
+    { id: 'lunchbox', w: 0.6 }, { id: 'snow_globe_nyc', w: 0.3 }, { id: 'cigarettes', w: 1 }, { id: 'prewar_book', w: 1 },
+  ])] });
+  T('junk_valuable', { rolls: [R(1, 1, [
+    { id: 'prewar_money', w: 5, n: [1, 3] }, { id: 'cigarette_carton', w: 2 }, { id: 'cigarettes', w: 3 }, { id: 'snow_globe_nyc', w: 1 },
+    { id: 'sensor_module', w: 1 }, { id: 'fission_battery', w: 1 }, { id: 'gold_bar', w: 0.15, minLevel: 6 }, { tag: 'skill_book', w: 0.4 },
+  ])] });
+  T('electronics', { rolls: [R(1, 1, [
+    { id: 'scrap_electronics', w: 4 }, { id: 'vacuum_tube', w: 3 }, { id: 'conductor', w: 3 }, { id: 'sensor_module', w: 1.5 },
+    { id: 'fission_battery', w: 2 }, { id: 'pilot_light', w: 1 }, { id: 'microscope', w: 0.4 },
+  ])] });
+  T('food_prewar', { rolls: [R(1, 1, [
+    { id: 'cram', w: 3 }, { id: 'sugar_bombs', w: 2 }, { id: 'fancy_lads', w: 2 }, { id: 'blamco_mac', w: 2 }, { id: 'pork_n_beans', w: 3 },
+    { id: 'instamash', w: 2 }, { id: 'salisbury_steak', w: 1 }, { id: 'potato_crisps', w: 2 }, { id: 'dandy_boy_apples', w: 2 },
+    { id: 'yumyum_eggs', w: 1 }, { id: 'gum_drops', w: 1 }, { id: 'bubblegum', w: 1 }, { id: 'noodle_cup', w: 1.5 },
+    { id: 'bodega_pretzel', w: 1 }, { id: 'prewar_bagel', w: 1 }, { id: 'canned_dog_food', w: 1 }, { id: 'sweet_roll', w: 0.4 },
+  ])] });
+  T('drinks', { rolls: [R(1, 1, [
+    { id: 'nuka_cola', w: 5 }, { id: 'sunset_sarsaparilla', w: 2 }, { id: 'dirty_water', w: 3 }, { id: 'purified_water', w: 2 },
+    { id: 'beer', w: 2 }, { id: 'whiskey', w: 1 }, { id: 'vodka', w: 1 }, { id: 'wine', w: 1 }, { id: 'scotch', w: 0.6 },
+    { id: 'nuka_cola_cherry', w: 0.8 }, { id: 'nuka_cola_quantum', w: 0.15, minLevel: 3 }, { id: 'egg_cream', w: 0.3 },
+  ])] });
+  T('chems', { rolls: [R(1, 1, [
+    { id: 'psycho', w: 2 }, { id: 'jet', w: 3 }, { id: 'buffout', w: 2 }, { id: 'mentats', w: 2 }, { id: 'med_x', w: 2 },
+    { id: 'day_tripper', w: 1 }, { id: 'rocket', w: 1 }, { id: 'ultrajet', w: 0.4, minLevel: 6 }, { id: 'fixer', w: 0.5 },
+  ])] });
+  T('medical', { rolls: [R(1, 1, [
+    { id: 'stimpak', w: 6 }, { id: 'radaway', w: 3 }, { id: 'rad_x', w: 3 }, { id: 'med_x', w: 1.5 }, { id: 'blood_pack', w: 1.5 },
+    { id: 'super_stimpak', w: 0.5, minLevel: 6 }, { id: 'doctors_bag', w: 0.6 }, { id: 'fixer', w: 0.4 }, { id: 'healing_powder', w: 0.5 },
+  ])] });
+  T('apparel_common', { rolls: [R(1, 1, [
+    { id: 'settler_duds', w: 3 }, { id: 'prewar_casualwear', w: 3 }, { id: 'prewar_businesswear', w: 2 }, { id: 'prewar_spring_dress', w: 2 },
+    { id: 'road_leathers', w: 1.5 }, { id: 'merc_grunt_outfit', w: 1 }, { id: 'mechanic_jumpsuit', w: 1 }, { id: 'lab_coat', w: 1 },
+    { id: 'army_fatigues', w: 1 }, { id: 'conductor_uniform', w: 0.6 }, { id: 'doorman_uniform', w: 0.5 }, { id: 'prewar_formal', w: 0.5 },
+    { id: 'showgirl_costume', w: 0.2 }, { id: 'stockbroker_suit', w: 0.3 }, { id: 'radiation_suit', w: 0.4 },
+  ])] });
+  T('hats', { rolls: [R(1, 1, [
+    { id: 'fedora', w: 2 }, { id: 'newsboy_cap', w: 2 }, { id: 'baseball_cap', w: 2 }, { id: 'bowler_hat', w: 1 }, { id: 'top_hat', w: 0.6 },
+    { id: 'cowboy_hat', w: 0.6 }, { id: 'hard_hat', w: 1 }, { id: 'motorcycle_helmet', w: 0.6 }, { id: 'sunglasses', w: 1.5 },
+    { id: 'reading_glasses', w: 1.5 }, { id: 'bandana', w: 1 }, { id: 'gas_mask', w: 0.8 }, { id: 'liberty_crown', w: 0.3 },
+  ])] });
+  T('books', { rolls: [R(1, 1, [{ tag: 'skill_book', w: 1 }, { tag: 'magazine', w: 2 }, { id: 'prewar_book', w: 3 }, { id: 'ruined_book', w: 3 }])] });
+  T('magazines', { rolls: [R(1, 1, [{ tag: 'magazine' }])] });
+  T('armor_random', { rolls: [R(1, 1, [
+    { id: 'leather_armor', w: 3 }, { id: 'metal_armor', w: 1.5, minLevel: 3 }, { id: 'combat_armor', w: 1, minLevel: 6 },
+    { id: 'leather_armor_reinforced', w: 1, minLevel: 4 }, { id: 'recon_armor', w: 0.4, minLevel: 10 }, { id: 'riot_police_armor', w: 0.6, minLevel: 5 },
+    { id: 'metal_helmet', w: 1 }, { id: 'combat_helmet', w: 0.8, minLevel: 5 }, { id: 'army_helmet', w: 1 }, { id: 'riot_police_helmet', w: 0.5, minLevel: 5 },
+  ])] });
+
+  // ---------------------------------------------------------------
+  // CONTAINERS
+  // ---------------------------------------------------------------
+  T('ammo_box', { rolls: [
+    R(1, [1, 3], [{ cat: 'ammo', w: 1, n: [6, 20] }]),
+    R(0.25, 1, [{ cat: 'grenade', w: 3, n: [1, 2] }, { cat: 'mine', w: 1, n: [1, 1] }]),
+    R(0.08, 1, [{ cat: 'weapon', w: 1 }]),
+  ] });
+  T('weapon_crate', { rolls: [
+    R(0.8, 1, [{ cat: 'weapon', w: 1, cond: [0.4, 0.9] }]),
+    R(1, [1, 3], [{ cat: 'ammo', w: 1, n: [8, 24] }]),
+    R(0.35, 1, [{ cat: 'grenade', w: 1, n: [1, 3] }]),
+  ] });
+  T('first_aid', { rolls: [
+    R(0.85, [1, 2], [{ id: 'stimpak', w: 5 }, { id: 'radaway', w: 2 }, { id: 'rad_x', w: 2 }, { id: 'med_x', w: 1 }, { id: 'blood_pack', w: 1 }]),
+    R(0.15, 1, [{ id: 'doctors_bag', w: 1 }, { id: 'super_stimpak', w: 1, minLevel: 6 }, { id: 'fixer', w: 0.5 }]),
+    R(0.2, 1, [{ id: 'surgical_tubing', w: 1 }]),
+  ] });
+  T('medical_cabinet', { rolls: [R(1, 1, [{ table: 'first_aid' }]), R(0.4, 1, [{ table: 'chems' }])] });
+  T('doctors_bag', { rolls: [R(1, [2, 3], [{ table: 'medical' }]), R(0.3, 1, [{ table: 'chems' }])] });
+  T('fridge', { rolls: [
+    R(0.9, [1, 3], [{ table: 'food_prewar', w: 2 }, { table: 'drinks', w: 3 }]),
+    R(0.15, 1, [{ id: 'nuka_cola_ice_cold', w: 2 }, { id: 'milk_brahmin', w: 1 }, { id: 'nuka_cola_quantum', w: 0.4 }]),
+  ] });
+  T('cooler', { rolls: [
+    R(1, [1, 3], [{ table: 'drinks', w: 3 }, { id: 'nuka_cola_ice_cold', w: 2 }, { id: 'beer', w: 2 }]),
+    R(0.2, 1, [{ table: 'food_prewar' }]),
+  ] });
+  T('grocery_shelf', { rolls: [R(0.85, [1, 3], [{ table: 'food_prewar', w: 4 }, { table: 'drinks', w: 1 }, { id: 'abraxo_cleaner', w: 0.5 }])] });
+  T('desk', { rolls: [
+    R(0.6, [1, 2], [{ table: 'junk_office' }]),
+    R(0.35, 1, [{ caps: [3, 18] }]),
+    R(0.12, 1, [{ id: 'bobby_pin', n: [1, 3] }, { table: 'chems' }, { cat: 'ammo', n: [4, 10] }, { id: 'stimpak' }]),
+    R(0.04, 1, [{ tag: 'skill_book' }]),
+    R(0.1, 1, [{ tag: 'magazine' }]),
+  ] });
+  T('file_cabinet', { rolls: [
+    R(0.7, [1, 2], [{ table: 'junk_office' }]),
+    R(0.15, 1, [{ caps: [2, 12] }, { id: 'prewar_money', n: [1, 2] }]),
+    R(0.03, 1, [{ tag: 'skill_book' }]),
+    R(0.05, 1, [{ tag: 'magazine' }]),
+  ] });
+  T('safe', { rolls: [
+    R(1, 1, [{ caps: [25, 90] }]),
+    R(0.7, [1, 2], [{ table: 'junk_valuable' }]),
+    R(0.4, 1, [{ table: 'chems', w: 1 }, { table: 'medical', w: 1 }, { cat: 'ammo', w: 1, n: [10, 24] }]),
+    R(0.15, 1, [{ cat: 'weapon', w: 1, cond: [0.6, 1] }, { tag: 'skill_book', w: 1 }]),
+  ] });
+  T('wall_safe', { rolls: [R(1, 1, [{ table: 'safe' }])] });
+  T('locker', { rolls: [
+    R(0.6, 1, [{ table: 'apparel_common', w: 2 }, { table: 'hats', w: 1 }]),
+    R(0.35, 1, [{ cat: 'ammo', n: [5, 14] }]),
+    R(0.25, 1, [{ table: 'junk_common' }]),
+    R(0.15, 1, [{ id: 'stimpak' }, { table: 'chems' }]),
+    R(0.08, 1, [{ table: 'armor_random' }]),
+    R(0.08, 1, [{ tag: 'magazine' }]),
+  ] });
+  T('vault_locker', { rolls: [
+    R(0.5, 1, [{ id: 'vault120_jumpsuit', w: 3 }, { id: 'vault_lab_uniform', w: 1 }, { id: 'vault120_security_helmet', w: 0.5 }]),
+    R(0.6, [1, 2], [{ table: 'food_prewar', w: 1 }, { table: 'junk_household', w: 1 }, { id: 'nuka_cola', w: 1 }]),
+    R(0.25, 1, [{ id: 'stimpak', w: 2 }, { id: 'bobby_pin', n: [1, 3], w: 2 }, { id: 'rad_x', w: 1 }]),
+    R(0.2, 1, [{ caps: [2, 10] }]),
+  ] });
+  T('footlocker', { rolls: [
+    R(0.7, [1, 2], [{ table: 'junk_common', w: 2 }, { table: 'apparel_common', w: 1 }, { table: 'food_prewar', w: 1 }]),
+    R(0.4, 1, [{ cat: 'ammo', n: [5, 15] }]),
+    R(0.3, 1, [{ caps: [5, 25] }]),
+    R(0.15, 1, [{ table: 'medical' }]),
+    R(0.1, 1, [{ cat: 'weapon' }, { table: 'armor_random' }]),
+    R(0.08, 1, [{ tag: 'magazine' }]),
+  ] });
+  T('toolbox', { rolls: [
+    R(0.9, [1, 3], [{ id: 'scrap_metal', w: 3 }, { id: 'duct_tape', w: 2 }, { id: 'wonderglue', w: 1.5 }, { id: 'pilot_light', w: 1 },
+      { id: 'conductor', w: 1 }, { id: 'vacuum_tube', w: 1 }, { id: 'fission_battery', w: 0.6 }, { id: 'bobby_pin', w: 1, n: [1, 2] }]),
+    R(0.1, 1, [{ id: 'book_deans_electronics' }]),
+  ] });
+  T('workbench', { rolls: [R(1, [1, 2], [{ table: 'toolbox' }, { table: 'electronics' }])] });
+  T('dumpster', { rolls: [
+    R(0.8, [1, 3], [{ table: 'junk_common', w: 4 }, { table: 'food_prewar', w: 1 }, { id: 'dirty_water', w: 0.6 }]),
+    R(0.15, 1, [{ caps: [1, 6] }, { cat: 'ammo', n: [3, 8] }]),
+  ] });
+  T('trash_can', { rolls: [
+    R(0.6, [1, 2], [{ table: 'junk_common', w: 5 }, { id: 'potato_crisps', w: 0.5 }, { id: 'bodega_pretzel', w: 0.5 }]),
+    R(0.08, 1, [{ caps: [1, 5] }]),
+  ] });
+  T('mailbox', { rolls: [
+    R(0.6, 1, [{ id: 'prewar_money', w: 1 }, { id: 'stock_certificate', w: 1 }, { id: 'prewar_book', w: 1 }, { id: 'cigarettes', w: 0.5 }]),
+    R(0.14, 1, [{ caps: [2, 10] }, { tag: 'skill_book', w: 0.3 }, { tag: 'magazine', w: 0.8 }]),
+  ] });
+  T('mail_sack', { rolls: [R(1, [1, 3], [{ table: 'mailbox' }])] });
+  T('newspaper_box', { rolls: [R(0.3, 1, [{ caps: [1, 4] }, { id: 'prewar_money' }]), R(0.22, 1, [{ tag: 'magazine' }])] });
+  T('nuka_machine', { rolls: [
+    R(1, [1, 4], [{ id: 'nuka_cola', w: 8 }, { id: 'nuka_cola_ice_cold', w: 2 }, { id: 'nuka_cola_cherry', w: 1 }]),
+    R(0.1, 1, [{ id: 'nuka_cola_quantum' }]),
+    R(0.7, 1, [{ caps: [3, 14] }]),
+  ] });
+  T('cash_register', { rolls: [
+    R(1, 1, [{ caps: [6, 30] }]),
+    R(0.5, 1, [{ id: 'prewar_money', n: [1, 4] }]),
+  ] });
+  T('bottlecap_stash', { rolls: [R(1, 1, [{ caps: [30, 80] }]), R(0.3, 1, [{ id: 'sunset_star_cap' }])] });
+  T('dresser', { rolls: [
+    R(0.75, [1, 2], [{ table: 'apparel_common', w: 2 }, { table: 'hats', w: 1 }, { table: 'junk_household', w: 2 }]),
+    R(0.2, 1, [{ caps: [2, 15] }, { id: 'bobby_pin', n: [1, 2] }]),
+    R(0.08, 1, [{ table: 'chems' }]),
+    R(0.06, 1, [{ tag: 'magazine' }]),
+  ] });
+  T('cabinet', { rolls: [R(0.7, [1, 2], [{ table: 'junk_household', w: 3 }, { table: 'food_prewar', w: 2 }, { id: 'abraxo_cleaner', w: 1 }])] });
+  T('bookshelf', { rolls: [R(0.8, [1, 3], [{ id: 'prewar_book', w: 4 }, { id: 'ruined_book', w: 4 }]), R(0.08, 1, [{ tag: 'skill_book' }]), R(0.18, 1, [{ tag: 'magazine' }])] });
+  T('luggage', { rolls: [
+    R(0.9, [1, 3], [{ table: 'apparel_common', w: 3 }, { table: 'hats', w: 1 }, { table: 'junk_household', w: 1 }, { table: 'junk_valuable', w: 0.6 }]),
+    R(0.2, 1, [{ caps: [4, 20] }]),
+    R(0.12, 1, [{ tag: 'magazine' }]),
+  ] });
+  T('briefcase', { rolls: [R(1, [1, 2], [{ table: 'junk_office', w: 2 }, { id: 'prewar_money', n: [2, 5] }, { id: 'stock_certificate', n: [1, 3] }]), R(0.2, 1, [{ caps: [5, 30] }]), R(0.1, 1, [{ tag: 'magazine' }])] });
+  T('crate', { rolls: [
+    R(0.8, [1, 2], [{ table: 'junk_common', w: 3 }, { table: 'food_prewar', w: 2 }, { id: 'scrap_metal', w: 2 }, { table: 'drinks', w: 1 }]),
+    R(0.2, 1, [{ cat: 'ammo', n: [5, 12] }]),
+  ] });
+  T('raider_stash', { rolls: [
+    R(1, [1, 2], [{ cat: 'ammo', n: [8, 24] }]),
+    R(0.7, [1, 2], [{ table: 'chems' }]),
+    R(0.8, 1, [{ caps: [15, 60] }]),
+    R(0.35, 1, [{ cat: 'weapon', skill: ['guns', 'melee_weapons'] }, { cat: 'grenade', n: [1, 2] }]),
+    R(0.3, 1, [{ table: 'medical' }]),
+    R(0.3, 1, [{ id: 'raider_sadist_armor' }, { id: 'raider_badlands_armor' }, { id: 'raider_blastmaster_armor' }, { id: 'raider_painspike_armor' }]),
+  ] });
+  T('bos_crate', { rolls: [
+    R(1, [1, 3], [{ cat: 'ammo', n: [10, 24] }]),
+    R(0.6, [1, 2], [{ id: 'stimpak', w: 3 }, { id: 'radaway', w: 2 }, { id: 'rad_x', w: 2 }, { id: 'fission_battery', w: 1 }]),
+    R(0.2, 1, [{ cat: 'weapon', skill: 'energy_weapons' }, { id: 'holotag_bos' }]),
+  ] });
+  T('enclave_crate', { rolls: [
+    R(1, [1, 3], [{ cat: 'ammo', n: [10, 30] }]),
+    R(0.7, [1, 2], [{ id: 'stimpak', w: 3 }, { id: 'super_stimpak', w: 1 }, { id: 'rad_x', w: 1 }, { id: 'radaway', w: 1 }]),
+    R(0.25, 1, [{ cat: 'weapon', skill: 'energy_weapons', cond: [0.6, 1] }, { cat: 'grenade', n: [1, 3] }]),
+  ] });
+  T('skeleton', { rolls: [
+    R(0.5, 1, [{ table: 'junk_common' }]),
+    R(0.2, 1, [{ caps: [1, 12] }, { id: 'bobby_pin', n: [1, 2] }, { cat: 'ammo', n: [3, 8] }]),
+    R(0.06, 1, [{ id: 'stimpak' }, { table: 'chems' }, { tag: 'skill_book', w: 0.2 }]),
+  ] });
+  T('corpse', { rolls: [R(1, 1, [{ table: 'skeleton' }])] });
+  T('duffle_bag', { rolls: [
+    R(0.8, [1, 2], [{ cat: 'ammo', n: [6, 16] }, { table: 'food_prewar' }, { table: 'drinks' }, { table: 'apparel_common', w: 0.6 }]),
+    R(0.5, 1, [{ caps: [3, 20] }]),
+    R(0.25, 1, [{ id: 'stimpak' }, { table: 'chems' }, { id: 'bobby_pin', n: [1, 3] }]),
+  ] });
+  T('generic', { rolls: [
+    R(0.8, [1, 2], [{ table: 'junk_common', w: 3 }, { table: 'food_prewar', w: 1 }, { table: 'drinks', w: 1 }]),
+    R(0.35, 1, [{ caps: [1, 10] }, { id: 'bobby_pin', n: [1, 2] }]),
+    R(0.1, 1, [{ cat: 'ammo', n: [4, 10] }, { id: 'stimpak' }]),
+  ] });
+  // aliases used by other modules
+  const ALIAS = { trash: 'trash_can', register: 'cash_register', ammo: 'ammo_box', medkit: 'first_aid', medical_box: 'first_aid', wall_locker: 'locker',
+    suitcase: 'luggage', cabinet_kitchen: 'cabinet', filing_cabinet: 'file_cabinet', strongbox: 'safe', weapons_locker: 'weapon_crate', gun_case: 'weapon_crate',
+    feral: 'feral_ghoul', mutant: 'super_mutant', behemoth: 'super_mutant_behemoth', robots: 'robot', creatures: 'creature', settlers: 'settler',
+    ghouls: 'ghoul', raiders: 'raider', bos: 'brotherhood', paladin: 'brotherhood_paladin', human: 'settler' };
+  for (const a in ALIAS) T(a, { rolls: [R(1, 1, [{ table: ALIAS[a] }])] });
+
+  // ---------------------------------------------------------------
+  // ACTORS (corpse loot; worn armour/weapon are added separately)
+  // ---------------------------------------------------------------
+  T('raider', { rolls: [
+    R(0.65, 1, [{ caps: [3, 25] }]),
+    R(0.75, 1, [{ cat: 'ammo', n: [5, 16], forWeapons: true }]),
+    R(0.3, 1, [{ table: 'chems' }]),
+    R(0.15, 1, [{ id: 'stimpak', w: 3 }, { cat: 'grenade', w: 1, n: [1, 1] }]),
+    R(0.35, 1, [{ table: 'junk_common' }, { id: 'raider_tags', w: 0.4 }, { id: 'beer', w: 0.6 }, { id: 'whiskey', w: 0.4 }]),
+    R(0.08, 1, [{ id: 'bobby_pin', n: [1, 3] }, { id: 'cigarettes' }]),
+  ] });
+  T('raider_boss', { rolls: [R(1, 1, [{ table: 'raider' }]), R(1, 1, [{ caps: [30, 90] }]), R(0.6, 1, [{ table: 'chems' }]), R(0.5, 1, [{ id: 'stimpak', n: [1, 2] }]), R(0.2, 1, [{ tag: 'skill_book' }])] });
+  T('super_mutant', { rolls: [
+    R(0.7, 1, [{ cat: 'ammo', n: [6, 18], forWeapons: true }]),
+    R(0.35, 1, [{ caps: [2, 20] }]),
+    R(0.2, 1, [{ table: 'junk_common' }, { id: 'mutant_hound_meat', w: 0.4 }, { id: 'teddy_bear', w: 0.2 }]),
+    R(0.12, 1, [{ id: 'stimpak' }, { cat: 'grenade', n: [1, 2] }]),
+  ] });
+  T('super_mutant_behemoth', { rolls: [R(1, [2, 3], [{ table: 'super_mutant' }]), R(1, 1, [{ caps: [40, 120] }]), R(0.5, 1, [{ tag: 'skill_book' }, { id: 'super_stimpak' }])] });
+  T('feral_ghoul', { rolls: [
+    R(0.18, 1, [{ caps: [1, 8] }]),
+    R(0.25, 1, [{ table: 'junk_common' }, { id: 'ghoul_wear', w: 0.4 }, { id: 'cigarettes', w: 0.3 }]),
+    R(0.05, 1, [{ id: 'bobby_pin' }, { id: 'prewar_money' }]),
+  ] });
+  T('glowing_one', { rolls: [R(1, 1, [{ table: 'feral_ghoul' }]), R(0.5, 1, [{ id: 'glowing_fungus' }, { id: 'radaway' }]), R(0.4, 1, [{ caps: [5, 25] }])] });
+  T('ghoul', { rolls: [R(0.6, 1, [{ caps: [3, 20] }]), R(0.4, 1, [{ table: 'junk_common' }, { table: 'chems', w: 0.5 }, { id: 'radaway', w: 0.5 }])] });
+  T('robot', { rolls: [
+    R(0.7, 1, [{ id: 'scrap_electronics', w: 3 }, { id: 'vacuum_tube', w: 2 }, { id: 'conductor', w: 2 }, { id: 'scrap_metal', w: 3 }]),
+    R(0.35, 1, [{ id: 'fission_battery', w: 2 }, { id: 'sensor_module', w: 1 }]),
+    R(0.3, 1, [{ cat: 'ammo', n: [8, 20] }]),
+  ] });
+  T('protectron', { rolls: [R(1, 1, [{ table: 'robot' }]), R(0.4, 1, [{ id: 'fission_battery' }])] });
+  T('mister_handy', { rolls: [R(1, 1, [{ table: 'robot' }]), R(0.4, 1, [{ id: 'pilot_light' }, { id: 'sensor_module' }])] });
+  T('eyebot', { rolls: [R(1, [1, 2], [{ id: 'scrap_electronics', w: 2 }, { id: 'sensor_module', w: 1 }, { id: 'vacuum_tube', w: 1 }]), R(0.5, 1, [{ id: 'fission_battery' }])] });
+  T('sentry_bot', { rolls: [R(1, [2, 3], [{ table: 'robot' }]), R(0.8, 1, [{ id: 'fission_battery', n: [1, 2] }])] });
+  T('enclave', { rolls: [
+    R(0.9, [1, 2], [{ cat: 'ammo', n: [10, 30], forWeapons: true }]),
+    R(0.5, 1, [{ id: 'stimpak', w: 3 }, { id: 'super_stimpak', w: 1 }, { id: 'med_x', w: 1 }]),
+    R(0.4, 1, [{ caps: [10, 40] }]),
+    R(0.15, 1, [{ cat: 'grenade', n: [1, 2] }]),
+  ] });
+  T('enclave_soldier', { rolls: [R(1, 1, [{ table: 'enclave' }])] });
+  T('brotherhood', { rolls: [
+    R(0.9, [1, 2], [{ cat: 'ammo', n: [10, 24], forWeapons: true }]),
+    R(0.5, 1, [{ id: 'stimpak', w: 3 }, { id: 'radaway', w: 1 }, { id: 'rad_x', w: 1 }]),
+    R(0.6, 1, [{ id: 'holotag_bos' }]),
+    R(0.3, 1, [{ caps: [5, 25] }]),
+  ] });
+  T('brotherhood_paladin', { rolls: [R(1, 1, [{ table: 'brotherhood' }])] });
+  T('settler', { rolls: [R(0.6, 1, [{ caps: [2, 18] }]), R(0.5, 1, [{ table: 'junk_common' }, { table: 'food_prewar' }, { table: 'drinks' }]), R(0.15, 1, [{ id: 'stimpak' }, { cat: 'ammo', n: [4, 10] }])] });
+  T('merchant', { rolls: [R(1, 1, [{ caps: [40, 150] }]), R(1, [2, 4], [{ table: 'medical' }, { table: 'food_prewar' }, { cat: 'ammo' }, { table: 'junk_valuable' }])] });
+  T('caravan', { rolls: [R(1, 1, [{ table: 'merchant' }]), R(0.6, 1, [{ cat: 'weapon' }])] });
+
+  // creatures
+  T('radroach', { rolls: [R(0.6, 1, [{ id: 'radroach_meat' }])] });
+  T('molerat', { rolls: [R(0.75, 1, [{ id: 'molerat_meat' }])] });
+  T('bloatfly', { rolls: [R(0.6, 1, [{ id: 'bloatfly_meat' }])] });
+  T('mirelurk', { rolls: [R(0.85, 1, [{ id: 'mirelurk_meat', n: [1, 2] }])] });
+  T('mirelurk_queen', { rolls: [R(1, 1, [{ id: 'mirelurk_meat', n: [3, 5] }]), R(0.6, 1, [{ caps: [20, 60] }, { tag: 'skill_book' }])] });
+  T('deathclaw', { rolls: [R(1, 1, [{ id: 'deathclaw_meat' }]), R(0.2, 1, [{ id: 'deathclaw_steak' }])] });
+  T('dog', { rolls: [R(0.6, 1, [{ id: 'dog_meat' }])] });
+  T('mutant_hound', { rolls: [R(0.6, 1, [{ id: 'mutant_hound_meat' }])] });
+  T('creature', { rolls: [R(0.3, 1, [{ table: 'junk_common' }])] });
+
+  // ---------------------------------------------------------------
+  // MERCHANT STOCK (quests may use these for actor.merchant.stock)
+  // ---------------------------------------------------------------
+  T('merchant_general', { rolls: [
+    R(1, [4, 7], [{ table: 'food_prewar', w: 2 }, { table: 'drinks', w: 2 }, { table: 'medical', w: 2 }, { table: 'chems', w: 1 },
+      { table: 'apparel_common', w: 1 }, { table: 'hats', w: 1 }, { table: 'electronics', w: 1 }]),
+    R(1, [2, 4], [{ cat: 'ammo', n: [15, 40] }]),
+    R(0.8, [1, 2], [{ cat: 'weapon', cond: [0.5, 0.9] }]),
+    R(0.6, 1, [{ table: 'armor_random' }]),
+    R(0.3, 1, [{ tag: 'skill_book' }]),
+    R(0.55, [1, 2], [{ tag: 'magazine' }]),
+    R(1, 1, [{ id: 'bobby_pin', n: [3, 8] }]),
+  ] });
+  T('merchant_doctor', { rolls: [
+    R(1, 1, [{ id: 'stimpak', n: [4, 8] }]), R(1, 1, [{ id: 'radaway', n: [2, 5] }]), R(1, 1, [{ id: 'rad_x', n: [2, 5] }]),
+    R(0.7, 1, [{ id: 'doctors_bag', n: [1, 2] }]), R(0.5, 1, [{ id: 'super_stimpak', n: [1, 2] }]), R(0.8, [1, 3], [{ table: 'chems' }]),
+    R(0.5, 1, [{ id: 'fixer', n: [1, 2] }]), R(0.6, 1, [{ id: 'purified_water', n: [2, 5] }]),
+  ] });
+  T('merchant_arms', { rolls: [
+    R(1, [2, 4], [{ cat: 'weapon', cond: [0.6, 1] }]),
+    R(1, [3, 6], [{ cat: 'ammo', n: [20, 60] }]),
+    R(0.8, [1, 2], [{ cat: 'grenade', n: [2, 5] }]),
+    R(0.7, [1, 2], [{ table: 'armor_random' }]),
+  ] });
+  T('merchant_tech', { rolls: [
+    R(1, [2, 4], [{ table: 'electronics' }]),
+    R(0.9, [1, 2], [{ id: 'ammo_energy_cell', w: 3, n: [20, 50] }, { id: 'ammo_mf_cell', w: 2, n: [15, 40] }, { id: 'ammo_ecp', w: 0.6, n: [10, 24], minLevel: 8 }]),
+    R(0.45, 1, [{ cat: 'weapon', skill: 'energy_weapons', cond: [0.55, 0.95] }]),
+    R(0.35, 1, [{ id: 'stealth_boy', w: 1 }, { id: 'fission_battery', w: 2, n: [1, 3] }]),
+    R(0.25, 1, [{ id: 'magazine_science', w: 1 }, { id: 'magazine_energy_weapons', w: 1 }, { id: 'magazine_repair', w: 1 }]),
+  ] });
+  T('merchant_food', { rolls: [
+    R(1, [4, 8], [{ table: 'food_prewar', w: 2 }, { table: 'drinks', w: 2 }, { id: 'mirelurk_cake', w: 1 }, { id: 'brahmin_steak', w: 1 },
+      { id: 'coney_dog', w: 1 }, { id: 'mirelurk_chowder', w: 1 }, { id: 'mutfruit', w: 1 }, { id: 'purified_water', w: 1 }]),
+  ] });
+})();
+
