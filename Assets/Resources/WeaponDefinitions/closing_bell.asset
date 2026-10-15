@@ -1,0 +1,67 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: closing_bell
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.013468993, y: -0.025848754, z: -0.059564255, w: 0.99779886}
+  rightPose: trigger
+  leftPose: grip
+  shotMotions:
+  - part: hammer
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 42.971836, y: -0, z: 0}
+    duration: 0.14
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 20.053522, y: -0, z: 0}
+    duration: 0.09
+  id: closing_bell
+  displayName: The Closing Bell
+  description: A gold-inlaid scoped .44 that once belonged to a Wall Street floor
+    trader. Every shot rings the market shut.
+  unique: 1
+  weight: 4
+  value: 1200
+  stats:
+    damage: 46
+    rof: 2
+    reloadTime: 2.8
+    range: 180
+    spread: 0.018
+    adsSpread: 0.002
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 0
+    kick: 2.1
+    adsFov: 0.82
+    magSize: 6
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: ammo_44
+    projectile: hitscan
+    reloadType: revolver
+    damageType: ballistic
+    viewmodel: magnum_44
+    sound: gun_magnum
+    skill: guns
+  prefab: {fileID: 831197260324655774, guid: bce48946e1201b3458111e25c60b31b8, type: 3}
+  muzzle: {x: 0, y: 0.066, z: 0.232}
+  rightGrip: {x: 0.001, y: -0.004, z: -0.004}
+  leftGrip: {x: -0.016, y: -0.02, z: 0.01}
+  sight: {x: 0, y: 0.118, z: -0.06}
+  rightRotation: {x: -0.040449105, y: 0.28654382, z: -0.64644617, w: 0.7059489}
+  leftRotation: {x: 0.31086767, y: 0.06720812, z: 0.7039056, w: 0.63510734}
+  hasLeftGrip: 1
+  oneHanded: 1
+  hip: {x: 0.122, y: -0.152, z: 0.35}
+  viewScale: 1

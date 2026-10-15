@@ -1,0 +1,64 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: scrapshot_launcher
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.019105617, y: -0.035474535, z: -0.024277499, w: 0.99889296}
+  rightPose: trigger
+  leftPose: grip
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: scrapshot_launcher
+  displayName: Scrapshot Launcher
+  description: A leaf-blower motor, a pressure tank and a traffic cone, bolted into
+    a cannon that fires whatever you feed it. Tin cans, teddy bears, the neighbour's
+    gnome.
+  unique: 0
+  weight: 10
+  value: 1100
+  stats:
+    damage: 34
+    rof: 1.1
+    reloadTime: 1.1
+    range: 90
+    spread: 0.02
+    adsSpread: 0.012
+    explosionRadius: 0
+    projectileSpeed: 34
+    meleeRange: 0
+    kick: 1.4
+    adsFov: 0.82
+    magSize: 1
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: tin_can
+    projectile: hitscan
+    reloadType: single
+    damageType: ballistic
+    viewmodel: scrapshot_launcher
+    sound: gun_missile
+    skill: guns
+  prefab: {fileID: 4175919976104095951, guid: bfbeddd51d1b45042b27ff36fd843515, type: 3}
+  muzzle: {x: 0, y: 0.105, z: 0.56}
+  rightGrip: {x: 0.001, y: -0.004, z: -0.006}
+  leftGrip: {x: 0, y: -0.02, z: 0.225}
+  sight: {x: 0, y: 0.175, z: -0.02}
+  rightRotation: {x: -0.06456587, y: 0.26977354, z: -0.6536224, w: 0.7041529}
+  leftRotation: {x: -0.7043145, y: 0.6668874, z: -0.23507695, w: 0.06277839}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.175, y: -0.255, z: 0.47}
+  viewScale: 0.78

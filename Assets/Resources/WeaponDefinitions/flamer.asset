@@ -1,0 +1,62 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: flamer
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.014593538, y: -0.020292327, z: -0.01969251, w: 0.99949366}
+  rightPose: trigger
+  leftPose: grip
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: flamer
+  displayName: Flamer
+  description: A pressurised fuel tank, a pilot light and a lawyer's nightmare.
+  unique: 0
+  weight: 15
+  value: 500
+  stats:
+    damage: 6
+    rof: 20
+    reloadTime: 3
+    range: 14
+    spread: 0.06
+    adsSpread: 0.05
+    explosionRadius: 0
+    projectileSpeed: 18
+    meleeRange: 0
+    kick: 0.15
+    adsFov: 0.82
+    magSize: 60
+    pellets: 1
+    automatic: 1
+    twoHanded: 1
+    ammo: ammo_flamer_fuel
+    projectile: flame
+    reloadType: cell
+    damageType: fire
+    viewmodel: flamer
+    sound: gun_flamer
+    skill: energy_weapons
+  prefab: {fileID: 644878730522808593, guid: 11a007ee7c7037e4cbf430e69db01495, type: 3}
+  muzzle: {x: 0, y: 0.085, z: 0.45}
+  rightGrip: {x: 0.001, y: -0.004, z: -0.006}
+  leftGrip: {x: -0.001, y: 0.025, z: 0.2}
+  sight: {x: 0, y: 0.135, z: -0.03}
+  rightRotation: {x: -0.06456587, y: 0.26977354, z: -0.6536224, w: 0.7041529}
+  leftRotation: {x: -0.13497865, y: -0.20405187, z: 0.67702496, w: 0.6941043}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.16, y: -0.225, z: 0.38}
+  viewScale: 0.9

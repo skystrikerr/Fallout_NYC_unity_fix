@@ -1,0 +1,71 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: pistol_10mm
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.013468993, y: -0.025848754, z: -0.059564255, w: 0.99779886}
+  rightPose: trigger
+  leftPose: grip
+  shotMotions:
+  - part: slide
+    position: {x: 0, y: 0, z: -0.028}
+    rotation: {x: 0, y: 0, z: 0}
+    duration: 0.07
+  - part: hammer
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 51.5662, y: -0, z: 0}
+    duration: 0.08
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: pistol_10mm
+  displayName: 10mm Pistol
+  description: N99-pattern service sidearm. Blocky, reliable, and every Vault Security
+    officer's best friend.
+  unique: 0
+  weight: 3
+  value: 225
+  stats:
+    damage: 11
+    rof: 5
+    reloadTime: 1.7
+    range: 110
+    spread: 0.022
+    adsSpread: 0.007
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 0
+    kick: 1
+    adsFov: 0.82
+    magSize: 12
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: ammo_10mm
+    projectile: hitscan
+    reloadType: mag
+    damageType: ballistic
+    viewmodel: pistol_10mm
+    sound: gun_pistol
+    skill: guns
+  prefab: {fileID: 3074575459401235384, guid: cc0fb5156b9c94143aeaf281c6d36358, type: 3}
+  muzzle: {x: 0, y: 0.07, z: 0.175}
+  rightGrip: {x: 0.001, y: -0.004, z: -0.006}
+  leftGrip: {x: -0.016, y: -0.018, z: 0.01}
+  sight: {x: 0, y: 0.0963, z: -0.034}
+  rightRotation: {x: -0.07246879, y: 0.26403052, z: -0.6559633, w: 0.70338345}
+  leftRotation: {x: 0.28664637, y: 0.09684657, z: 0.70044327, w: 0.6464007}
+  hasLeftGrip: 1
+  oneHanded: 1
+  hip: {x: 0.122, y: -0.148, z: 0.35}
+  viewScale: 1

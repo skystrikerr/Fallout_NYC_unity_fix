@@ -1,0 +1,62 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: missile_launcher
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.009797361, y: -0.020096645, z: -0.009797361, w: 0.99970204}
+  rightPose: trigger
+  leftPose: grip
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: missile_launcher
+  displayName: Missile Launcher
+  description: Shoulder-fired, fin-stabilised, deeply cathartic.
+  unique: 0
+  weight: 20
+  value: 800
+  stats:
+    damage: 150
+    rof: 0.6
+    reloadTime: 3.2
+    range: 400
+    spread: 0.01
+    adsSpread: 0.003
+    explosionRadius: 5.5
+    projectileSpeed: 45
+    meleeRange: 0
+    kick: 1.6
+    adsFov: 0.7
+    magSize: 1
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: ammo_missile
+    projectile: missile
+    reloadType: single
+    damageType: explosive
+    viewmodel: missile_launcher
+    sound: gun_missile
+    skill: explosives
+  prefab: {fileID: 2487726877297782950, guid: f194b410e721cc44e943f76a9c3e1016, type: 3}
+  muzzle: {x: 0, y: 0.13, z: 0.72}
+  rightGrip: {x: 0.001, y: -0.004, z: -0.006}
+  leftGrip: {x: -0.001, y: 0.045, z: 0.3}
+  sight: {x: 0, y: 0.23, z: -0.05}
+  rightRotation: {x: -0.06456587, y: 0.26977354, z: -0.6536224, w: 0.7041529}
+  leftRotation: {x: -0.13497865, y: -0.20405187, z: 0.67702496, w: 0.6941043}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.21, y: -0.21, z: 0.4}
+  viewScale: 0.9

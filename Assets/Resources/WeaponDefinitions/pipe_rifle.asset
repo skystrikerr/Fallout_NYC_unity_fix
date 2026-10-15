@@ -1,0 +1,62 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: pipe_rifle
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.009747089, y: -0.012696518, z: -0.019871136, w: 0.9996744}
+  rightPose: trigger
+  leftPose: support
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: pipe_rifle
+  displayName: Pipe Rifle
+  description: A plumbing project that shoots. Duct tape, a door hinge and optimism.
+  unique: 0
+  weight: 5
+  value: 45
+  stats:
+    damage: 14
+    rof: 1.4
+    reloadTime: 1.5
+    range: 110
+    spread: 0.04
+    adsSpread: 0.014
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 0
+    kick: 1
+    adsFov: 0.82
+    magSize: 1
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: ammo_32
+    projectile: hitscan
+    reloadType: single
+    damageType: ballistic
+    viewmodel: pipe_rifle
+    sound: gun_pipe
+    skill: guns
+  prefab: {fileID: 228163499207943834, guid: 46c4a1b10c4569541bf267330f1fe4e0, type: 3}
+  muzzle: {x: 0, y: 0.07, z: 0.505}
+  rightGrip: {x: 0.001, y: -0.01, z: -0.01}
+  leftGrip: {x: 0, y: 0.07, z: 0.25}
+  sight: {x: 0, y: 0.101, z: -0}
+  rightRotation: {x: 0.018092992, y: 0.32301596, z: -0.6290156, w: 0.70687526}
+  leftRotation: {x: 0.6963068, y: 0.12311304, z: 0.6963068, w: -0.12311304}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.165, y: -0.205, z: 0.36}
+  viewScale: 0.87

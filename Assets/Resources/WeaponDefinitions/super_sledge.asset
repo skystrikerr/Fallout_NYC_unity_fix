@@ -1,0 +1,58 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: super_sledge
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: 0.2825646, y: -0.031047184, z: -0.42869934, w: 0.85756063}
+  rightPose: grip
+  leftPose: grip
+  shotMotions: []
+  id: super_sledge
+  displayName: Super Sledge
+  description: A rocket-assisted sledgehammer. Kinetic energy, delivered.
+  unique: 0
+  weight: 20
+  value: 1800
+  stats:
+    damage: 40
+    rof: 0.8
+    reloadTime: 2
+    range: 150
+    spread: 0.03
+    adsSpread: 0.008
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 2.8
+    kick: 1
+    adsFov: 0.82
+    magSize: 0
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: 
+    projectile: hitscan
+    reloadType: melee
+    damageType: ballistic
+    viewmodel: super_sledge
+    sound: melee_swing
+    skill: melee_weapons
+  prefab: {fileID: 4801291324331037502, guid: 9be4d0243e4123745a8e64862009d49f, type: 3}
+  muzzle: {x: 0, y: 0.68, z: 0.13}
+  rightGrip: {x: 0, y: 0.02, z: -0}
+  leftGrip: {x: 0, y: -0.1, z: -0}
+  sight: {x: 0, y: 0, z: 0}
+  rightRotation: {x: -0.017661123, y: 0.017661123, z: -0.7068862, w: 0.7068862}
+  leftRotation: {x: -0.017661123, y: -0.017661123, z: 0.7068862, w: 0.7068862}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.06, y: -0.1, z: 0.42}
+  viewScale: 1

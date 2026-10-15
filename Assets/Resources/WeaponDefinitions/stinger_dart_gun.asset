@@ -1,0 +1,64 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: stinger_dart_gun
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: 0, y: -0.039989337, z: 0, w: 0.9992001}
+  rightPose: trigger
+  leftPose: support
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: stinger_dart_gun
+  displayName: Stinger Dart Gun
+  description: A paint-marker pistol, a toy car's spring motor and a length of surgical
+    tubing. Its venom darts cripple legs, which in the Wasteland is the same thing
+    as winning.
+  unique: 0
+  weight: 3
+  value: 700
+  stats:
+    damage: 6
+    rof: 1.5
+    reloadTime: 1.2
+    range: 70
+    spread: 0.012
+    adsSpread: 0.004
+    explosionRadius: 0
+    projectileSpeed: 60
+    meleeRange: 0
+    kick: 0.5
+    adsFov: 0.82
+    magSize: 1
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: ammo_dart
+    projectile: hitscan
+    reloadType: single
+    damageType: ballistic
+    viewmodel: stinger_dart_gun
+    sound: gun_bb
+    skill: guns
+  prefab: {fileID: 8976886565391839262, guid: 0214301a5382e3c4d8678be82a2d12c5, type: 3}
+  muzzle: {x: 0, y: 0.074, z: 0.335}
+  rightGrip: {x: 0.001, y: -0.004, z: -0.006}
+  leftGrip: {x: 0, y: 0.032, z: 0.19}
+  sight: {x: 0, y: 0.098, z: -0.02}
+  rightRotation: {x: -0.07246879, y: 0.26403052, z: -0.6559633, w: 0.70338345}
+  leftRotation: {x: 0.7035742, y: 0.07059289, z: 0.7035742, w: -0.07059289}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.13, y: -0.15, z: 0.36}
+  viewScale: 0.95

@@ -1,0 +1,68 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: spikedriver
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.009747089, y: -0.012696518, z: -0.019871136, w: 0.9996744}
+  rightPose: trigger
+  leftPose: support
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  - part: valve
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: -40.107044, y: -0, z: 0}
+    duration: 0.18
+  id: spikedriver
+  displayName: Spikedriver
+  description: A steam-pressure rifle built around a subway brake cylinder. Fires
+    railway spikes, sounds a whistle when the boiler peaks, and has absolutely never
+    been safety tested.
+  unique: 0
+  weight: 9
+  value: 1400
+  stats:
+    damage: 62
+    rof: 0.9
+    reloadTime: 2.9
+    range: 220
+    spread: 0.012
+    adsSpread: 0.003
+    explosionRadius: 0
+    projectileSpeed: 110
+    meleeRange: 0
+    kick: 1.8
+    adsFov: 0.82
+    magSize: 10
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: ammo_rail_spike
+    projectile: hitscan
+    reloadType: mag
+    damageType: ballistic
+    viewmodel: spikedriver
+    sound: gun_hunting
+    skill: guns
+  prefab: {fileID: 391995552784935270, guid: c978bc450d433f245bb6d7599236f5c3, type: 3}
+  muzzle: {x: 0, y: 0.078, z: 0.645}
+  rightGrip: {x: 0.001, y: -0.012, z: -0.012}
+  leftGrip: {x: 0, y: -0.002, z: 0.29}
+  sight: {x: 0, y: 0.11, z: -0}
+  rightRotation: {x: 0.03971938, y: 0.3351504, z: -0.6226349, w: 0.7059904}
+  leftRotation: {x: 0.6991667, y: 0.105668716, z: 0.6991667, w: -0.105668716}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.165, y: -0.205, z: 0.36}
+  viewScale: 0.87

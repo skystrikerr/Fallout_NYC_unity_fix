@@ -4,7 +4,7 @@ using UnityEngine;
 namespace FalloutPort {
 public class PortGame : MonoBehaviour {
  public PortMenu menu;
- void Awake(){if(!GetComponent<PortSurvival>())gameObject.AddComponent<PortSurvival>();if(!GetComponent<PortCombat>())gameObject.AddComponent<PortCombat>();menu=GetComponent<PortMenu>();if(!menu)menu=gameObject.AddComponent<PortMenu>();}
+ void Awake(){if(!GetComponent<PortLoadout>())gameObject.AddComponent<PortLoadout>();if(!GetComponent<PortSurvival>())gameObject.AddComponent<PortSurvival>();if(!GetComponent<PortCombat>())gameObject.AddComponent<PortCombat>();menu=GetComponent<PortMenu>();if(!menu)menu=gameObject.AddComponent<PortMenu>();}
  public PortPlayer player;public PortDoor mainDoor;public GameObject[] roaches;public PortInteractable[] interactions;
  public int stage,kills,ammo=12,reserve=48;public bool hasPistol,holstered=true,paused,dialogueOpen,journal;
  public string speaker,line;public PortInteractable current;public float nextShot,reloadAt;public string notice="Welcome to Vault 120. Follow the corridor to the atrium.";
@@ -13,7 +13,7 @@ public class PortGame : MonoBehaviour {
  public string Objective {get{return objectives[Mathf.Clamp(stage,0,7)]+(stage==2?" ("+kills+"/3)":"");}}
  public bool GrantStage(int expected,int next){if(stage!=expected)return false;stage=next;Sound("quest");return true;}
  void Start(){audioSource=gameObject.AddComponent<AudioSource>();audioSource.volume=.35f;var pistol=Resources.Load<AudioClip>("FalloutAudio/Effects/pistolsound1");if(pistol)clips["shot"]=pistol;if(!GetComponent<PortSoundtrack>())gameObject.AddComponent<PortSoundtrack>();var hum=gameObject.AddComponent<AudioSource>();hum.clip=MakeClip("hum",3);hum.volume=.055f;hum.loop=true;hum.Play();foreach(var r in roaches)r.SetActive(stage==2);}
- void Update(){if(reloadAt>0&&Time.time>=reloadAt){int n=Mathf.Min(12-ammo,reserve);ammo+=n;reserve-=n;reloadAt=0;} }
+ void Update(){if(reloadAt>0&&Time.time>=reloadAt){int n=Mathf.Min(GetComponent<PortLoadout>().Magazine-ammo,reserve);ammo+=n;reserve-=n;reloadAt=0;} }
  public void TogglePause(){if(menu){if(dialogueOpen){CloseDialogue();return;}if(menu.Visible)menu.Back();else menu.PauseMenu();return;}if(dialogueOpen){CloseDialogue();return;}paused=!paused;Time.timeScale=paused?0:1;Cursor.lockState=paused?CursorLockMode.None:CursorLockMode.Locked;Cursor.visible=paused;}
  void OnDisable(){Time.timeScale=1;}
  public void FindInteraction(){current=null;float nearest=3.1f;foreach(var item in interactions){if(!item)continue;Vector3 eye=item.transform.position+Vector3.up;Vector3 d=eye-player.view.transform.position;float dist=d.magnitude;if(dist>nearest||Vector3.Dot(d.normalized,player.view.transform.forward)<.6f)continue;if(Physics.Linecast(player.view.transform.position,eye,out RaycastHit hit)&&hit.collider.GetComponentInParent<PortInteractable>()!=item)continue;nearest=dist;current=item;}}
@@ -42,9 +42,8 @@ public class PortGame : MonoBehaviour {
  }
  public void CloseDialogue(){dialogueOpen=false;Time.timeScale=1;Cursor.lockState=CursorLockMode.Locked;Cursor.visible=false;}
  public void RoachKilled(){if(stage!=2)return;kills=Mathf.Min(kills+1,3);if(kills==3){GrantStage(2,3);notice="Pest control complete. Search Zeke's locker in your room.";}}
- public void Fire(){if(!hasPistol||holstered||dialogueOpen||paused||reloadAt>0||Time.time<nextShot)return;nextShot=Time.time+.23f;if(ammo==0){Sound("ui");return;}ammo--;Sound("shot");if(player.weapon)player.weapon.localPosition-=Vector3.forward*.08f;GetComponent<PortCombat>().Shot();}
-
- public void Reload(){if(paused||dialogueOpen||holstered||!hasPistol||ammo==12||reserve==0||reloadAt>0)return;reloadAt=Time.time+1.1f;Sound("reload");}
+ public void Fire(){GetComponent<PortLoadout>().Shoot();}
+ public void Reload(){if(paused||dialogueOpen||holstered||!hasPistol||ammo==GetComponent<PortLoadout>().Magazine||reserve==0||reloadAt>0)return;reloadAt=Time.time+GetComponent<PortLoadout>().ReloadDuration;Sound("reload");}
  public void Sound(string id){if(!audioSource)return;if(!clips.ContainsKey(id))clips[id]=MakeClip(id,id=="shot"?.24f:id=="door"?1.5f:.18f);audioSource.PlayOneShot(clips[id],id=="step"?.28f:1);}
  AudioClip MakeClip(string id,float duration){int rate=22050,n=(int)(rate*duration);float[] data=new float[n];var rand=new System.Random(19);for(int i=0;i<n;i++){float t=(float)i/rate,e=Mathf.Exp(-t*(id=="shot"?24:18));float noise=(float)rand.NextDouble()*2-1;data[i]=id=="hum"?.3f*Mathf.Sin(t*2*Mathf.PI*60)+noise*.025f:id=="shot"?(noise*.8f+Mathf.Sin(t*380)*.2f)*e:id=="step"?noise*e*.5f:id=="door"?noise*.3f*Mathf.Sin(Mathf.PI*t/duration):Mathf.Sin(t*2*Mathf.PI*(id=="quest"?660:440))*e*.4f;}var clip=AudioClip.Create("Vault_"+id,n,1,rate,false);clip.SetData(data,0);return clip;}
  void OnGUI(){
@@ -54,7 +53,7 @@ public class PortGame : MonoBehaviour {
   GUI.Box(new Rect(20,18,620,92),"");GUI.Label(new Rect(36,27,600,30),"LEASE ON LIFE",title);GUI.Label(new Rect(36,61,595,45),Objective,body);
   if(stage<7&&!dialogueOpen){string id=stage==0||stage==4?"overseer":stage==1?"doyle":stage==3?"locker":stage==5?"terminal":"exit";var target=Array.Find(interactions,x=>x.id==id);Vector3 position=stage==2?new Vector3(-9,1,-67):target.transform.position+Vector3.up*1.8f;string label=stage==2?"Reactor radroaches":target.displayName;Vector3 screen=player.view.WorldToScreenPoint(position);float distance=Vector3.Distance(player.transform.position,position);float x=screen.z>0?Mathf.Clamp(screen.x/scale,160,w-160):w/2;float y=screen.z>0?Mathf.Clamp((Screen.height-screen.y)/scale,125,h-180):130;GUI.Label(new Rect(x-140,y,300,55),(screen.z<0?"Behind you · ":"◇ ")+label+"\n"+Mathf.RoundToInt(distance)+" m",body);}
   GUI.Label(new Rect(30,h-74,w-60,30),notice,body);GUI.Label(new Rect(30,h-40,w-60,28),"WASD / Left stick: move   •   E / X: interact   •   Tab / View: journal   •   Esc / Menu: pause",body);
-  if(hasPistol)GUI.Label(new Rect(w-250,h-116,230,30),reloadAt>0?"RELOADING":("10mm   "+ammo+" / "+reserve),title);
+  if(hasPistol)GUI.Label(new Rect(w-250,h-116,230,30),reloadAt>0?"RELOADING":(GetComponent<PortLoadout>().DisplayName+"   "+ammo+" / "+reserve),title);
   if(!dialogueOpen&&!paused){GUI.Label(new Rect(w/2-7,h/2-13,20,25),"+",body);if(current)GUI.Label(new Rect(w/2-180,h/2+30,400,60),current.displayName+"\nE / X — Interact",body);}
   if(journal){GUI.Box(new Rect(w/2-300,140,600,290),"");GUI.Label(new Rect(w/2-275,155,550,40),"PIP-BOY 3000 · DATA",title);GUI.Label(new Rect(w/2-275,210,550,170),"LEASE ON LIFE\n\n"+Objective+"\n\nToday is your nineteenth birthday in Vault 120. Zeke Marlow was evicted to the surface a month ago.",body);}
   if(dialogueOpen){GUI.Box(new Rect(w/2-440,h-325,880,220),"");GUI.Label(new Rect(w/2-412,h-308,830,37),speaker,title);GUI.Label(new Rect(w/2-412,h-261,824,135),line,body);GUI.Label(new Rect(w/2+240,h-141,180,30),"E / A — Continue",body);}

@@ -1,0 +1,63 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: minigun
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.063636556, y: -0.14185964, z: -0.029748872, w: 0.9873912}
+  rightPose: trigger
+  leftPose: grip
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: minigun
+  displayName: Minigun
+  description: Six rotating barrels. Two hundred and forty reasons to stay behind
+    cover.
+  unique: 0
+  weight: 18
+  value: 1000
+  stats:
+    damage: 6
+    rof: 20
+    reloadTime: 3.5
+    range: 140
+    spread: 0.05
+    adsSpread: 0.04
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 0
+    kick: 0.5
+    adsFov: 0.82
+    magSize: 240
+    pellets: 1
+    automatic: 1
+    twoHanded: 1
+    ammo: ammo_5mm
+    projectile: hitscan
+    reloadType: mag
+    damageType: ballistic
+    viewmodel: minigun
+    sound: gun_minigun
+    skill: guns
+  prefab: {fileID: 42328482716542349, guid: 0fc46399a4245e44c9069a45203f80ca, type: 3}
+  muzzle: {x: 0, y: 0.07, z: 0.62}
+  rightGrip: {x: 0.001, y: -0.004, z: -0.006}
+  leftGrip: {x: -0.001, y: -0.045, z: 0.305}
+  sight: {x: 0, y: 0.23, z: 0.05}
+  rightRotation: {x: -0.10338206, y: 0.24029219, z: -0.66502607, w: 0.6995085}
+  leftRotation: {x: -0.12772894, y: -0.21048827, z: 0.6750516, w: 0.69547486}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.22, y: -0.28, z: 0.52}
+  viewScale: 0.8

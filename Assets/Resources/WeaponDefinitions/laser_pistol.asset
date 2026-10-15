@@ -1,0 +1,62 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: laser_pistol
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.013468993, y: -0.025848754, z: -0.059564255, w: 0.99779886}
+  rightPose: trigger
+  leftPose: grip
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: laser_pistol
+  displayName: Laser Pistol
+  description: AEP7 laser pistol. Point the red end toward the enemy.
+  unique: 0
+  weight: 2
+  value: 350
+  stats:
+    damage: 13
+    rof: 4
+    reloadTime: 1.8
+    range: 150
+    spread: 0.012
+    adsSpread: 0.004
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 0
+    kick: 0.6
+    adsFov: 0.82
+    magSize: 30
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: ammo_energy_cell
+    projectile: hitscan
+    reloadType: cell
+    damageType: energy
+    viewmodel: laser_pistol
+    sound: gun_laser_pistol
+    skill: energy_weapons
+  prefab: {fileID: 802666596636153303, guid: df3cb1c3999910945b1f9452196a24a6, type: 3}
+  muzzle: {x: 0, y: 0.074, z: 0.292}
+  rightGrip: {x: 0.001, y: -0.004, z: -0.006}
+  leftGrip: {x: -0.016, y: -0.018, z: 0.01}
+  sight: {x: 0, y: 0.116, z: -0.028}
+  rightRotation: {x: -0.06456587, y: 0.26977354, z: -0.6536224, w: 0.7041529}
+  leftRotation: {x: 0.29282844, y: 0.08954586, z: 0.7014139, w: 0.6436237}
+  hasLeftGrip: 1
+  oneHanded: 1
+  hip: {x: 0.122, y: -0.15, z: 0.35}
+  viewScale: 1

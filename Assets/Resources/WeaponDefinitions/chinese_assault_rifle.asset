@@ -1,0 +1,67 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: chinese_assault_rifle
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.009747089, y: -0.012696518, z: -0.019871136, w: 0.9996744}
+  rightPose: trigger
+  leftPose: support
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  - part: charger
+    position: {x: 0, y: 0, z: -0.06}
+    rotation: {x: 0, y: 0, z: 0}
+    duration: 0.06
+  id: chinese_assault_rifle
+  displayName: Chinese Assault Rifle
+  description: Type 93 rifle captured from the Anchorage front. Crude, loud, and
+    it still works after being buried for two centuries.
+  unique: 0
+  weight: 7
+  value: 350
+  stats:
+    damage: 9
+    rof: 9
+    reloadTime: 2.4
+    range: 170
+    spread: 0.035
+    adsSpread: 0.01
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 0
+    kick: 1
+    adsFov: 0.82
+    magSize: 24
+    pellets: 1
+    automatic: 1
+    twoHanded: 1
+    ammo: ammo_556
+    projectile: hitscan
+    reloadType: mag
+    damageType: ballistic
+    viewmodel: chinese_ar
+    sound: gun_rifle
+    skill: guns
+  prefab: {fileID: 4448621646146745703, guid: 79e49255b4bb91240becb50bede36223, type: 3}
+  muzzle: {x: 0, y: 0.07, z: 0.63}
+  rightGrip: {x: 0.001, y: -0.004, z: -0.006}
+  leftGrip: {x: 0, y: 0.058, z: 0.25}
+  sight: {x: 0, y: 0.108, z: 0.172}
+  rightRotation: {x: -0.040449105, y: 0.28654382, z: -0.64644617, w: 0.7059489}
+  leftRotation: {x: 0.6963068, y: 0.12311304, z: 0.6963068, w: -0.12311304}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.165, y: -0.205, z: 0.36}
+  viewScale: 0.87

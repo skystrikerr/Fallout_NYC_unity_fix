@@ -1,0 +1,63 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: bb_gun
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.009747089, y: -0.012696518, z: -0.019871136, w: 0.9996744}
+  rightPose: trigger
+  leftPose: support
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: bb_gun
+  displayName: BB Gun
+  description: A lever-action air rifle for boys aged 8 to 80. Hurts radroaches'
+    feelings.
+  unique: 0
+  weight: 3
+  value: 36
+  stats:
+    damage: 4
+    rof: 1.8
+    reloadTime: 2
+    range: 70
+    spread: 0.018
+    adsSpread: 0.004
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 0
+    kick: 0.3
+    adsFov: 0.82
+    magSize: 100
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: ammo_bb
+    projectile: hitscan
+    reloadType: bb
+    damageType: ballistic
+    viewmodel: bb_gun
+    sound: gun_bb
+    skill: guns
+  prefab: {fileID: 2939454167427390823, guid: 6c7b9dc71e7086c4db471e86fb16370f, type: 3}
+  muzzle: {x: 0, y: 0.068, z: 0.625}
+  rightGrip: {x: 0, y: -0.013, z: 0.005}
+  leftGrip: {x: 0, y: 0.046, z: 0.24}
+  sight: {x: 0, y: 0.087, z: 0.02}
+  rightRotation: {x: 0.1304786, y: 0.4632774, z: -0.5342041, w: 0.6949643}
+  leftRotation: {x: 0.6963068, y: 0.12311304, z: 0.6963068, w: -0.12311304}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.165, y: -0.205, z: 0.36}
+  viewScale: 0.87

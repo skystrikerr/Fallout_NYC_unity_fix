@@ -1,4 +1,4 @@
-# Fallout: New York — Unity port, milestone 1
+# Fallout: New York — native Unity port
 
 Open Unity **My project (6)** and play:
 `Assets/FalloutPort/Scenes/Vault120.unity`
@@ -33,7 +33,7 @@ Results are saved to `Assets/FalloutPort/Validation.txt`. Unity screenshots are 
 
 ## Remaining port work
 
-This is the first playable slice, not a complete conversion. The surface/city, full branching dialogue and skill checks, Mr. Super/Mabel, the rest of the quests, inventory/equipment, full combat and enemy AI, creature skeletal animation, first-person arms, voice/music, and final lighting/performance work remain. The exit checkpoint explicitly stops here; it does not pretend Central Park is already available.
+This is the first playable slice, not a complete conversion. The surface/city, full branching dialogue and skill checks, Mr. Super/Mabel, the rest of the quests, inventory/equipment, full combat and enemy AI, creature skeletal animation, full voice/audio coverage, and final lighting/performance work remain. The exit checkpoint explicitly stops here; it does not pretend Central Park is already available.
 
 The source game and character collection are preserved. New assets and code live in `Assets/FalloutPort`. The project retains its existing 2D renderer; the port camera selects the existing 3D renderer explicitly.
 
@@ -67,8 +67,18 @@ Windows build verified 2026-10-14: zero build errors. Local executable: C:/Users
 - Enemy attack damage, physical death reactions, health, stimpaks (Q / D-pad Up), sprint AP and recovery menu.
 - Three one-time supply caches, caps and an optional timed security-range challenge with rewards.
 - Residents wander near their posts, greet nearby players and react to gunfire. Essential quest residents remain protected.
-- Survival state and collected rewards persist in saves. The other original Three.js weapons are not imported yet; they require their own grip fits.
+- Survival state and collected rewards persist in saves. The original weapon roster is now imported with individual grip fits; see the Armory update below.
 - Verified the vault quest route, live shots at all three range targets, resident movement, controller input regression, and save/load of the new systems. Arm grip reviewed at hip and aim views.
 
 This remains a playable vault prototype, not a production-ready full game. City content, full inventory/equipment, advanced enemy AI and bespoke reload animations remain future work.
 
+
+## Complete original weapon roster
+
+Open **Armory** from the title or pause menu. Browse the 11 pages and select any of the 44 weapons to equip it at the vault range with practice ammunition. The normal vault quest uses the imported 10mm pistol. Each weapon has its own model, original stats and hand sockets, fitted hand meshes, and one/two-handed support as appropriate. The roster includes ballistic, energy, heavy, improvised, unique, melee and thrown weapons.
+
+Native firing supports automatic/semi-automatic weapons, pellet counts, magazines, reload timing, tracers, moving gun parts, basic projectiles, grenades, mines and melee. Equipped weapon and ammunition persist in saves. Full reload hand choreography, original RPG combat and regular loot/inventory progression remain incomplete.
+
+44 equip/ammo checks, 18 expansion regression checks and 20 vault route checks passed. All 44 hip views were captured for visual review; wrist, swap-overlap and melee sleeve problems were corrected.
+
+See **PORT_STATUS.md** for full-game scope and remaining work. Tools/Porting/source-port-inventory.json inventories the original JavaScript modules. This milestone does not yet add the surface city or later quests.

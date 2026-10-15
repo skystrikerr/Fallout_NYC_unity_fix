@@ -1,0 +1,58 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: brass_knuckles
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: 0, y: 0, z: 0, w: 1}
+  rightPose: fist
+  leftPose: fist
+  shotMotions: []
+  id: brass_knuckles
+  displayName: Brass Knuckles
+  description: Four rings of pure persuasion.
+  unique: 0
+  weight: 1
+  value: 20
+  stats:
+    damage: 6
+    rof: 2.8
+    reloadTime: 2
+    range: 150
+    spread: 0.03
+    adsSpread: 0.008
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 1.8
+    kick: 1
+    adsFov: 0.82
+    magSize: 0
+    pellets: 1
+    automatic: 0
+    twoHanded: 0
+    ammo: 
+    projectile: hitscan
+    reloadType: melee
+    damageType: ballistic
+    viewmodel: brass_knuckles
+    sound: punch
+    skill: unarmed
+  prefab: {fileID: 7876782148069947023, guid: 47873c64836cf8b4687d6e528a86946d, type: 3}
+  muzzle: {x: 0.125, y: 0.007, z: -0.015}
+  rightGrip: {x: 0.125, y: 0.007, z: -0.015}
+  leftGrip: {x: -0.125, y: -0.003, z: 0.015}
+  sight: {x: 0, y: 0, z: 0}
+  rightRotation: {x: -0.12378158, y: 0.083566874, z: -0.23128347, w: 0.9613546}
+  leftRotation: {x: -0.12378158, y: -0.083566874, z: 0.23128347, w: 0.9613546}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0, y: -0.112, z: 0.355}
+  viewScale: 1

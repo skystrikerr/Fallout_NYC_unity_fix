@@ -1,0 +1,63 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: manhattan_project
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.009747089, y: -0.012696518, z: -0.019871136, w: 0.9996744}
+  rightPose: trigger
+  leftPose: support
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: manhattan_project
+  displayName: The Manhattan Project
+  description: A hand-tuned AER9 with a tri-focus array, built by a Columbia physics
+    dropout. Glows faintly blue.
+  unique: 1
+  weight: 8
+  value: 3000
+  stats:
+    damage: 30
+    rof: 3.4
+    reloadTime: 2
+    range: 280
+    spread: 0.008
+    adsSpread: 0.0015
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 0
+    kick: 0.6
+    adsFov: 0.82
+    magSize: 30
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: ammo_mf_cell
+    projectile: hitscan
+    reloadType: cell
+    damageType: energy
+    viewmodel: laser_rifle
+    sound: gun_laser
+    skill: energy_weapons
+  prefab: {fileID: 5638379612557181911, guid: 5b553aed8f0ec824d8ebae74eac8b102, type: 3}
+  muzzle: {x: 0, y: 0.092, z: 0.605}
+  rightGrip: {x: 0.001, y: -0.004, z: -0.006}
+  leftGrip: {x: 0, y: 0.068, z: 0.25}
+  sight: {x: 0, y: 0.14, z: -0.06}
+  rightRotation: {x: -0.05659445, y: 0.27544004, z: -0.6512548, w: 0.70483834}
+  leftRotation: {x: 0.6963068, y: 0.12311304, z: 0.6963068, w: -0.12311304}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.165, y: -0.205, z: 0.36}
+  viewScale: 0.87

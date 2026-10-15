@@ -1,0 +1,63 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0723802ed05d30f478dc9fe4214abc3b, type: 3}
+  m_Name: hunting_rifle
+  m_EditorClassIdentifier: Assembly-CSharp::FalloutPort.PortWeaponDefinition
+  hipRotation: {x: -0.009747089, y: -0.012696518, z: -0.019871136, w: 0.9996744}
+  rightPose: trigger
+  leftPose: support
+  shotMotions:
+  - part: trigger
+    position: {x: 0, y: 0, z: 0}
+    rotation: {x: 17.188734, y: -0, z: 0}
+    duration: 0.09
+  id: hunting_rifle
+  displayName: Hunting Rifle
+  description: Bolt-action .308 with a walnut stock and a hunter's scope. Grandpa's
+    deer rifle, now for mutants.
+  unique: 0
+  weight: 6
+  value: 300
+  stats:
+    damage: 30
+    rof: 1.2
+    reloadTime: 2.9
+    range: 300
+    spread: 0.02
+    adsSpread: 0.0015
+    explosionRadius: 0
+    projectileSpeed: 0
+    meleeRange: 0
+    kick: 1.8
+    adsFov: 0.82
+    magSize: 5
+    pellets: 1
+    automatic: 0
+    twoHanded: 1
+    ammo: ammo_308
+    projectile: hitscan
+    reloadType: single
+    damageType: ballistic
+    viewmodel: hunting_rifle
+    sound: gun_hunting
+    skill: guns
+  prefab: {fileID: 7471087362933966964, guid: 954064c715c8ee3439b9a2f040de5e16, type: 3}
+  muzzle: {x: 0, y: 0.062, z: 0.465}
+  rightGrip: {x: 0.001, y: 0, z: -0.008}
+  leftGrip: {x: 0, y: 0.042, z: 0.24}
+  sight: {x: 0, y: 0.112, z: -0.1356}
+  rightRotation: {x: 0.15233397, y: 0.47305572, z: -0.52556473, w: 0.690503}
+  leftRotation: {x: 0.6963068, y: 0.12311304, z: 0.6963068, w: -0.12311304}
+  hasLeftGrip: 1
+  oneHanded: 0
+  hip: {x: 0.165, y: -0.222, z: 0.36}
+  viewScale: 0.87
